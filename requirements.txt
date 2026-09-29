@@ -1,0 +1,14 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+sqlalchemy>=2.0
+openpyxl>=3.1
+pandas>=2.0
+python-multipart>=0.0.9
+pillow>=10.0
+qrcode>=7.4
+
+# --- Phase 2 (AI photo-to-inventory) - install only when you activate it,
+# see backend/services/ai_inventory_service.py ---
+# torch
+# open_clip_torch
+# ultralytics
