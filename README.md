@@ -93,7 +93,7 @@ network can reach it at your machine's LAN IP (e.g. `http://192.168.1.20:8000/ap
 **Moving to PostgreSQL later** (multi-user / networked / cloud): set one environment
 variable before starting the server -
 `export DATABASE_URL="postgresql://user:password@host:5432/inventory"` - no code
-changes; `database.py` reads it automatically.
+changes; `database.py` reads it automatically. This is required for #10 below.
 
 ## 3. "Not counted" is not the same as "zero"
 
@@ -224,3 +224,55 @@ python tests/test_core_flow.py
 5. **WhatsApp/SMS alert delivery** - push low-stock alerts out instead of requiring
    someone to open the Alerts tab.
 6. **Phase 2 AI activation** - see #7.
+
+## 10. Putting it online (GitHub + Railway or Render, not Vercel)
+
+**Why not Vercel:** Vercel runs everything as short-lived serverless functions with no
+persistent local disk. `inventory.db` would be wiped on every cold start - your real
+catalog would not survive between requests. This isn't a configuration problem to work
+around; it's what "serverless" means. **Railway** and **Render** are the natural fit
+instead: both run this app exactly like `uvicorn` does on your PC right now, both add a
+managed PostgreSQL database in a couple of clicks, and both redeploy automatically
+every time you push to GitHub. Either works the same way; Railway's free tier is
+slightly more generous as of writing.
+
+**1. Push this to GitHub** (a git repository, with a first commit, is already prepared
+in this folder):
+```bash
+# create a new EMPTY repository at https://github.com/new first, then:
+git remote add origin https://github.com/<your-username>/<repo-name>.git
+git branch -M main
+git push -u origin main
+```
+
+**2. On Railway** ([railway.app](https://railway.app), sign in with GitHub):
+1. *New Project -> Deploy from GitHub repo* -> pick this repo.
+2. *New -> Database -> Add PostgreSQL* in the same project. Railway sets a
+   `DATABASE_URL` variable on it automatically - open the web service's *Variables*
+   tab and reference that same value there too (Railway can do this with a variable
+   reference, or just copy the connection string across).
+3. On the web service, set the **Start Command** explicitly (don't rely on
+   auto-detection): `cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT`
+4. Deploy. Then run the catalog import once against the live database - easiest from
+   your own machine, pointed at the live DB:
+   ```bash
+   export DATABASE_URL="<the same postgres URL from Railway>"
+   cd backend && python scripts/import_seller_listings.py ../sample_data/seller_listings_export.csv
+   ```
+   (`seed_data.py` instead, if you'd rather start with sample data.)
+
+**Render** ([render.com](https://render.com)) is nearly identical: *New -> Web
+Service* from the GitHub repo, add a *PostgreSQL* instance from the dashboard, set the
+same Start Command, add `DATABASE_URL` as an environment variable, deploy, then run
+the import the same way.
+
+**What doesn't move over automatically:** anything already sitting in your **local**
+`inventory.db` (if you've already run a bulk count on your PC) stays on your PC -
+only the *code* goes through git. If you've already counted real stock locally before
+going live, say so and the count-sheet export/import (#4) is also the easiest way to
+carry that data across: export a count sheet from the local app, upload it to the
+live one. Product images saved via the image-upload endpoint also live on local disk
+today (`backend/static/product_images/`) - fine for now, but on Railway/Render that
+folder resets on redeploy unless you attach a persistent volume or move image storage
+to something like S3/Cloudinary - a reasonable next step once real product photos are
+in the system.
