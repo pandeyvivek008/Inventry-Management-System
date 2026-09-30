@@ -6,100 +6,262 @@
 <title>Twins Lady — Inventory</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
 <script src="https://cdn.tailwindcss.com"></script>
+
 <script>
   tailwind.config = {
     theme: {
       extend: {
-        fontFamily: { sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'] },
-        colors: { brand: { 50:'#fdf2f5',100:'#fbe6ec',500:'#a6415b',600:'#8a3149',700:'#722a3e' } },
-      },
-    },
+        fontFamily: {
+          sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif']
+        },
+        colors: {
+          brand: {
+            50: '#fdf2f5',
+            100: '#fbe6ec',
+            400: '#b85a73',
+            500: '#a6415b',
+            600: '#8a3149',
+            700: '#722a3e'
+          }
+        }
+      }
+    }
   };
 </script>
+
 <style type="text/tailwindcss">
   @layer components {
     .view { @apply hidden; }
     .view.is-active { @apply block; }
 
-    .rail-link { @apply text-left text-[13.5px] text-slate-300 px-3 py-2.5 rounded-lg hover:bg-white/5 hover:text-white transition-colors flex items-center justify-between; }
-    .rail-link.is-active { @apply bg-slate-800 text-white font-semibold; }
+    .rail-link {
+      @apply text-left text-[13.5px] text-slate-300 px-3 py-2.5 rounded-lg hover:bg-white/5 hover:text-white transition-colors flex items-center justify-between;
+    }
 
-    .card { @apply bg-white border border-slate-200 rounded-xl; }
-    .th { @apply text-left font-semibold px-3.5 py-2.5 border-b border-slate-200; }
+    .rail-link.is-active {
+      @apply bg-slate-800 text-white font-semibold;
+    }
 
-    .input-base { @apply text-[13.5px] border border-slate-300 rounded-lg px-3 py-2 bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500; }
-    .field { @apply flex flex-col gap-1.5 text-xs font-semibold text-slate-500; }
+    .card {
+      @apply bg-white border border-slate-200 rounded-xl;
+    }
 
-    .btn-primary { @apply text-[13.5px] font-semibold text-white bg-brand-500 hover:bg-brand-600 px-4 py-2 rounded-lg transition-colors text-center; }
-    .btn-secondary { @apply text-[13.5px] font-semibold text-white bg-slate-800 hover:bg-slate-700 px-4 py-2 rounded-lg transition-colors text-center; }
-    .btn-ghost { @apply text-[13.5px] font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 px-4 py-2 rounded-lg transition-colors text-center; }
-    .link-btn { @apply text-brand-600 hover:text-brand-700 font-semibold text-[13px]; }
-    .icon-btn { @apply w-8 h-8 flex items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700 transition-colors; }
-    .icon-btn.danger { @apply hover:bg-red-50 hover:text-red-600; }
+    .th {
+      @apply text-left font-semibold px-3.5 py-2.5 border-b border-slate-200;
+    }
 
-    .msg { @apply text-xs mt-2; }
-    .msg.success { @apply text-emerald-600; }
-    .msg.error { @apply text-red-600; }
-    .msg.note { @apply text-amber-700; }
+    .input-base {
+      @apply text-[13.5px] border border-slate-300 rounded-lg px-3 py-2 bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500;
+    }
 
-    .dropzone { @apply block cursor-pointer border-2 border-dashed border-slate-300 rounded-xl p-8 text-center hover:border-brand-400 hover:bg-brand-50/40 transition-colors; }
+    .field {
+      @apply flex flex-col gap-1.5 text-xs font-semibold text-slate-500;
+    }
 
-    .status-pill { @apply inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full; }
-    .status-OK { @apply bg-emerald-100 text-emerald-700; }
-    .status-LOW { @apply bg-amber-100 text-amber-700; }
-    .status-OUT { @apply bg-red-100 text-red-700; }
-    .status-UNCOUNTED { @apply bg-slate-100 text-slate-500; }
+    .btn-primary {
+      @apply text-[13.5px] font-semibold text-white bg-brand-500 hover:bg-brand-600 px-4 py-2 rounded-lg transition-colors text-center;
+    }
 
-    .size-chip { @apply inline-block text-[11px] font-bold bg-slate-100 text-slate-600 px-2 py-0.5 rounded; }
-    .sku-tag { @apply text-slate-500 font-mono text-[12.5px]; }
-    .thumb { @apply w-9 h-9 rounded-md object-cover bg-slate-100; }
-    .thumb-placeholder { @apply w-9 h-9 rounded-md bg-slate-100; }
+    .btn-secondary {
+      @apply text-[13.5px] font-semibold text-white bg-slate-800 hover:bg-slate-700 px-4 py-2 rounded-lg transition-colors text-center;
+    }
 
-    .chip { @apply flex flex-col gap-0.5 min-w-[108px] px-3.5 py-2 rounded-xl bg-white border border-slate-200 cursor-pointer hover:border-slate-400 transition-colors; }
-    .chip.is-on { @apply border-slate-900 ring-1 ring-slate-900; }
-    .chip-n { @apply text-xl font-bold tabular-nums; }
-    .chip-l { @apply text-[11px] text-slate-500; }
+    .btn-ghost {
+      @apply text-[13.5px] font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 px-4 py-2 rounded-lg transition-colors text-center;
+    }
 
-    .stat-card { @apply bg-white border border-slate-200 rounded-lg px-4 py-2.5 min-w-[110px]; }
-    .stat-card .n { @apply text-xl font-bold; }
-    .stat-card .l { @apply text-[11px] text-slate-500; }
+    .link-btn {
+      @apply text-brand-600 hover:text-brand-700 font-semibold text-[13px];
+    }
 
-    .modal-backdrop { @apply fixed inset-0 bg-slate-900/50 backdrop-blur-[2px] flex items-center justify-center p-4 z-50; }
-    .modal-backdrop[hidden] { @apply hidden; }
-    .modal-card { @apply bg-white rounded-2xl shadow-xl p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto; }
+    .icon-btn {
+      @apply w-8 h-8 flex items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700 transition-colors;
+    }
 
-    .toast { @apply fixed bottom-5 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-sm font-medium px-4 py-2.5 rounded-lg shadow-lg z-[60]; }
-    .toast[hidden] { @apply hidden; }
-    .toast.error { @apply bg-red-600; }
+    .icon-btn.danger {
+      @apply hover:bg-red-50 hover:text-red-600;
+    }
 
-    .result-row { @apply text-left w-full px-3 py-2 rounded-lg text-[13px] border border-slate-200 hover:border-slate-400 hover:bg-slate-50 truncate; }
+    .msg {
+      @apply text-xs mt-2;
+    }
+
+    .msg.success {
+      @apply text-emerald-600;
+    }
+
+    .msg.error {
+      @apply text-red-600;
+    }
+
+    .msg.note {
+      @apply text-amber-700;
+    }
+
+    .dropzone {
+      @apply block cursor-pointer border-2 border-dashed border-slate-300 rounded-xl p-8 text-center hover:border-brand-400 hover:bg-brand-50/40 transition-colors;
+    }
+
+    .status-pill {
+      @apply inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full;
+    }
+
+    .status-OK {
+      @apply bg-emerald-100 text-emerald-700;
+    }
+
+    .status-LOW {
+      @apply bg-amber-100 text-amber-700;
+    }
+
+    .status-OUT {
+      @apply bg-red-100 text-red-700;
+    }
+
+    .status-UNCOUNTED {
+      @apply bg-slate-100 text-slate-500;
+    }
+
+    .size-chip {
+      @apply inline-block text-[11px] font-bold bg-slate-100 text-slate-600 px-2 py-0.5 rounded;
+    }
+
+    .sku-tag {
+      @apply text-slate-500 font-mono text-[12.5px];
+    }
+
+    .thumb {
+      @apply w-9 h-9 rounded-md object-cover bg-slate-100;
+    }
+
+    .thumb-placeholder {
+      @apply w-9 h-9 rounded-md bg-slate-100;
+    }
+
+    .chip {
+      @apply flex flex-col gap-0.5 min-w-[108px] px-3.5 py-2 rounded-xl bg-white border border-slate-200 cursor-pointer hover:border-slate-400 transition-colors;
+    }
+
+    .chip.is-on {
+      @apply border-slate-900 ring-1 ring-slate-900;
+    }
+
+    .chip-n {
+      @apply text-xl font-bold tabular-nums;
+    }
+
+    .chip-l {
+      @apply text-[11px] text-slate-500;
+    }
+
+    .stat-card {
+      @apply bg-white border border-slate-200 rounded-lg px-4 py-2.5 min-w-[110px];
+    }
+
+    .stat-card .n {
+      @apply text-xl font-bold;
+    }
+
+    .stat-card .l {
+      @apply text-[11px] text-slate-500;
+    }
+
+    .modal-backdrop {
+      @apply fixed inset-0 bg-slate-900/50 backdrop-blur-[2px] flex items-center justify-center p-4 z-50;
+    }
+
+    .modal-backdrop[hidden] {
+      @apply hidden;
+    }
+
+    .modal-card {
+      @apply bg-white rounded-2xl shadow-xl p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto;
+    }
+
+    .toast {
+      @apply fixed bottom-5 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-sm font-medium px-4 py-2.5 rounded-lg shadow-lg z-[60];
+    }
+
+    .toast[hidden] {
+      @apply hidden;
+    }
+
+    .toast.error {
+      @apply bg-red-600;
+    }
+
+    .result-row {
+      @apply text-left w-full px-3 py-2 rounded-lg text-[13px] border border-slate-200 hover:border-slate-400 hover:bg-slate-50 truncate;
+    }
   }
 </style>
 </head>
+
 <body class="bg-slate-50 text-slate-800 font-sans antialiased">
 
 <div class="flex min-h-screen">
 
   <!-- ================= SIDEBAR ================= -->
   <aside class="w-60 shrink-0 bg-slate-900 text-slate-300 flex flex-col p-4">
+
     <div class="flex items-center gap-3 px-2 pb-5 mb-4 border-b border-white/10">
-      <span class="w-9 h-9 rounded-lg bg-brand-500 text-white font-bold text-sm flex items-center justify-center shrink-0">TL</span>
-      <span class="text-sm font-semibold leading-tight text-white">Twins Lady<br><span class="font-normal text-slate-400 text-xs">Hub Inventory</span></span>
+      <span class="w-9 h-9 rounded-lg bg-brand-500 text-white font-bold text-sm flex items-center justify-center shrink-0">
+        TL
+      </span>
+
+      <span class="text-sm font-semibold leading-tight text-white">
+        Twins Lady<br>
+        <span class="font-normal text-slate-400 text-xs">Hub Inventory</span>
+      </span>
     </div>
+
     <nav class="flex flex-col gap-1 flex-1">
-      <button data-view="dashboard" class="rail-link is-active">Live Inventory</button>
-      <button data-view="products" class="rail-link">Products</button>
-      <button data-view="scan" class="rail-link">Scan &amp; Recount</button>
-      <button data-view="bulk" class="rail-link">Bulk Stock Count</button>
-      <button data-view="orders" class="rail-link">Process Orders</button>
-      <button data-view="reorder" class="rail-link">Reorder List</button>
-      <button data-view="alerts" class="rail-link">
-        Alerts <span id="alert-count" class="ml-1 bg-brand-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full" hidden>0</span>
+      <button data-view="dashboard" class="rail-link is-active">
+        Live Inventory
       </button>
-      <button data-view="labels" class="rail-link">Print Labels</button>
+
+      <button data-view="products" class="rail-link">
+        Products
+      </button>
+
+      <button data-view="scan" class="rail-link">
+        Scan &amp; Recount
+      </button>
+
+      <button data-view="bulk" class="rail-link">
+        Bulk Stock Count
+      </button>
+
+      <button data-view="orders" class="rail-link">
+        Process Orders
+      </button>
+
+      <button data-view="reorder" class="rail-link">
+        Reorder List
+      </button>
+
+      <button data-view="alerts" class="rail-link">
+        Alerts
+        <span
+          id="alert-count"
+          class="ml-1 bg-brand-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full"
+          hidden
+        >
+          0
+        </span>
+      </button>
+
+      <button data-view="labels" class="rail-link">
+        Print Labels
+      </button>
     </nav>
-    <div class="text-[11px] text-slate-500 px-2 pt-3 border-t border-white/10">Stock is tracked size-wise: every design has its own count per size.</div>
+
+    <div class="text-[11px] text-slate-500 px-2 pt-3 border-t border-white/10">
+      Stock is tracked size-wise: every design has its own count per size.
+    </div>
+
   </aside>
 
   <!-- ================= MAIN ================= -->
@@ -107,19 +269,34 @@
 
     <!-- ---------------- LIVE INVENTORY ---------------- -->
     <section id="view-dashboard" class="view is-active">
+
       <header class="flex items-end justify-between gap-5 mb-5">
         <div>
-          <h1 class="text-2xl font-bold tracking-tight text-slate-900">Live Inventory</h1>
-          <p class="text-sm text-slate-500 mt-0.5 max-w-xl">Every design, every size. "Not counted" means the size is in the catalog but nobody has entered its stock yet.</p>
+          <h1 class="text-2xl font-bold tracking-tight text-slate-900">
+            Live Inventory
+          </h1>
+
+          <p class="text-sm text-slate-500 mt-0.5 max-w-xl">
+            Every design, every size. "Not counted" means the size is in the catalog but nobody has entered its stock yet.
+          </p>
         </div>
       </header>
 
       <div id="summary-row" class="flex flex-wrap gap-2.5 mb-4"></div>
 
       <div class="flex flex-wrap gap-2.5 mb-4">
-        <input id="search-box" type="text" placeholder="Search SKU, product name or size code…"
-               class="flex-1 min-w-[220px] input-base">
-        <select id="brand-filter" class="input-base w-auto"><option value="">All brands</option></select>
+
+        <input
+          id="search-box"
+          type="text"
+          placeholder="Search SKU, product name or size code…"
+          class="flex-1 min-w-[220px] input-base"
+        >
+
+        <select id="brand-filter" class="input-base w-auto">
+          <option value="">All brands</option>
+        </select>
+
         <select id="status-filter" class="input-base w-auto">
           <option value="">All statuses</option>
           <option value="UNCOUNTED">Not counted</option>
@@ -127,230 +304,688 @@
           <option value="LOW">Low stock</option>
           <option value="OK">In stock</option>
         </select>
+
       </div>
 
       <div class="card overflow-hidden">
+
         <table class="w-full text-sm">
+
           <thead>
             <tr class="bg-slate-50 text-slate-500 text-xs">
               <th class="w-12"></th>
-              <th class="th">SKU</th><th class="th">Product</th><th class="th">Brand</th>
-              <th class="th">Size</th><th class="th text-right">Stock</th><th class="th text-right">Alert at</th><th class="th">Status</th>
+              <th class="th">SKU</th>
+              <th class="th">Product</th>
+              <th class="th">Brand</th>
+              <th class="th">Size</th>
+              <th class="th text-right">Stock</th>
+              <th class="th text-right">Alert at</th>
+              <th class="th">Status</th>
             </tr>
           </thead>
+
           <tbody id="inventory-body"></tbody>
+
         </table>
+
       </div>
+
       <div class="flex items-center justify-center gap-5 text-sm text-slate-500 pt-4">
-        <button id="pg-prev" class="link-btn">← Previous</button>
+
+        <button id="pg-prev" class="link-btn">
+          ← Previous
+        </button>
+
         <span id="pg-info"></span>
-        <button id="pg-next" class="link-btn">Next →</button>
+
+        <button id="pg-next" class="link-btn">
+          Next →
+        </button>
+
       </div>
+
     </section>
 
-    <!-- ---------------- PRODUCTS (grouped search, delete, photo) ---------------- -->
+    <!-- ---------------- PRODUCTS ---------------- -->
     <section id="view-products" class="view">
+
       <header class="flex items-end justify-between gap-5 mb-5">
+
         <div>
-          <h1 class="text-2xl font-bold tracking-tight text-slate-900">Products</h1>
-          <p class="text-sm text-slate-500 mt-0.5 max-w-xl">Find a design and see every size together, upload its photo, or remove it.</p>
+          <h1 class="text-2xl font-bold tracking-tight text-slate-900">
+            Products
+          </h1>
+
+          <p class="text-sm text-slate-500 mt-0.5 max-w-xl">
+            Find a design and see every size together, upload its photo, or remove it.
+          </p>
         </div>
-        <button id="open-add-product" class="btn-primary shrink-0">+ Add Product</button>
+
+        <button id="open-add-product" class="btn-primary shrink-0">
+          + Add Product
+        </button>
+
       </header>
 
-      <input id="product-search" type="text" placeholder="Search by SKU or product name… (e.g. Reha, 392, Kurta Set)"
-             class="input-base mb-5">
+      <input
+        id="product-search"
+        type="text"
+        placeholder="Search by SKU or product name… (e.g. Reha, 392, Kurta Set)"
+        class="input-base mb-5"
+      >
 
-      <div id="product-cards" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4"></div>
-      <p id="product-search-hint" class="text-sm text-slate-500 text-center py-10">Type at least 2 characters to search your catalog.</p>
+      <div
+        id="product-cards"
+        class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4"
+      ></div>
+
+      <p
+        id="product-search-hint"
+        class="text-sm text-slate-500 text-center py-10"
+      >
+        Type at least 2 characters to search your catalog.
+      </p>
+
     </section>
 
     <!-- ---------------- SCAN & RECOUNT ---------------- -->
     <section id="view-scan" class="view">
+
       <header class="mb-5">
-        <h1 class="text-2xl font-bold tracking-tight text-slate-900">Scan &amp; Recount</h1>
-        <p class="text-sm text-slate-500 mt-0.5">Scan a size's QR label, or type the SKU and size — then enter the number you actually counted.</p>
+
+        <h1 class="text-2xl font-bold tracking-tight text-slate-900">
+          Scan &amp; Recount
+        </h1>
+
+        <p class="text-sm text-slate-500 mt-0.5">
+          Scan a size's QR label, or type the SKU and size — then enter the number you actually counted.
+        </p>
+
       </header>
 
       <div class="grid md:grid-cols-2 gap-5">
+
         <div class="card p-5">
-          <h2 class="font-semibold text-slate-900 mb-1">Camera Scan</h2>
-          <p class="text-xs text-slate-500 mb-3">Point the camera at a printed QR label.</p>
+
+          <h2 class="font-semibold text-slate-900 mb-1">
+            Camera Scan
+          </h2>
+
+          <p class="text-xs text-slate-500 mb-3">
+            Point the camera at a printed QR label.
+          </p>
+
           <div class="relative w-full aspect-[4/3] bg-slate-900 rounded-lg overflow-hidden mb-3">
-            <video id="scan-video" playsinline muted class="w-full h-full object-cover"></video>
-            <div class="absolute inset-[18%] border-2 border-brand-500 rounded-xl shadow-[0_0_0_999px_rgba(0,0,0,.25)] pointer-events-none"></div>
+
+            <video
+              id="scan-video"
+              playsinline
+              muted
+              class="w-full h-full object-cover"
+            ></video>
+
+            <div
+              class="absolute inset-[18%] border-2 border-brand-500 rounded-xl shadow-[0_0_0_999px_rgba(0,0,0,.25)] pointer-events-none"
+            ></div>
+
           </div>
-          <button id="scan-toggle" type="button" class="btn-secondary">Start Camera</button>
+
+          <button id="scan-toggle" type="button" class="btn-secondary">
+            Start Camera
+          </button>
+
           <div id="scan-msg" class="msg"></div>
+
         </div>
 
         <form id="manual-lookup-form" class="card p-5">
-          <h2 class="font-semibold text-slate-900 mb-1">Type Instead</h2>
-          <p class="text-xs text-slate-500 mb-3">No camera handy? Enter the SKU and size directly.</p>
+
+          <h2 class="font-semibold text-slate-900 mb-1">
+            Type Instead
+          </h2>
+
+          <p class="text-xs text-slate-500 mb-3">
+            No camera handy? Enter the SKU and size directly.
+          </p>
+
           <div class="flex gap-3 mb-3">
-            <label class="field flex-1">SKU <input name="sku" required placeholder="e.g. TWINS_REHA_WHITE" class="input-base"></label>
-            <label class="field w-28">Size <input name="size" required placeholder="M" class="input-base"></label>
+
+            <label class="field flex-1">
+              SKU
+              <input
+                name="sku"
+                required
+                placeholder="e.g. TWINS_REHA_WHITE"
+                class="input-base"
+              >
+            </label>
+
+            <label class="field w-28">
+              Size
+              <input
+                name="size"
+                required
+                placeholder="M"
+                class="input-base"
+              >
+            </label>
+
           </div>
-          <button type="submit" class="btn-secondary">Find</button>
+
+          <button type="submit" class="btn-secondary">
+            Find
+          </button>
+
         </form>
+
       </div>
 
       <div id="recount-result" class="card p-5 mt-5" hidden>
+
         <div class="flex items-center gap-4 mb-4">
-          <img id="recount-img" class="w-16 h-16 rounded-lg object-cover bg-slate-100" alt="">
+
+          <img
+            id="recount-img"
+            class="w-16 h-16 rounded-lg object-cover bg-slate-100"
+            alt=""
+          >
+
           <div>
+
             <div id="recount-name" class="font-bold text-slate-900"></div>
-            <div id="recount-code" class="text-xs text-slate-500 my-0.5"></div>
-            <div class="text-sm">System shows: <strong id="recount-current-stock"></strong></div>
+
+            <div
+              id="recount-code"
+              class="text-xs text-slate-500 my-0.5"
+            ></div>
+
+            <div class="text-sm">
+              System shows:
+              <strong id="recount-current-stock"></strong>
+            </div>
+
           </div>
+
         </div>
-        <form id="recount-form" class="flex flex-wrap items-end gap-3">
-          <label class="field">Actual counted quantity <input type="number" id="recount-new-count" min="0" required class="input-base w-40"></label>
-          <label class="field">Note (optional) <input type="text" id="recount-note" placeholder="e.g. weekly physical count" class="input-base w-56"></label>
-          <button type="submit" class="btn-primary">Update Stock</button>
+
+        <form
+          id="recount-form"
+          class="flex flex-wrap items-end gap-3"
+        >
+
+          <label class="field">
+            Actual counted quantity
+            <input
+              type="number"
+              id="recount-new-count"
+              min="0"
+              required
+              class="input-base w-40"
+            >
+          </label>
+
+          <label class="field">
+            Note (optional)
+            <input
+              type="text"
+              id="recount-note"
+              placeholder="e.g. weekly physical count"
+              class="input-base w-56"
+            >
+          </label>
+
+          <button type="submit" class="btn-primary">
+            Update Stock
+          </button>
+
         </form>
+
         <div id="recount-msg" class="msg"></div>
+
       </div>
+
     </section>
 
     <!-- ---------------- BULK STOCK COUNT ---------------- -->
     <section id="view-bulk" class="view">
+
       <header class="mb-5">
-        <h1 class="text-2xl font-bold tracking-tight text-slate-900">Bulk Stock Count</h1>
-        <p class="text-sm text-slate-500 mt-0.5">Count the whole hub on a sheet, then load every number in one go.</p>
+
+        <h1 class="text-2xl font-bold tracking-tight text-slate-900">
+          Bulk Stock Count
+        </h1>
+
+        <p class="text-sm text-slate-500 mt-0.5">
+          Count the whole hub on a sheet, then load every number in one go.
+        </p>
+
       </header>
+
       <div class="grid md:grid-cols-2 gap-5">
+
         <div class="card p-5">
-          <h2 class="font-semibold text-slate-900 mb-1">1. Download the count sheet</h2>
-          <p class="text-xs text-slate-500 mb-3">Fill the <strong>Count</strong> column with what you physically counted. Leave blank to skip; enter 0 if you counted none.</p>
-          <label class="field mb-3">Brand <select id="bulk-brand" class="input-base"><option value="">All brands</option></select></label>
-          <label class="flex items-center gap-2 text-sm mb-4"><input type="checkbox" id="bulk-only-uncounted" checked class="accent-brand-500"> Only sizes not counted yet</label>
-          <a id="bulk-download" href="/api/inventory/count-sheet?only_uncounted=true" download class="btn-secondary inline-block">Download count sheet</a>
-        </div>
-        <div class="card p-5">
-          <h2 class="font-semibold text-slate-900 mb-1">2. Upload the filled sheet</h2>
-          <p class="text-xs text-slate-500 mb-3">Every filled row sets that size's stock and starts its alerts and reorder tracking.</p>
-          <label id="bulk-dropzone" class="dropzone">
-            <input type="file" id="bulk-file-input" accept=".xlsx,.xls,.csv" hidden>
-            <div class="text-2xl text-brand-500 mb-1">⇧</div>
-            <div><strong>Click to choose</strong> the filled count sheet</div>
+
+          <h2 class="font-semibold text-slate-900 mb-1">
+            1. Download the count sheet
+          </h2>
+
+          <p class="text-xs text-slate-500 mb-3">
+            Fill the <strong>Count</strong> column with what you physically counted. Leave blank to skip; enter 0 if you counted none.
+          </p>
+
+          <label class="field mb-3">
+            Brand
+            <select id="bulk-brand" class="input-base">
+              <option value="">All brands</option>
+            </select>
           </label>
+
+          <label class="flex items-center gap-2 text-sm mb-4">
+            <input
+              type="checkbox"
+              id="bulk-only-uncounted"
+              checked
+              class="accent-brand-500"
+            >
+            Only sizes not counted yet
+          </label>
+
+          <a
+            id="bulk-download"
+            href="/api/inventory/count-sheet?only_uncounted=true"
+            download
+            class="btn-secondary inline-block"
+          >
+            Download count sheet
+          </a>
+
         </div>
+
+        <div class="card p-5">
+
+          <h2 class="font-semibold text-slate-900 mb-1">
+            2. Upload the filled sheet
+          </h2>
+
+          <p class="text-xs text-slate-500 mb-3">
+            Every filled row sets that size's stock and starts its alerts and reorder tracking.
+          </p>
+
+          <label id="bulk-dropzone" class="dropzone">
+
+            <input
+              type="file"
+              id="bulk-file-input"
+              accept=".xlsx,.xls,.csv"
+              hidden
+            >
+
+            <div class="text-2xl text-brand-500 mb-1">
+              ⇧
+            </div>
+
+            <div>
+              <strong>Click to choose</strong>
+              the filled count sheet
+            </div>
+
+          </label>
+
+        </div>
+
       </div>
+
       <div id="bulk-result" class="mt-5"></div>
+
     </section>
 
     <!-- ---------------- ORDERS ---------------- -->
     <section id="view-orders" class="view">
+
       <header class="mb-5">
-        <h1 class="text-2xl font-bold tracking-tight text-slate-900">Process Orders</h1>
-        <p class="text-sm text-slate-500 mt-0.5">Upload today's orders (Excel or CSV) — stock is deducted per size automatically.</p>
+
+        <h1 class="text-2xl font-bold tracking-tight text-slate-900">
+          Process Orders
+        </h1>
+
+        <p class="text-sm text-slate-500 mt-0.5">
+          Upload today's orders (Excel or CSV) — stock is deducted per size automatically.
+        </p>
+
       </header>
+
       <div class="card p-6 text-center">
+
         <label id="dropzone" class="dropzone">
-          <input type="file" id="order-file-input" accept=".xlsx,.xls,.csv" hidden>
-          <div class="text-2xl text-brand-500 mb-1">⇧</div>
-          <div><strong>Click to choose</strong> the orders file</div>
-          <div class="text-xs text-slate-500 mt-1">Reads your marketplace's Seller SKU Code / SKU Code directly, or a SKU + Size pair. Repeated rows are fine; no quantity column means 1 piece per row.</div>
+
+          <input
+            type="file"
+            id="order-file-input"
+            accept=".xlsx,.xls,.csv"
+            hidden
+          >
+
+          <div class="text-2xl text-brand-500 mb-1">
+            ⇧
+          </div>
+
+          <div>
+            <strong>Click to choose</strong>
+            the orders file
+          </div>
+
+          <div class="text-xs text-slate-500 mt-1">
+            Reads your marketplace's Seller SKU Code / SKU Code directly, or a SKU + Size pair. Repeated rows are fine; no quantity column means 1 piece per row.
+          </div>
+
         </label>
+
       </div>
+
       <div id="upload-result" class="mt-5"></div>
+
     </section>
 
     <!-- ---------------- REORDER LIST ---------------- -->
     <section id="view-reorder" class="view">
+
       <header class="flex items-end justify-between gap-5 mb-5">
+
         <div>
-          <h1 class="text-2xl font-bold tracking-tight text-slate-900">Reorder List</h1>
-          <p class="text-sm text-slate-500 mt-0.5">Counted sizes at or below their alert level, with how much to top each back up.</p>
+
+          <h1 class="text-2xl font-bold tracking-tight text-slate-900">
+            Reorder List
+          </h1>
+
+          <p class="text-sm text-slate-500 mt-0.5">
+            Counted sizes at or below their alert level, with how much to top each back up.
+          </p>
+
         </div>
-        <a id="export-reorder" href="/api/reorder-list/export" download class="btn-primary shrink-0">Export to Excel</a>
+
+        <a
+          id="export-reorder"
+          href="/api/reorder-list/export"
+          download
+          class="btn-primary shrink-0"
+        >
+          Export to Excel
+        </a>
+
       </header>
+
       <p id="reorder-note" class="text-xs text-slate-500 mb-2"></p>
+
       <div class="card overflow-hidden">
+
         <table class="w-full text-sm">
-          <thead><tr class="bg-slate-50 text-slate-500 text-xs">
-            <th class="th">SKU</th><th class="th">Product</th><th class="th">Size</th><th class="th">Vendor</th><th class="th text-right">Current</th><th class="th text-right">Required</th>
-          </tr></thead>
+
+          <thead>
+            <tr class="bg-slate-50 text-slate-500 text-xs">
+              <th class="th">SKU</th>
+              <th class="th">Product</th>
+              <th class="th">Size</th>
+              <th class="th">Vendor</th>
+              <th class="th text-right">Current</th>
+              <th class="th text-right">Required</th>
+            </tr>
+          </thead>
+
           <tbody id="reorder-body"></tbody>
+
         </table>
+
       </div>
+
     </section>
 
     <!-- ---------------- ALERTS ---------------- -->
     <section id="view-alerts" class="view">
+
       <header class="mb-5">
-        <h1 class="text-2xl font-bold tracking-tight text-slate-900">Alerts</h1>
-        <p class="text-sm text-slate-500 mt-0.5">Counted sizes at or below their alert threshold right now.</p>
+
+        <h1 class="text-2xl font-bold tracking-tight text-slate-900">
+          Alerts
+        </h1>
+
+        <p class="text-sm text-slate-500 mt-0.5">
+          Counted sizes at or below their alert threshold right now.
+        </p>
+
       </header>
+
       <p id="alerts-note" class="text-xs text-slate-500 mb-2"></p>
+
       <div id="alerts-list" class="flex flex-col gap-2"></div>
+
     </section>
 
     <!-- ---------------- PRINT LABELS ---------------- -->
     <section id="view-labels" class="view">
+
       <header class="mb-5">
-        <h1 class="text-2xl font-bold tracking-tight text-slate-900">Print Labels</h1>
-        <p class="text-sm text-slate-500 mt-0.5">Find a design, then print a QR label for each size to stick on its shelf or bin.</p>
+
+        <h1 class="text-2xl font-bold tracking-tight text-slate-900">
+          Print Labels
+        </h1>
+
+        <p class="text-sm text-slate-500 mt-0.5">
+          Find a design, then print a QR label for each size to stick on its shelf or bin.
+        </p>
+
       </header>
+
       <div class="card p-5 max-w-xl">
-        <label class="field mb-3">Find a design <input id="label-search" type="text" placeholder="Type a SKU or product name…" class="input-base"></label>
-        <div id="label-results" class="flex flex-col gap-1.5 mb-2"></div>
-        <div id="label-selected" hidden class="pt-3 mt-1 border-t border-slate-200">
-          <div id="label-selected-name" class="font-bold text-slate-900 mb-2"></div>
-          <div id="label-variant-checks" class="flex flex-col gap-1.5 mb-4"></div>
-          <a id="label-download" href="#" target="_blank" class="btn-primary inline-block">Download Label Sheet (PNG)</a>
+
+        <label class="field mb-3">
+          Find a design
+          <input
+            id="label-search"
+            type="text"
+            placeholder="Type a SKU or product name…"
+            class="input-base"
+          >
+        </label>
+
+        <div
+          id="label-results"
+          class="flex flex-col gap-1.5 mb-2"
+        ></div>
+
+        <div
+          id="label-selected"
+          hidden
+          class="pt-3 mt-1 border-t border-slate-200"
+        >
+
+          <div
+            id="label-selected-name"
+            class="font-bold text-slate-900 mb-2"
+          ></div>
+
+          <div
+            id="label-variant-checks"
+            class="flex flex-col gap-1.5 mb-4"
+          ></div>
+
+          <a
+            id="label-download"
+            href="#"
+            target="_blank"
+            class="btn-primary inline-block"
+          >
+            Download Label Sheet (PNG)
+          </a>
+
         </div>
+
       </div>
+
     </section>
 
   </main>
+
 </div>
 
 <!-- ================= ADD PRODUCT MODAL ================= -->
 <div id="add-product-modal" class="modal-backdrop" hidden>
+
   <div class="modal-card">
+
     <div class="flex items-center justify-between mb-4">
-      <h2 class="text-lg font-bold text-slate-900">Add Product</h2>
-      <button id="close-add-product" class="text-slate-400 hover:text-slate-700 text-2xl leading-none">&times;</button>
+
+      <h2 class="text-lg font-bold text-slate-900">
+        Add Product
+      </h2>
+
+      <button
+        id="close-add-product"
+        class="text-slate-400 hover:text-slate-700 text-2xl leading-none"
+      >
+        &times;
+      </button>
+
     </div>
+
     <form id="add-product-form">
+
       <div class="flex gap-3 mb-3">
-        <label class="field flex-1">SKU / Style Code <input name="sku" required placeholder="e.g. TWINS_TEAL_ZARI" class="input-base"></label>
-        <label class="field flex-1">Product Name <input name="name" required placeholder="e.g. Teal Zari Kurta Set" class="input-base"></label>
-      </div>
-      <div class="flex gap-3 mb-4">
-        <label class="field flex-1">Brand
-          <select name="brand" class="input-base"><option>TWINS LADY</option><option>Kashi</option><option>Vienna Fashion</option></select>
+
+        <label class="field flex-1">
+          SKU / Style Code
+          <input
+            name="sku"
+            required
+            placeholder="e.g. TWINS_TEAL_ZARI"
+            class="input-base"
+          >
         </label>
-        <label class="field flex-1">Category <input name="category" placeholder="Kurta Sets / Salwar Suits" class="input-base"></label>
+
+        <label class="field flex-1">
+          Product Name
+          <input
+            name="name"
+            required
+            placeholder="e.g. Teal Zari Kurta Set"
+            class="input-base"
+          >
+        </label>
+
       </div>
 
-      <h3 class="text-sm font-semibold text-slate-700 mb-2">Sizes &amp; starting stock</h3>
+      <div class="flex gap-3 mb-4">
+
+        <label class="field flex-1">
+          Brand
+
+          <select name="brand" class="input-base">
+            <option>TWINS LADY</option>
+            <option>Kashi</option>
+            <option>Vienna Fashion</option>
+          </select>
+
+        </label>
+
+        <label class="field flex-1">
+          Category
+
+          <input
+            name="category"
+            placeholder="Kurta Sets / Salwar Suits"
+            class="input-base"
+          >
+
+        </label>
+
+      </div>
+
+      <h3 class="text-sm font-semibold text-slate-700 mb-2">
+        Sizes &amp; starting stock
+      </h3>
+
       <table class="w-full text-sm mb-2">
-        <thead><tr class="text-xs text-slate-500"><th class="text-left font-medium py-1">Size</th><th class="text-left font-medium py-1">Stock</th><th class="text-left font-medium py-1">Alert Below</th><th class="text-left font-medium py-1">Target</th><th></th></tr></thead>
+
+        <thead>
+          <tr class="text-xs text-slate-500">
+            <th class="text-left font-medium py-1">Size</th>
+            <th class="text-left font-medium py-1">Stock</th>
+            <th class="text-left font-medium py-1">Alert Below</th>
+            <th class="text-left font-medium py-1">Target</th>
+            <th></th>
+          </tr>
+        </thead>
+
         <tbody id="size-rows"></tbody>
+
       </table>
-      <button type="button" id="add-size-row" class="link-btn mb-4">+ Add another size</button>
+
+      <button
+        type="button"
+        id="add-size-row"
+        class="link-btn mb-4"
+      >
+        + Add another size
+      </button>
 
       <div class="flex items-center gap-3">
-        <button type="submit" class="btn-primary">Add Product</button>
-        <div id="add-product-msg" class="msg !mt-0"></div>
+
+        <button
+          type="submit"
+          class="btn-primary"
+        >
+          Add Product
+        </button>
+
+        <div
+          id="add-product-msg"
+          class="msg !mt-0"
+        ></div>
+
       </div>
+
     </form>
+
   </div>
+
 </div>
 
-<!-- ================= CONFIRM MODAL (delete etc.) ================= -->
+<!-- ================= CONFIRM MODAL ================= -->
 <div id="confirm-modal" class="modal-backdrop" hidden>
+
   <div class="modal-card max-w-sm">
-    <h2 id="confirm-title" class="text-lg font-bold text-slate-900 mb-2">Are you sure?</h2>
-    <p id="confirm-body" class="text-sm text-slate-600 mb-5"></p>
+
+    <h2
+      id="confirm-title"
+      class="text-lg font-bold text-slate-900 mb-2"
+    >
+      Are you sure?
+    </h2>
+
+    <p
+      id="confirm-body"
+      class="text-sm text-slate-600 mb-5"
+    ></p>
+
     <div class="flex justify-end gap-3">
-      <button id="confirm-cancel" class="btn-ghost">Cancel</button>
-      <button id="confirm-ok" class="bg-red-600 hover:bg-red-700 text-white text-sm font-semibold px-4 py-2 rounded-lg">Delete</button>
+
+      <button
+        id="confirm-cancel"
+        class="btn-ghost"
+      >
+        Cancel
+      </button>
+
+      <button
+        id="confirm-ok"
+        class="bg-red-600 hover:bg-red-700 text-white text-sm font-semibold px-4 py-2 rounded-lg"
+      >
+        Delete
+      </button>
+
     </div>
+
   </div>
+
 </div>
 
 <!-- ================= TOAST ================= -->
@@ -358,5 +993,6 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.js"></script>
 <script src="app.js"></script>
+
 </body>
 </html>
