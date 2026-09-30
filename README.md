@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Twins Lady — Hub Inventory System
 
 A production-structured inventory system for the Twins Lady / Kashi hub: live stock
@@ -297,3 +298,6 @@ today (`backend/static/product_images/`) - fine for now, but on Railway/Render t
 folder resets on redeploy unless you attach a persistent volume or move image storage
 to something like S3/Cloudinary - a reasonable next step once real product photos are
 in the system.
+=======
+# Inventry-Management-System
+>>>>>>> 3185bcb4e6b0b8f03b5137daecb48d3724f69ca1
