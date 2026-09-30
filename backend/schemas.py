@@ -88,6 +88,7 @@ class OrderUploadResult(BaseModel):
     not_found_count: int
     lines: List[OrderLineResult]
     new_alerts: List[str]   # variant codes newly alerted as part of this upload
+    file_note: Optional[str] = None   # e.g. "no quantity column - each row counted as 1"
 
 
 class AlertOut(BaseModel):

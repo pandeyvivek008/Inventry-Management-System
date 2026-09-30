@@ -4,15 +4,17 @@ A production-structured inventory system for the Twins Lady / Kashi hub: live st
 tracked **size-wise** (every size of every design counted separately), a real-catalog
 importer for your marketplace seller-listings export, Excel/CSV order deduction that
 matches on your actual marketplace SKU codes, QR-code scan-to-recount, bulk physical
-stock counting, automatic low-stock alerts, a daily reorder list, and a designed
-(not-yet-trained) path to photo-based stock updates.
+stock counting, automatic low-stock alerts, a daily reorder list, a searchable
+**Products** view with photo upload and delete, a modern Tailwind CSS interface, and a
+designed (not-yet-trained) path to photo-based stock updates.
 
 ## 1. Architecture
 
 ```
-BROWSER  frontend/  (HTML/CSS/JS, no build step, no framework)
-  Live Inventory (filters, search, pagination) - Scan & Recount (camera QR) -
-  Bulk Stock Count - Process Orders - Reorder List - Alerts - Print Labels - Add Product
+BROWSER  frontend/  (HTML/CSS/JS + Tailwind CSS via CDN, no build step, no framework)
+  Live Inventory (filters, search, pagination) - Products (search a design, see every
+  size together, upload its photo, delete it) - Scan & Recount (camera QR) -
+  Bulk Stock Count - Process Orders - Reorder List - Alerts - Print Labels
         |  fetch() - same-origin REST calls
 API LAYER  backend/main.py  (FastAPI, also serves the frontend + /docs)
         |
@@ -56,6 +58,13 @@ from **Variant** (one row per size: the count, the threshold, the QR code). Ever
 transaction, alert, order line and reorder line points at a Variant, so a low-stock
 signal always means one specific size, never a whole design smeared across five sizes.
 
+**Why not Next.js:** Next.js needs its own Node.js server running alongside the
+Python one - a second service to deploy, keep in sync, and pay for, with a CORS
+boundary between them. For an internal tool with no public pages and no SEO need,
+that buys nothing a plain page doesn't already have. Tailwind (via CDN, no build
+step) gets the same modern look without any of that - one Python process, one
+deployment, matching what's already connected on Railway.
+
 The service layer is the only part of the system that knows business rules. `main.py`
 never touches the database directly - it only calls services - so the same logic could
 later sit behind a scheduled job or a direct marketplace order-API pull without being
@@ -95,7 +104,19 @@ variable before starting the server -
 `export DATABASE_URL="postgresql://user:password@host:5432/inventory"` - no code
 changes; `database.py` reads it automatically. This is required for #10 below.
 
-## 3. "Not counted" is not the same as "zero"
+## 3. Products: search a design, see every size, photo, delete
+
+The *Products* tab is the catalog-management view - separate from *Live Inventory*,
+which stays focused on flat, filterable stock monitoring across every size. Type a
+SKU or product name (2+ characters) and every matching **design** appears as a card:
+its photo, every size with its current count in one place, an upload control for the
+photo, a delete button for the whole design, and a small × on each size chip to
+remove just that one size. Deleting is permanent - it removes the design/size and its
+full ledger history, not just the stock number - the delete button asks for
+confirmation before doing it (`DELETE /api/products/{sku}` and
+`DELETE /api/variants/{variant_code}` under the hood; see `main.py`).
+
+## 3.1 "Not counted" is not the same as "zero"
 
 A marketplace listings export tells you *which* SKUs and sizes exist - it carries no
 stock numbers. So every size the importer creates starts as **NOT COUNTED**, not as

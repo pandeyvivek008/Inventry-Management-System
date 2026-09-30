@@ -8,7 +8,7 @@ from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, delete as sa_delete
 from sqlalchemy.orm import Session, joinedload, selectinload, contains_eager
 
 from database import Base, engine, get_db
@@ -266,6 +266,50 @@ def update_variant(variant_code: str, payload: schemas.VariantUpdate, db: Sessio
     db.commit()
     db.refresh(variant)
     return _variant_out(variant)
+
+
+@app.delete("/api/products/{sku}")
+def delete_product(sku: str, db: Session = Depends(get_db)):
+    """Permanently removes a design and every size under it, including its
+    full history (ledger, alerts, order lines, reorder lines) - there is no
+    undo. Meant for cleaning up a mistaken/duplicate entry; if you need to
+    stop selling a real design while keeping its records, leave it as is and
+    just let its stock run to 0 instead."""
+    product = db.query(models.Product).filter(models.Product.sku == sku.strip().upper()).first()
+    if not product:
+        raise HTTPException(404, "Product not found")
+
+    variant_ids = [v.id for v in db.query(models.Variant.id).filter(models.Variant.product_id == product.id)]
+    if variant_ids:
+        db.execute(sa_delete(models.OrderLine).where(models.OrderLine.variant_id.in_(variant_ids)))
+        db.execute(sa_delete(models.ReorderBatchItem).where(models.ReorderBatchItem.variant_id.in_(variant_ids)))
+        db.execute(sa_delete(models.Alert).where(models.Alert.variant_id.in_(variant_ids)))
+        db.execute(sa_delete(models.InventoryTransaction).where(models.InventoryTransaction.variant_id.in_(variant_ids)))
+        db.execute(sa_delete(models.Variant).where(models.Variant.id.in_(variant_ids)))
+    db.delete(product)
+    db.commit()
+    return {"deleted": sku.strip().upper(), "sizes_removed": len(variant_ids)}
+
+
+@app.delete("/api/variants/{variant_code}")
+def delete_variant(variant_code: str, db: Session = Depends(get_db)):
+    """Remove a single size from a design (e.g. a size you never actually
+    stock) without touching its other sizes. If it's the design's only
+    remaining size, the design is removed too."""
+    variant = _get_variant_by_code(db, variant_code)
+    product = variant.product
+    db.execute(sa_delete(models.OrderLine).where(models.OrderLine.variant_id == variant.id))
+    db.execute(sa_delete(models.ReorderBatchItem).where(models.ReorderBatchItem.variant_id == variant.id))
+    db.execute(sa_delete(models.Alert).where(models.Alert.variant_id == variant.id))
+    db.execute(sa_delete(models.InventoryTransaction).where(models.InventoryTransaction.variant_id == variant.id))
+    db.delete(variant)
+    db.flush()
+    remaining = db.query(func.count(models.Variant.id)).filter(models.Variant.product_id == product.id).scalar()
+    product_also_deleted = remaining == 0
+    if product_also_deleted:
+        db.delete(product)
+    db.commit()
+    return {"deleted": variant_code.strip().upper(), "product_also_deleted": product_also_deleted}
 
 
 @app.post("/api/products/{sku}/image")

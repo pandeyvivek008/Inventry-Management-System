@@ -40,13 +40,18 @@ from services.table_reader import read_table, to_int, clean_code
 # Most specific first. All that are present in the sheet are tried per row.
 SKU_COLUMN_CANDIDATES = [
     "seller sku code", "seller sku", "seller_sku_code", "variant code", "variant_code",
-    "sku code", "sku", "style code", "stylecode", "product sku", "ean",
+    "sku code", "sku id", "sku", "style code", "stylecode", "style id", "product sku",
+    "ean", "hsn/sku", "item sku", "item sku code", "product code", "barcode",
 ]
-SIZE_COLUMN_CANDIDATES = ["size", "size name", "variant size"]
-QTY_COLUMN_CANDIDATES = ["quantity", "qty", "qty ordered", "order qty", "units", "item quantity"]
+SIZE_COLUMN_CANDIDATES = ["size", "size name", "variant size", "size ordered"]
+QTY_COLUMN_CANDIDATES = [
+    "quantity", "qty", "qty ordered", "order qty", "order quantity", "units",
+    "item quantity", "no of units", "no. of units", "pieces", "final quantity",
+]
 
 NOT_COUNTED_NOTE = "Stock for this size was never counted - count it first (Bulk Stock Count)."
 AMBIGUOUS_NOTE = "Code matches more than one size - add a Size column."
+NO_QTY_COLUMN_NOTE = "No quantity column found - each row was counted as 1 piece."
 CHUNK = 500
 
 
@@ -84,19 +89,23 @@ def process_order_excel(db: Session, file_bytes: bytes, filename: str, created_b
     sku_cols = _find_columns(df.columns, SKU_COLUMN_CANDIDATES)
     size_cols = _find_columns(df.columns, SIZE_COLUMN_CANDIDATES)
     qty_cols = _find_columns(df.columns, QTY_COLUMN_CANDIDATES)
-    if not sku_cols or not qty_cols:
+    if not sku_cols:
         raise BadOrderFileError(
-            f"Could not find a SKU column and a Quantity column. Found columns: {list(df.columns)}. "
-            f"Expected a SKU-like column (one of {SKU_COLUMN_CANDIDATES}) and a quantity column "
-            f"(one of {QTY_COLUMN_CANDIDATES})."
+            f"Could not find a SKU/code column. Found columns: {list(df.columns)}. "
+            f"Expected one of {SKU_COLUMN_CANDIDATES}."
         )
     size_col = size_cols[0] if size_cols else None
-    qty_col = qty_cols[0]
+    # No quantity column is a real, common shape too: an order/shipment manifest
+    # where every row IS one physical piece, so there's nothing to count in a
+    # column - the row itself is the unit. Assume qty=1 per row rather than
+    # rejecting the whole file for a column that was never meant to exist.
+    qty_col = qty_cols[0] if qty_cols else None
+    used_default_qty = qty_col is None
 
     # --- Step 1: parse rows ---
     parsed = []  # (candidate codes, size or None, qty)
     for rec in df.to_dict("records"):
-        qty = to_int(rec.get(qty_col))
+        qty = 1 if used_default_qty else to_int(rec.get(qty_col))
         if qty is None or qty <= 0:
             continue
         cands = [c for c in (clean_code(rec.get(col)) for col in sku_cols) if c]
@@ -231,4 +240,5 @@ def process_order_excel(db: Session, file_bytes: bytes, filename: str, created_b
         "total_rows": len(parsed), "unique_skus": len(resolved_qty) + len(unresolved_qty),
         "fulfilled_count": fulfilled, "insufficient_count": insufficient, "not_found_count": not_found,
         "lines": line_results, "new_alerts": new_alerts,
+        "file_note": NO_QTY_COLUMN_NOTE if used_default_qty else None,
     }

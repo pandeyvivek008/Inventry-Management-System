@@ -212,6 +212,38 @@ print("17. Unreadable file is a clean 400, not a crash")
 r = post_orders(b"this is not an excel file", "bad.xlsx")
 expect(r.status_code == 400 and "Could not read" in r.json()["detail"], "garbage upload -> 400 with a readable message")
 
+print("17b. No Quantity column: an order/shipment manifest where every row IS one piece")
+manifest = make_xlsx(["Seller SKU Code"], [("Twins_Test_Pink_M",), ("Twins_Test_Pink_M",), ("SW999_L",)])
+r = post_orders(manifest, "manifest.xlsx")
+expect(r.status_code == 200, "file with no quantity column is accepted, not rejected")
+mbody = r.json()
+expect(mbody["file_note"] and "1 piece" in mbody["file_note"], f"response says qty defaulted to 1, got {mbody['file_note']!r}")
+pink_line = next(l for l in mbody["lines"] if l["sku"] == "TWINS_TEST_PINK")
+expect(pink_line["qty_ordered"] == 2, f"two repeated manifest rows for the same size = qty 2, got {pink_line['qty_ordered']}")
+
+print("17c. A real quantity column still overrides the 1-per-row default (no regression)")
+with_qty = make_xlsx(["SKU", "Size", "Qty"], [("T2", "M", 3)])
+r = post_orders(with_qty, "with_qty.xlsx")
+expect(r.json()["file_note"] is None, "file_note absent when a quantity column exists")
+expect(r.json()["lines"][0]["qty_ordered"] == 3, "real quantity column value used, not defaulted to 1")
+
+print("17d. Legacy .xls (old binary Excel format) is readable")
+import xlwt
+xls_buf = BytesIO()
+xls_wb = xlwt.Workbook()
+xls_ws = xls_wb.add_sheet("Orders")
+for c, h in enumerate(["SKU", "Size", "Quantity"]):
+    xls_ws.write(0, c, h)
+xls_ws.write(1, 0, "T2"); xls_ws.write(1, 1, "M"); xls_ws.write(1, 2, 2)
+xls_wb.save(xls_buf)
+r = client.post("/api/orders/upload", files={"file": ("orders.xls", xls_buf.getvalue(), "application/vnd.ms-excel")})
+expect(r.status_code == 200, f"legacy .xls file is read correctly, got {r.status_code}: {r.text[:200]}")
+
+print("17e. A real .xlsx uploaded with a misleading/missing extension is still sniffed correctly")
+mislabeled = make_xlsx(["SKU", "Size", "Quantity"], [("T2", "M", 777)])  # distinct content - must not hash-collide with test 5's file
+r = client.post("/api/orders/upload", files={"file": ("export", mislabeled, "application/octet-stream")})
+expect(r.status_code == 200, f"content is sniffed by its real bytes when the extension is missing/wrong, got {r.status_code}: {r.text[:200]}")
+
 # ====================================================================== #
 print("18. Bulk stock count: set, skip blanks, report unknown codes, ignore duplicate rows")
 counts = make_xlsx(["Variant Code", "Count"], [
@@ -263,5 +295,28 @@ client.get("/api/reorder-list")
 expect(reorder_batches() == before, "opening the list twice created no snapshots")
 client.get("/api/reorder-list/export")
 expect(reorder_batches() == before + 1, "export saved exactly one snapshot")
+
+print("22. Delete a whole product: sizes, ledger, alerts all cleaned up, nothing orphaned")
+client.post("/api/products", json={"sku": "DEL1", "name": "Delete Me", "variants": [
+    {"size": "S", "initial_stock": 3, "reorder_threshold": 5}, {"size": "M", "initial_stock": 20},
+]})
+expect({a["variant_code"] for a in client.get("/api/alerts").json()} >= {"DEL1-S"}, "DEL1-S alerted before delete")
+r = client.delete("/api/products/DEL1")
+expect(r.status_code == 200 and r.json()["sizes_removed"] == 2, f"delete reports 2 sizes removed, got {r.json()}")
+expect(client.get("/api/variants/DEL1-S").status_code == 404, "DEL1-S gone")
+expect(not any(a["sku"] == "DEL1" for a in client.get("/api/alerts").json()), "DEL1's alert cleaned up, not orphaned")
+expect(not any(p["sku"] == "DEL1" for p in client.get("/api/products").json()), "DEL1 gone from product list")
+expect(client.delete("/api/products/DEL1").status_code == 404, "deleting again -> 404, not a crash")
+
+print("23. Delete a single size: the rest of the product is untouched")
+client.post("/api/products", json={"sku": "DEL2", "name": "Partial Delete", "variants": [
+    {"size": "S", "initial_stock": 5}, {"size": "M", "initial_stock": 7},
+]})
+r = client.delete("/api/variants/DEL2-S")
+expect(r.status_code == 200 and r.json()["product_also_deleted"] is False, "DEL2-S removed, product kept (M remains)")
+expect(client.get("/api/variants/DEL2-M").status_code == 200, "DEL2-M still there")
+r = client.delete("/api/variants/DEL2-M")
+expect(r.json()["product_also_deleted"] is True, "removing the LAST size also removes the now-empty product")
+expect(not any(p["sku"] == "DEL2" for p in client.get("/api/products").json()), "DEL2 gone entirely")
 
 print("\nALL CHECKS PASSED")
