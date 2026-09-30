@@ -6,7 +6,7 @@ pandas>=2.0
 python-multipart>=0.0.9
 pillow>=10.0
 qrcode>=7.4
-psycopg2-binary>=2.9   # PostgreSQL driver - needed once DATABASE_URL points at Postgres (Railway/Render)
+psycopg[binary]>=3.2   # PostgreSQL driver - needed once DATABASE_URL points at Postgres (Railway/Render)
 
 # --- Phase 2 (AI photo-to-inventory) - install only when you activate it,
 # see backend/services/ai_inventory_service.py ---
