@@ -23,8 +23,8 @@
 
   <aside id="sidebar" class="rail">
     <div class="rail-identity">
-      <span class="rail-identity-mark">IM</span>
-      <span class="rail-identity-name">Inventory<br><small>Management System</small></span>
+      <span class="rail-identity-mark" aria-hidden="true"><i class="fa-solid fa-boxes-stacked"></i></span>
+      <span class="rail-identity-name"><strong>Inventory</strong><small>STOCK MANAGEMENT</small></span>
       <button id="sidebar-collapse" class="icon-btn rail-collapse" type="button" aria-label="Collapse sidebar" title="Collapse sidebar"><i class="fa-solid fa-chevron-left"></i></button>
     </div>
     <nav class="rail-nav">
@@ -199,6 +199,13 @@
           <button id="voice-command-btn" class="btn-secondary" type="button"><i class="fa-solid fa-microphone"></i> Voice stock update</button>
         </div>
       </header>
+      <div class="voice-agent-panel">
+        <div class="voice-agent-intro"><span class="voice-agent-icon"><i class="fa-solid fa-wand-magic-sparkles"></i></span><div><strong>Inventory Assistant</strong><p>Speak or type naturally. Example: “Black design, M size mein 5 add karo.”</p></div></div>
+        <form id="voice-command-form" class="voice-command-form">
+          <input id="voice-command-input" class="input" type="text" autocomplete="off" placeholder="Product, size aur stock batayein…" aria-label="Tell the inventory assistant what stock to update">
+          <button id="voice-submit-btn" class="btn-primary" type="submit"><i class="fa-solid fa-paper-plane"></i><span>Ask</span></button>
+        </form>
+      </div>
       <div id="voice-agent-status" class="voice-agent-status" role="status" hidden></div>
       <input id="alerts-search" type="search" placeholder="Search by design, SKU, size or alert type…" class="input alerts-search" aria-label="Search alerts">
       <p id="alerts-note" class="hint"></p>

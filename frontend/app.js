@@ -94,7 +94,11 @@ function updateSpeechToggle() {
   button.innerHTML = `<i class="fa-solid fa-volume-high"></i> Spoken alerts: ${spokenAlertsEnabled ? "On" : "Off"}`;
 }
 function speakInventoryMessage(message) {
-  if (!spokenAlertsEnabled || !window.speechSynthesis || !window.SpeechSynthesisUtterance) return;
+  if (!spokenAlertsEnabled) return;
+  speakAssistantMessage(message);
+}
+function speakAssistantMessage(message) {
+  if (!window.speechSynthesis || !window.SpeechSynthesisUtterance) return;
   window.speechSynthesis.cancel();
   const utterance = new SpeechSynthesisUtterance(message);
   utterance.lang = "hi-IN";
@@ -107,7 +111,7 @@ $("alert-speech-toggle")?.addEventListener("click", () => {
   localStorage.setItem("spokenAlertsEnabled", String(spokenAlertsEnabled));
   updateSpeechToggle();
   if (spokenAlertsEnabled) {
-    speakInventoryMessage("Twins Lady inventory assistant ready. New low stock alerts will be spoken.");
+    speakInventoryMessage("Inventory assistant ready. New low stock alerts will be spoken.");
     pendingAlertAnnouncement = true;
     loadAlerts();
   } else if (window.speechSynthesis) window.speechSynthesis.cancel();
@@ -1062,8 +1066,28 @@ function normalizeSpokenSize(value) {
   return aliases[text] || text.toUpperCase();
 }
 
+function normalizeAssistantTranscript(value) {
+  const replacements = [
+    [/(एक्स\s*एक्स\s*एल|एक्स्ट्रा\s*एक्स्ट्रा\s*लार्ज)/g, "xxl"],
+    [/(एक्स\s*एल|एक्स्ट्रा\s*लार्ज)/g, "xl"], [/(एक्स\s*एस)/g, "xs"],
+    [/(फ्री\s*साइज|वन\s*साइज)/g, "free size"],
+    [/(मीडियम|मध्यम|एम)/g, "medium"], [/(छोटा|छोटी|छोटे)/g, "small"], [/(बड़ा|बड़ी|बड़ी|बड़े)/g, "large"],
+    [/(जोड़\s*दीजिए|जोड़\s*दो|जोड़ो|जोड़)/g, "add"], [/(डाल\s*दीजिए|डाल\s*दो|डालो|डाल)/g, "add"],
+    [/(बढ़ा\s*दीजिए|बढ़ा\s*दो|बढ़ाओ|बढ़ा)/g, "add"], [/(रख\s*दो|कर\s*दीजिए|कर\s*दो)/g, "set"],
+    [/(पाँच|पांच)/g, "five"], [/तीन/g, "three"], [/चार/g, "four"], [/दो/g, "two"], [/एक/g, "one"],
+    [/छह/g, "six"], [/सात/g, "seven"], [/आठ/g, "eight"], [/नौ/g, "nine"], [/दस/g, "ten"],
+    [/(काला|काली|ब्लैक)/g, "black"], [/(लाल|रेड)/g, "red"], [/(हरा|ग्रीन)/g, "green"], [/(नीला|ब्लू)/g, "blue"],
+    [/(गुलाबी|पिंक)/g, "pink"], [/(सफेद|व्हाइट)/g, "white"], [/(पीला|येलो)/g, "yellow"], [/(भूरा|ब्राउन)/g, "brown"],
+    [/(साइज़|साइज)/g, "size"], [/डिज़ाइन/g, "design"], [/डिजाइन/g, "design"],
+    [/रंग/g, "color"], [/स्टॉक/g, "stock"], [/पीस/g, "pieces"], [/में/g, "mein"],
+  ];
+  let text = String(value || "").normalize("NFC").toLowerCase();
+  for (const [pattern, replacement] of replacements) text = text.replace(pattern, replacement);
+  return text.replace(/\s+/g, " ").trim();
+}
+
 function parseVoiceStockCommand(transcript) {
-  const original = transcript.toLowerCase();
+  const original = normalizeAssistantTranscript(transcript);
   const sizeMatch = original.match(/\b(?:size\s+)?(free\s+size|one\s+size|triple\s+extra\s+large|double\s+extra\s+large|extra\s+large|xxxl|3xl|xxl|2xl|xl|xs|small|medium|large|s|m|l|\d{2})\b/);
   const sizePhrase = sizeMatch ? sizeMatch[0] : "";
   const size = sizeMatch ? normalizeSpokenSize(sizeMatch[1]) : null;
@@ -1073,17 +1097,18 @@ function parseVoiceStockCommand(transcript) {
   const quantityMatch = actionQuantity
     ? { 0: actionQuantity[1] || actionQuantity[2] }
     : numericMatches.find((match) => !(/^\d{2}$/.test(match[0]) && size === match[0])) || null;
-  const spokenNumber = original.match(/\b(one|ek|two|do|three|teen|four|chaar|five|paanch|panch|six|chhe|seven|saat|eight|aath|nine|nau|ten|dus)\b/);
+  const spokenNumber = original.replace(sizePhrase, " ").match(/\b(one|ek|two|do|three|teen|four|chaar|five|paanch|panch|six|chhe|seven|saat|eight|aath|nine|nau|ten|dus)\b/);
   const quantity = quantityMatch ? Number(quantityMatch[0]) : spokenNumber ? numberWords[spokenNumber[1]] : null;
-  const isAdd = /\b(add|plus|increase|jod|jodo|daal|dalo|badhao|bhar do)\b/.test(original);
+  const isAdd = /\b(add|plus|increase|jod|jodo|daal|dalo|badhao|bhar do|restock|receive|received|aaya)\b/.test(original);
+  const isSet = /\b(set|count|make|total|replace|overwrite)\b/.test(original);
   let search = original;
   if (sizePhrase) search = search.replace(sizePhrase, " ");
   if (quantityMatch) search = search.replace(quantityMatch[0], " ");
   if (spokenNumber) search = search.replace(spokenNumber[0], " ");
   search = search
-    .replace(/\b(twins lady|assistant|inventory|stock|size|color|colour|design|product|please|plz|add|plus|increase|jod|jodo|daal|dalo|badhao|bhar|do|kar|karo|kardo|mein|me|mai|is|us|ka|ki|ke|ko|par|to|pcs|pieces|units|set|count|make|it|hai|for|the|in|and)\b/g, " ")
+    .replace(/\b(twins lady|assistant|inventory|stock|size|color|colour|design|product|please|plz|mujhe|is|us|wali|wala|wale|dress|kurta|suit|saree|add|plus|increase|jod|jodo|daal|dalo|badhao|bhar|do|kar|karo|kardo|mein|me|mai|ka|ki|ke|ko|par|to|pcs|pieces|units|set|count|make|total|replace|overwrite|it|hai|hain|for|the|in|and|restock|receive|received|aaya)\b/g, " ")
     .replace(/[^\p{L}\p{N}_-]+/gu, " ").trim();
-  return { size, quantity, mode: isAdd ? "add" : "set", search };
+  return { size, quantity, mode: isSet && !isAdd ? "set" : "add", search };
 }
 
 async function resolveVoiceStockCommand(transcript) {
@@ -1091,11 +1116,13 @@ async function resolveVoiceStockCommand(transcript) {
   const command = parseVoiceStockCommand(transcript);
   if (!command.size || command.quantity == null || command.quantity < 0 || !command.search) {
     status.hidden = false;
-    status.innerHTML = `<strong>Twins Lady Assistant</strong><p>Design/color, size aur quantity ke saath bolein. Misal: “Black design size M mein 5 add karo.”</p><small>Heard: ${esc(transcript)}</small>`;
+    const reason = !command.size ? "Size sunai nahi diya. Product aur size boliye." : command.quantity == null ? "Kitne pieces add karne hain, woh boliye." : "Product ka naam ya rang dobara batayein.";
+    status.innerHTML = `<strong>Inventory Assistant</strong><p>${reason}</p><small>Suna: ${esc(transcript)} · Misal: “Black design M size mein 5 add karo.”</small>`;
+    speakAssistantMessage(reason);
     return;
   }
   status.hidden = false;
-  status.innerHTML = `<strong>Twins Lady Assistant</strong><p>Catalog mein “${esc(command.search)}”, size ${esc(command.size)} dhoondh rahi hoon…</p>`;
+  status.innerHTML = `<strong>Inventory Assistant</strong><p>“${esc(command.search)}”, size ${esc(command.size)} catalog mein dhoondh rahi hoon…</p>`;
   try {
     const matches = await getJSON(`${API}/products?q=${encodeURIComponent(command.search)}&limit=100`);
     const choices = matches.flatMap((product) => {
@@ -1103,29 +1130,39 @@ async function resolveVoiceStockCommand(transcript) {
       return variant ? [{ product, variant }] : [];
     });
     if (!choices.length) {
-      status.innerHTML = `<strong>Twins Lady Assistant</strong><p>“${esc(command.search)}”, size ${esc(command.size)} nahi mila. SKU, color ya design ka naam dobara boliye.</p>`;
+      if (matches.length) {
+        const sizes = [...new Set(matches.flatMap((product) => product.variants.map((entry) => entry.size)))].slice(0, 12);
+        const detail = `${matches[0].name} / ${matches[0].sku} mil gaya, par ${command.size} size nahi hai. Available sizes: ${sizes.join(", ") || "koi active size nahi"}.`;
+        status.innerHTML = `<strong>Inventory Assistant</strong><p>${esc(detail)}</p>`;
+        speakAssistantMessage(detail);
+      } else {
+        const detail = `${command.search} design catalog mein nahi mila. SKU, rang, ya design ka naam dobara boliye.`;
+        status.innerHTML = `<strong>Inventory Assistant</strong><p>${esc(detail)}</p>`;
+        speakAssistantMessage(detail);
+      }
       return;
     }
     if (choices.length === 1) {
       showVoiceStockConfirmation(choices[0].product, choices[0].variant, command);
       return;
     }
-    status.innerHTML = `<strong>Twins Lady Assistant</strong><p>Is size ke ${choices.length} designs mile. Sahi design chunein:</p><div class="voice-match-list">${choices.slice(0, 8).map((choice, index) => `<button class="voice-match" type="button" data-match="${index}"><strong>${esc(choice.product.sku)}</strong><span>${esc(choice.product.name)} · ${esc(choice.variant.size)} · Stock ${choice.variant.current_stock}</span></button>`).join("")}</div>`;
+    status.innerHTML = `<strong>Inventory Assistant</strong><p>Is size ke ${choices.length} milte-julte designs mile. Pehle 8 options dikhaye hain; apna design na dikhe to uska SKU ya rang type karein.</p><div class="voice-match-list">${choices.slice(0, 8).map((choice, index) => `<button class="voice-match" type="button" data-match="${index}"><strong>${esc(choice.product.sku)}</strong><span>${esc(choice.product.name)} · ${esc(choice.variant.size)} · Stock ${choice.variant.current_stock}</span></button>`).join("")}</div>`;
     status.querySelectorAll(".voice-match").forEach((button) => button.addEventListener("click", () => {
       const choice = choices[Number(button.dataset.match)];
       showVoiceStockConfirmation(choice.product, choice.variant, command);
     }));
   } catch (error) {
-    status.innerHTML = `<strong>Twins Lady Assistant</strong><p>Catalog search abhi load nahi hua. Thodi der baad phir try karein.</p>`;
+    status.innerHTML = `<strong>Inventory Assistant</strong><p>Catalog search abhi load nahi hua. Thodi der baad phir try karein.</p>`;
   }
 }
 
 function showVoiceStockConfirmation(product, variant, command) {
   const current = Number(variant.current_stock || 0);
   const next = command.mode === "add" ? current + command.quantity : command.quantity;
-  const action = command.mode === "add" ? `Add ${command.quantity}` : `Set count to ${command.quantity}`;
   const status = $("voice-agent-status");
-  status.innerHTML = `<strong>Twins Lady Assistant · Confirm stock</strong><p>${esc(product.sku)} · ${esc(product.name)} · Size ${esc(variant.size)}: ${current} → <b>${next}</b></p><button class="btn-primary voice-confirm" type="button">${action} and update</button><button class="btn-ghost voice-cancel" type="button">Cancel</button>`;
+  const confirmation = `${product.name} mila. Size ${variant.size} mein abhi ${current} pieces hain. ${command.mode === "add" ? `${command.quantity} add karne par total ${next} hoga.` : `Count ${next} set hoga.`} Confirm button dabakar update karein.`;
+  status.innerHTML = `<strong>Inventory Assistant · Confirm stock</strong><p>${esc(product.sku)} · ${esc(product.name)} · Size ${esc(variant.size)}: ${current} → <b>${next}</b></p><button class="btn-primary voice-confirm" type="button">Haan, update karein</button><button class="btn-ghost voice-cancel" type="button">Cancel</button>`;
+  speakAssistantMessage(confirmation);
   status.querySelector(".voice-cancel").addEventListener("click", () => { status.hidden = true; status.replaceChildren(); });
   status.querySelector(".voice-confirm").addEventListener("click", async (event) => {
     const button = event.currentTarget;
@@ -1133,8 +1170,9 @@ function showVoiceStockConfirmation(product, variant, command) {
     try {
       await apiPost(`${API}/inventory/adjust`, { variant_code: variant.variant_code, new_count: next, note: "voice inventory assistant" });
       showToast(`${product.sku} · ${variant.size} updated to ${next}`, "success", 2600);
-      speakInventoryMessage(`${product.name}, size ${variant.size}, stock ${next} ho gaya.`);
-      status.innerHTML = `<strong>Updated</strong><p>${esc(product.sku)} · ${esc(variant.size)} stock is now ${next}.</p>`;
+      const spoken = `${product.name} mein size ${variant.size} ka stock ${next} ho gaya. ${command.mode === "add" ? `${command.quantity} pieces add kiye.` : `Naya count ${next} set kiya.`}`;
+      speakAssistantMessage(spoken);
+      status.innerHTML = `<strong>Stock updated</strong><p>${esc(product.name)} · ${esc(variant.sku || variant.variant_code)} · Size ${esc(variant.size)}: ${current} se ${next}. ${command.mode === "add" ? `${command.quantity} pieces add hue.` : "Count set hua."}</p>`;
       await refreshInventoryViews();
     } catch (error) {
       button.disabled = false;
@@ -1143,24 +1181,48 @@ function showVoiceStockConfirmation(product, variant, command) {
   });
 }
 
+$("voice-command-form")?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const input = $("voice-command-input");
+  const request = input.value.trim();
+  if (!request) { input.focus(); showToast("Product, size aur quantity batayein.", "info", 2200); return; }
+  resolveVoiceStockCommand(request);
+});
+
 $("voice-command-btn")?.addEventListener("click", () => {
   const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   const status = $("voice-agent-status");
   if (!Recognition) {
     status.hidden = false;
-    status.innerHTML = "<strong>Twins Lady Assistant</strong><p>Voice input is not supported in this browser. Use Chrome, or enter the stock number manually.</p>";
+    status.innerHTML = "<strong>Inventory Assistant</strong><p>Is browser mein microphone voice input available nahi hai. Upar natural language mein type karke bhi stock update kar sakte hain.</p>";
     return;
   }
   const recognition = new Recognition();
   recognition.lang = "hi-IN";
   recognition.interimResults = false;
   recognition.maxAlternatives = 1;
+  const micButton = $("voice-command-btn");
   status.hidden = false;
-  status.innerHTML = "<strong>Twins Lady Assistant</strong><p class=\"voice-listening\"><i class=\"fa-solid fa-microphone\"></i> Listening… Speak design/color, size and quantity.</p>";
-  recognition.onresult = (event) => resolveVoiceStockCommand(event.results[0][0].transcript);
-  recognition.onerror = () => { status.innerHTML = "<strong>Twins Lady Assistant</strong><p>Voice input nahi mil saka. Microphone permission check karke dobara try karein.</p>"; };
-  recognition.onend = () => $("voice-command-btn")?.focus({ preventScroll: true });
-  recognition.start();
+  micButton.disabled = true;
+  micButton.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Listening';
+  status.innerHTML = "<strong>Inventory Assistant</strong><p class=\"voice-listening\"><i class=\"fa-solid fa-microphone\"></i> Sun rahi hoon… product, size aur kitne pieces batayein.</p>";
+  recognition.onresult = (event) => {
+    const transcript = event.results[0][0].transcript;
+    $("voice-command-input").value = transcript;
+    resolveVoiceStockCommand(transcript);
+  };
+  recognition.onerror = () => { status.innerHTML = "<strong>Inventory Assistant</strong><p>Microphone input nahi mil saka. Permission check karein ya command type karein.</p>"; };
+  recognition.onend = () => {
+    micButton.disabled = false;
+    micButton.innerHTML = '<i class="fa-solid fa-microphone"></i> Voice stock update';
+    micButton.focus({ preventScroll: true });
+  };
+  try { recognition.start(); }
+  catch (error) {
+    micButton.disabled = false;
+    micButton.innerHTML = '<i class="fa-solid fa-microphone"></i> Voice stock update';
+    status.innerHTML = "<strong>Inventory Assistant</strong><p>Microphone start nahi hua. Permission check karein ya command type karein.</p>";
+  }
 });
 
 async function loadAlerts() {
