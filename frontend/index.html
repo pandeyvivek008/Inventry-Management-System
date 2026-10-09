@@ -26,7 +26,6 @@
       <span class="rail-identity-mark">IM</span>
       <span class="rail-identity-name">Inventory<br><small>Management System</small></span>
       <button id="sidebar-collapse" class="icon-btn rail-collapse" type="button" aria-label="Collapse sidebar" title="Collapse sidebar"><i class="fa-solid fa-chevron-left"></i></button>
-      <button id="sidebar-close" class="icon-btn rail-close" aria-label="Close menu"><i class="fa-solid fa-xmark"></i></button>
     </div>
     <nav class="rail-nav">
       <button data-view="dashboard" class="rail-link is-active"><i class="fa-solid fa-chart-line"></i><span class="rail-label">Dashboard</span></button>
@@ -180,9 +179,9 @@
     <section id="view-reorder" class="view">
       <header class="view-head">
         <div><h1>Picklist / Reorder Shortage</h1><p class="sub">Pending orders reserve current stock. Dispatched quantities are shown separately because stock was already deducted.</p></div>
-        <div class="reorder-actions"><input id="reorder-part" class="input reorder-part" placeholder="Filter SKU part e.g. NK, MV, NEEL…"><a id="export-reorder" href="/api/reorder-list/export" download class="btn-primary">Export Picklist</a></div>
+        <div class="reorder-actions"><input id="reorder-part" class="input reorder-part" placeholder="Search SKU, design, color or size…" aria-label="Search picklist"><a id="export-reorder" href="/api/reorder-list/export" download class="btn-primary">Export Picklist</a></div>
       </header>
-      <p id="reorder-note" class="hint"></p>
+      <p id="reorder-note" class="hint">Pending and shipped sizes are shown. Restock = max(Pending orders − physical stock, 0); old negative stock deficits remain included until counted.</p>
       <div class="table-wrap">
         <table class="grid">
           <thead><tr><th>SKU</th><th>Size</th><th class="num">Current stock</th><th class="num">Pending orders</th><th class="num">Dispatched</th><th class="num">To restock</th></tr></thead>
@@ -194,7 +193,13 @@
 
     <!-- ================= ALERTS ================= -->
     <section id="view-alerts" class="view">
-      <header class="view-head"><div><h1>Alerts</h1><p class="sub">Tap a number to update that size's stock right here.</p></div></header>
+      <header class="view-head"><div><h1>Alerts</h1><p class="sub">Design aur size wise alerts. Count type karke Enter dabayein, ya voice command bolein.</p></div>
+        <div class="alert-tools">
+          <button id="alert-speech-toggle" class="btn-ghost" type="button" aria-pressed="false"><i class="fa-solid fa-volume-high"></i> Spoken alerts: Off</button>
+          <button id="voice-command-btn" class="btn-secondary" type="button"><i class="fa-solid fa-microphone"></i> Voice stock update</button>
+        </div>
+      </header>
+      <div id="voice-agent-status" class="voice-agent-status" role="status" hidden></div>
       <input id="alerts-search" type="search" placeholder="Search by design, SKU, size or alert type…" class="input alerts-search" aria-label="Search alerts">
       <p id="alerts-note" class="hint"></p>
       <div id="alerts-list" class="stack-list"></div>
@@ -220,7 +225,7 @@
       <div class="panel" style="max-width:520px;">
         <label class="field">Find a design<input id="label-search" type="text" placeholder="Type a SKU or product name…" class="input"></label>
         <div id="label-results" class="stack-list" style="margin-top:8px;"></div>
-        <div class="pager"><button id="labels-prev" class="link-btn" type="button">← Previous</button><span id="labels-page-info"></span><button id="labels-next" class="link-btn" type="button">Next →</button></div>
+        <div id="labels-pager" class="pager" hidden><button id="labels-prev" class="link-btn" type="button">← Previous</button><span id="labels-page-info"></span><button id="labels-next" class="link-btn" type="button">Next →</button></div>
         <div id="label-selected" hidden style="margin-top:12px; padding-top:12px; border-top:1px solid var(--line);">
           <div id="label-selected-name" class="bold"></div>
           <div id="label-variant-checks" class="stack-list" style="margin:10px 0;"></div>

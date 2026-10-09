@@ -341,7 +341,7 @@ img { max-width: 100%; display: block; }
     width: min(var(--rail-w), 82vw);
   }
   .rail.is-open { transform: translateX(0); }
-  .rail-close { display: block; }
+  .rail-close { display: none !important; }
   .stage { padding: 16px 16px 70px; overflow-x: hidden; }
   .rail { height: 100dvh; max-height: 100dvh; overflow: hidden; }
   .rail-nav { min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding-bottom: 12px; }
@@ -600,7 +600,7 @@ img { max-width: 100%; display: block; }
   #product-cards { grid-template-columns:repeat(2,minmax(0,1fr)); }
 }
 @media (min-width:1440px) {
-  #product-cards { grid-template-columns:repeat(3,minmax(0,1fr)); }
+  #product-cards { grid-template-columns:repeat(5,minmax(0,1fr)); }
 }
 @media (max-width:639px) {
   #product-cards { grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
@@ -610,6 +610,28 @@ img { max-width: 100%; display: block; }
   #product-cards .pcard-meta { font-size:9.5px; }
   #product-cards .pcard-sizes { gap:4px; }
   #product-cards .size-chip { font-size:9px; padding:3px 5px; }
+}
+
+.alert-tools { display:flex; align-items:center; justify-content:flex-end; gap:10px; flex-wrap:wrap; }
+.voice-agent-status { margin:0 0 14px; padding:14px 16px; border:1px solid #b9e8d5; border-radius:14px; background:linear-gradient(135deg,#effcf6,#f6fbff); color:var(--ink); box-shadow:0 8px 24px rgba(16,120,82,.08); }
+.voice-agent-status p { margin:6px 0 0; color:var(--muted); }
+.voice-agent-status[hidden] { display:none; }
+.voice-match-list { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:8px; margin-top:10px; }
+.voice-match { display:flex; flex-direction:column; align-items:flex-start; gap:3px; padding:10px 12px; border:1px solid var(--line); border-radius:10px; background:#fff; text-align:left; cursor:pointer; }
+.voice-match:hover { border-color:var(--ok); box-shadow:0 4px 12px rgba(16,120,82,.1); }
+.voice-listening { display:flex; align-items:center; gap:8px; color:var(--ok) !important; }
+.negative-stock { color:var(--out); font-weight:800; }
+.pager[hidden] { display:none !important; }
+@media (max-width:760px) {
+  .alert-tools { width:100%; justify-content:stretch; }
+  .alert-tools button { flex:1 1 145px; min-height:42px; }
+  .view-head { align-items:flex-start; }
+}
+@media (min-width:1024px) and (max-width:1439px) {
+  #product-cards { grid-template-columns:repeat(3,minmax(0,1fr)); }
+}
+@media (min-width:1800px) {
+  #product-cards { grid-template-columns:repeat(5,minmax(0,1fr)); }
 }
 
 /* Picklist: unknown marketplace SKUs are visible but never auto-created. */

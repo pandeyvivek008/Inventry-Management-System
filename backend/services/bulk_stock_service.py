@@ -33,6 +33,14 @@ def size_rank(size: str) -> int:
     return SIZE_ORDER.get(str(size).upper(), 99)
 
 
+def _is_repeated_header_variant(variant: Variant) -> bool:
+    """Hide accidental header rows imported as catalog data by old sheets."""
+    sku = str(variant.product.sku or "").strip().casefold()
+    size = str(variant.size or "").strip().casefold()
+    name = str(variant.product.name or "").strip().casefold()
+    return sku in {"sku", "style code", "product sku"} and size in {"size", "variant size"} and name in {"product", "product name", "name", "design"}
+
+
 def _find_column(columns, candidates):
     lower_map = {str(c).strip().lower(): c for c in columns}
     for cand in candidates:
@@ -49,7 +57,7 @@ def build_count_sheet(db: Session, only_uncounted: bool = False) -> bytes:
     if only_uncounted:
         query = query.filter(Variant.last_counted_at.is_(None))
 
-    variants = query.all()
+    variants = [v for v in query.all() if not _is_repeated_header_variant(v)]
     variants.sort(key=lambda v: (v.product.sku.upper(), size_rank(v.size), v.size.upper()))
 
     wb = Workbook()
@@ -125,16 +133,23 @@ def bulk_set_stock(db: Session, file_bytes: bytes, filename: str = "", created_b
     # Normal warehouse sheets are modest, and this path also supports creating
     # a missing size/product from a manually added Excel row.
     for rec in records:
+        raw_variant = clean_code(rec.get(variant_code_col)) if variant_code_col else None
+        sku = clean_code(rec.get(sku_col)) if sku_col else None
+        size = clean_code(rec.get(size_col)) if size_col else None
+        if (
+            str(raw_variant or "").casefold() in {"variant code", "variant_code", "code"}
+            and str(sku or "").casefold() in {"sku", "style code", "product sku"}
+            and str(size or "").casefold() in {"size", "variant size"}
+        ):
+            skipped_incomplete += 1
+            continue
+
         count = to_int(rec.get(count_col))
         if count is None:
             skipped_blank += 1
             continue
         if count < 0:
             raise ValueError("Stock Count cannot be negative. Use 0 for an empty size.")
-
-        raw_variant = clean_code(rec.get(variant_code_col)) if variant_code_col else None
-        sku = clean_code(rec.get(sku_col)) if sku_col else None
-        size = clean_code(rec.get(size_col)) if size_col else None
 
         if raw_variant and (not sku or not size):
             if "-" in raw_variant:

@@ -319,6 +319,17 @@ ws = wb.active
 rows = list(ws.iter_rows(values_only=True))
 expect(rows[0][0] == "Variant Code" and rows[0][5] == "Count", "header row as documented")
 expect(len(rows) - 1 == 3 and all(row[4] is None for row in rows[1:]), "only the 3 uncounted sizes, System Stock blank")
+header_product = client.post("/api/products", json={"sku": "SKU", "name": "Product", "variants": [{"size": "SIZE", "initial_stock": 1}]})
+expect(header_product.status_code == 200, "header-like legacy row can be reproduced for count-sheet regression")
+clean_sheet = load_workbook(BytesIO(client.get("/api/inventory/count-sheet").content)).active
+expect(not any(row[1] == "SKU" and row[2] == "SIZE" for row in clean_sheet.iter_rows(min_row=2, values_only=True)),
+       "count sheet hides accidental repeated header rows from catalog data")
+repeated_header_upload = client.post("/api/inventory/bulk-set", files={"file": ("headers.xlsx", make_xlsx(
+    ["Variant Code", "SKU", "Size", "Product", "System Stock", "Count"],
+    [("Variant Code", "SKU", "Size", "Product", 0, 0)],
+), XLSX)})
+expect(repeated_header_upload.status_code == 200 and repeated_header_upload.json()["created_products_count"] == 0,
+       "repeated header row in a count upload is ignored instead of imported as inventory")
 for i in range(2, ws.max_row + 1):
     ws.cell(row=i, column=6, value=i)     # "count" each size
 buf = BytesIO()
@@ -435,10 +446,15 @@ shortfall_upload = post_orders(make_xlsx(["SKU", "Size", "Quantity"], [("RS1", "
 shortfall = next(i for i in client.get("/api/reorder-list").json() if i["sku"] == "RS1")
 expect(shortfall["current_stock"] == 2 and shortfall["ordered_qty"] == 5 and shortfall["required_qty"] == 3,
        "physical stock 2 against pending orders 5 yields restock required 3")
-expect(client.post(f"/api/orders/{shortfall_upload.json()['order_upload_id']}/dispatch").status_code == 200,
-       "shortfall batch can be dispatched from its recorded order batch")
-expect(client.get("/api/variants/RS1-M").json()["current_stock"] == -3,
-       "dispatch records the actual 5-piece shipment against stock 2")
+blocked_dispatch = client.post(f"/api/orders/{shortfall_upload.json()['order_upload_id']}/dispatch")
+expect(blocked_dispatch.status_code == 409 and "only 2 in stock" in blocked_dispatch.json()["detail"],
+       "dispatch blocks overselling and leaves the pending shortage visible")
+expect(client.get("/api/variants/RS1-M").json()["current_stock"] == 2,
+       "blocked dispatch leaves physical stock unchanged")
+client.post("/api/inventory/adjust", json={"variant_code": "RS1-M", "new_count": 5, "note": "restock before dispatch"})
+expect(client.post(f"/api/orders/{shortfall_upload.json()['order_upload_id']}/dispatch").status_code == 200
+       and client.get("/api/variants/RS1-M").json()["current_stock"] == 0,
+       "dispatch succeeds after the requested physical stock is arranged")
 
 print("30b. Railway root opens the app and variant SKUs group by their final size")
 root = client.get("/", follow_redirects=False)
@@ -531,9 +547,18 @@ expect(grouped_alerts["total"] == 1 and grouped_alerts["items"][0]["sku"] == "ZI
        "alerts group multiple affected sizes under one design and paginate by design")
 expect(len(client.get("/api/products?limit=1&offset=1").json()) == 1,
        "product search supports previous/next page offsets")
+product_page = client.get("/api/products", params={"limit": 2, "offset": 1, "paged": "true"}).json()
+expect(product_page["total"] >= 3 and len(product_page["items"]) == 2 and product_page["offset"] == 1,
+       "product pager returns exact total and page range data")
 reorder_page = client.get("/api/reorder-list?limit=1&offset=0").json()
 expect(reorder_page["limit"] == 1 and len(reorder_page["items"]) == 1,
        "reorder list supports page-sized responses while legacy list remains available")
+history_page = client.get("/api/orders/history", params={"limit": 2, "offset": 0, "paged": "true"}).json()
+expect(history_page["total"] >= 2 and len(history_page["items"]) == 2,
+       "order history pager returns exact total count")
+transaction_page = client.get("/api/transactions", params={"limit": 2, "offset": 0, "paged": "true"}).json()
+expect(transaction_page["total"] >= 2 and len(transaction_page["items"]) == 2,
+       "stock history pager returns exact total count")
 bad_template = client.post("/api/products/bulk", files={"file": ("wrong.xlsx", make_xlsx(["SKU", "Size"], [("X", "M")]), XLSX)})
 expect(bad_template.status_code == 400 and "Missing required columns" in bad_template.json()["detail"],
        "wrong format returns a clear template-column error")

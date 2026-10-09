@@ -6,10 +6,11 @@ remaining quantity to restock. Dispatched units are not subtracted twice.
 """
 from datetime import datetime, timezone
 from io import BytesIO
+import re
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
-from sqlalchemy import func, case
+from sqlalchemy import func, case, or_
 from sqlalchemy.orm import Session, selectinload
 
 from models import Variant, Product, ReorderBatch, ReorderBatchItem, OrderLine, OrderLineStatus
@@ -47,7 +48,12 @@ def generate_reorder_list(db: Session, save_batch: bool = True, part: str | None
         .group_by(Variant.id)
     )
     if part and part.strip():
-        query = query.filter(Variant.variant_code.ilike(f"%{part.strip().upper()}%"))
+        for token in re.findall(r"[\w]+", part.strip().casefold()):
+            like = f"%{token}%"
+            query = query.filter(or_(
+                Variant.variant_code.ilike(like), Product.sku.ilike(like),
+                Product.name.ilike(like), Variant.size.ilike(like),
+            ))
 
     rows = query.all()
     items = []
@@ -60,8 +66,9 @@ def generate_reorder_list(db: Session, save_batch: bool = True, part: str | None
         if ordered_qty <= 0 and dispatched_qty <= 0:
             continue
         physical_stock = int(v.current_stock or 0)
-        available_stock = max(physical_stock, 0)
-        required = max(ordered_qty - available_stock, 0)
+        # Negative stock can exist in older databases after an over-dispatch.
+        # Carry that deficit forward so the picklist does not hide missing units.
+        required = max(ordered_qty - physical_stock, 0)
         items.append({
             "sku": v.product.sku,
             "size": v.size.upper(),
@@ -89,7 +96,9 @@ def generate_reorder_list(db: Session, save_batch: bool = True, part: str | None
         .group_by(OrderLine.sku, OrderLine.size)
     )
     if part and part.strip():
-        unknown_query = unknown_query.filter(OrderLine.sku.ilike(f"%{part.strip().upper()}%"))
+        for token in re.findall(r"[\w]+", part.strip().casefold()):
+            like = f"%{token}%"
+            unknown_query = unknown_query.filter(or_(OrderLine.sku.ilike(like), OrderLine.size.ilike(like)))
     for sku, size, ordered_qty in unknown_query.all():
         ordered_qty = int(ordered_qty or 0)
         if ordered_qty <= 0:

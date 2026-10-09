@@ -1,5 +1,6 @@
 import shutil
 import uuid
+import re
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
 from pathlib import Path
@@ -235,17 +236,29 @@ def summary(db: Session = Depends(get_db)):
 # ------------------------------------------------------------------ #
 # Products (+ their size variants)
 # ------------------------------------------------------------------ #
-@app.get("/api/products", response_model=list[schemas.ProductOut])
-def list_products(q: str | None = None, limit: int | None = Query(None, ge=1, le=500), offset: int = Query(0, ge=0), db: Session = Depends(get_db)):
+def _smart_search_tokens(value: str | None) -> list[str]:
+    return list(dict.fromkeys(token for token in re.split(r"[^\w]+", (value or "").strip().casefold()) if len(token) > 1))
+
+
+def _apply_smart_search(query, columns, value: str | None):
+    """Match each search word against any identity/name field."""
+    for token in _smart_search_tokens(value):
+        like = f"%{token}%"
+        query = query.filter(or_(*(column.ilike(like) for column in columns)))
+    return query
+
+
+@app.get("/api/products")
+def list_products(q: str | None = None, limit: int | None = Query(None, ge=1, le=500), offset: int = Query(0, ge=0), paged: bool = False, db: Session = Depends(get_db)):
     query = db.query(models.Product).options(selectinload(models.Product.variants), joinedload(models.Product.vendor)) \
         .filter(models.Product.is_deleted == False)  # noqa: E712
-    if q and q.strip():
-        like = f"%{q.strip()}%"
-        query = query.filter(or_(models.Product.sku.ilike(like), models.Product.name.ilike(like)))
+    query = _apply_smart_search(query, (models.Product.sku, models.Product.name, models.Product.category), q)
+    total = query.count() if paged else None
     query = query.order_by(models.Product.created_at.desc(), models.Product.id.desc())
     if limit:
         query = query.offset(offset).limit(limit)
-    return [_product_out(p) for p in query.all()]
+    items = [_product_out(p) for p in query.all()]
+    return {"items": items, "total": total, "offset": offset, "limit": limit} if paged else items
 
 
 @app.get("/api/products/bulk-template")
@@ -586,10 +599,11 @@ def variant_transactions(variant_code: str, db: Session = Depends(get_db)):
     )
 
 
-@app.get("/api/transactions", response_model=list[schemas.TransactionLogOut])
+@app.get("/api/transactions")
 def global_transactions(
     q: str | None = None, transaction_type: str | None = None,
     limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0),
+    paged: bool = False,
     db: Session = Depends(get_db),
 ):
     """Every stock change across the whole catalog, newest first - the
@@ -601,20 +615,23 @@ def global_transactions(
         query = query.filter(or_(P.sku.ilike(like), P.name.ilike(like), V.variant_code.ilike(like)))
     if transaction_type:
         query = query.filter(T.transaction_type == transaction_type)
+    total = query.order_by(None).count() if paged else None
     rows = query.options(contains_eager(T.variant).contains_eager(V.product)) \
         .order_by(T.created_at.desc(), T.id.desc()).offset(offset).limit(limit).all()
-    return [{
+    items = [{
         "id": t.id, "variant_code": t.variant.variant_code, "sku": t.variant.product.sku, "size": t.variant.size,
         "product_name": t.variant.product.name, "change_qty": t.change_qty, "transaction_type": t.transaction_type.value,
         "reference": t.reference, "balance_after": t.balance_after, "created_by": t.created_by, "created_at": t.created_at,
     } for t in rows]
+    return {"items": items, "total": total, "offset": offset, "limit": limit} if paged else items
 
 
 # ------------------------------------------------------------------ #
 # Order history / batches
 # ------------------------------------------------------------------ #
 @app.get("/api/orders/history")
-def order_history(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), db: Session = Depends(get_db)):
+def order_history(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), paged: bool = False, db: Session = Depends(get_db)):
+    total = db.query(func.count(models.OrderUpload.id)).scalar() if paged else None
     uploads = (
         db.query(models.OrderUpload)
         .options(
@@ -653,7 +670,7 @@ def order_history(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, g
             "insufficient_count": insufficient, "not_found_count": not_found,
             "status": status, "lines": lines,
         })
-    return result
+    return {"items": result, "total": total, "offset": offset, "limit": limit} if paged else result
 
 
 # ------------------------------------------------------------------ #
@@ -685,7 +702,7 @@ def _collect_alerts(db: Session, q: str | None = None):
     # physical stock is still above the normal low-stock threshold. Show that
     # shortage in Alerts as a virtual alert; the database remains the source of
     # truth for physical-stock alerts.
-    shortages = reorder_service.generate_reorder_list(db, save_batch=False)
+    shortages = reorder_service.generate_reorder_list(db, save_batch=False, part=q)
     existing_codes = {a["variant_code"] for a in result}
     for item in shortages:
         if item.get("is_new") or item["required_qty"] <= 0:
@@ -706,10 +723,10 @@ def _collect_alerts(db: Session, q: str | None = None):
         })
     result.sort(key=lambda a: (a["alert_type"] != "OUT_OF_STOCK", a["stock_at_alert"], a["variant_code"]))
     if q and q.strip():
-        needle = q.strip().casefold()
-        result = [a for a in result if any(
-            needle in str(a.get(key) or "").casefold()
-            for key in ("variant_code", "sku", "size", "product_name", "alert_type")
+        tokens = _smart_search_tokens(q)
+        result = [a for a in result if all(
+            any(token in str(a.get(key) or "").casefold() for key in ("variant_code", "sku", "size", "product_name", "alert_type"))
+            for token in tokens
         )]
     return result
 
@@ -778,10 +795,11 @@ def dispatch_order_upload(order_upload_id: int, db: Session = Depends(get_db)):
                 status_code=400,
                 detail=f"{variant.variant_code}: physical stock has never been counted. Count it before dispatch.",
             )
-        # Do not block dispatch when the order is larger than physical stock.
-        # The net stock is allowed to go negative so the shortage is visible
-        # immediately in Inventory + Alerts and the Picklist tells the team
-        # how much must be arranged.
+        if qty > variant.current_stock:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{variant.variant_code}: {qty} ordered, but only {variant.current_stock} in stock. Restock/count the size before dispatch.",
+            )
 
     try:
         for line in lines:

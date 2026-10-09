@@ -75,14 +75,43 @@ function playSuccessSound() {
   } catch (e) { /* sound is optional when the browser blocks audio */ }
 }
 let lastAlertCount = null;
+let pendingAlertAnnouncement = false;
 function noteAlertCount(n) {
   if (lastAlertCount !== null && n > lastAlertCount) {
+    pendingAlertAnnouncement = true;
     playAlertSound();
     showToast("New inventory alert — check Alerts", "alert", 2200);
   }
   lastAlertCount = n;
   setAlertBadge(n);
 }
+
+let spokenAlertsEnabled = localStorage.getItem("spokenAlertsEnabled") === "true";
+function updateSpeechToggle() {
+  const button = $("alert-speech-toggle");
+  if (!button) return;
+  button.setAttribute("aria-pressed", String(spokenAlertsEnabled));
+  button.innerHTML = `<i class="fa-solid fa-volume-high"></i> Spoken alerts: ${spokenAlertsEnabled ? "On" : "Off"}`;
+}
+function speakInventoryMessage(message) {
+  if (!spokenAlertsEnabled || !window.speechSynthesis || !window.SpeechSynthesisUtterance) return;
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(message);
+  utterance.lang = "hi-IN";
+  utterance.rate = 0.95;
+  window.speechSynthesis.speak(utterance);
+}
+updateSpeechToggle();
+$("alert-speech-toggle")?.addEventListener("click", () => {
+  spokenAlertsEnabled = !spokenAlertsEnabled;
+  localStorage.setItem("spokenAlertsEnabled", String(spokenAlertsEnabled));
+  updateSpeechToggle();
+  if (spokenAlertsEnabled) {
+    speakInventoryMessage("Twins Lady inventory assistant ready. New low stock alerts will be spoken.");
+    pendingAlertAnnouncement = true;
+    loadAlerts();
+  } else if (window.speechSynthesis) window.speechSynthesis.cancel();
+});
 function setAlertBadge(n) {
   [$("alert-count"), $("alert-count-mobile")].forEach((el) => { if (el) { el.textContent = n; el.hidden = !(n > 0); } });
 }
@@ -111,7 +140,6 @@ function askConfirm(title, body, action, okLabel = "Delete") {
 function openDrawer() { $("sidebar").classList.add("is-open"); $("nav-backdrop").hidden = false; }
 function closeDrawer() { $("sidebar").classList.remove("is-open"); $("nav-backdrop").hidden = true; }
 $("menu-toggle").addEventListener("click", openDrawer);
-$("sidebar-close").addEventListener("click", closeDrawer);
 $("sidebar-collapse").addEventListener("click", () => {
   const collapsed = $("shell").classList.toggle("sidebar-collapsed");
   localStorage.setItem("sidebarCollapsed", String(collapsed));
@@ -243,7 +271,7 @@ $("product-search").addEventListener("input", debounce((e) => {
   loadProductsPage();
 }, 300));
 
-const productPage = { q: "", offset: 0, limit: 12, total: 0 };
+const productPage = { q: "", offset: 0, limit: 12, requestId: 0 };
 async function loadLatestProducts() {
   productPage.q = "";
   productPage.offset = 0;
@@ -253,11 +281,13 @@ async function loadLatestProducts() {
 
 async function loadProductsPage() {
   const grid = $("product-cards"), hint = $("product-search-hint");
+  const requestId = ++productPage.requestId;
   try {
-    const params = new URLSearchParams({ limit: productPage.limit + 1, offset: productPage.offset });
+    const params = new URLSearchParams({ limit: productPage.limit, offset: productPage.offset, paged: "true" });
     if (productPage.q) params.set("q", productPage.q);
-    const results = await getJSON(`${API}/products?${params}`);
-    const products = results.slice(0, productPage.limit);
+    const page = await getJSON(`${API}/products?${params}`);
+    if (requestId !== productPage.requestId) return;
+    const products = page.items;
     if (!products.length) {
       grid.innerHTML = "";
       hint.hidden = false;
@@ -268,13 +298,14 @@ async function loadProductsPage() {
       return;
     }
     hint.hidden = true;
-    $("product-result-count").textContent = productPage.q ? `Search results · ${productPage.offset + 1}–${productPage.offset + products.length}` : `Latest designs`;
-    $("products-page-info").textContent = `Page ${Math.floor(productPage.offset / productPage.limit) + 1}`;
+    $("product-result-count").textContent = productPage.q ? `Search results · ${page.total} designs` : `${page.total} designs`;
+    $("products-page-info").textContent = `${productPage.offset + 1}–${Math.min(productPage.offset + products.length, page.total)} of ${page.total}`;
     $("products-prev").disabled = productPage.offset === 0;
-    $("products-next").disabled = results.length <= productPage.limit;
+    $("products-next").disabled = productPage.offset + products.length >= page.total;
     grid.innerHTML = products.map(productCardHTML).join("");
     grid.querySelectorAll(".pcard").forEach((card) => card.addEventListener("click", () => openProductDetail(card.dataset.sku)));
   } catch (e) {
+    if (requestId !== productPage.requestId) return;
     grid.innerHTML = "";
     hint.hidden = false;
     hint.textContent = "Could not load products right now.";
@@ -887,11 +918,11 @@ async function loadOrderHistory() {
   const box = $("order-history");
   if (!box) return;
   try {
-    const results = await getJSON(`${API}/orders/history?limit=${ordersPage.limit + 1}&offset=${ordersPage.offset}`);
-    const batches = results.slice(0, ordersPage.limit);
-    $("orders-page-info").textContent = batches.length ? `Page ${Math.floor(ordersPage.offset / ordersPage.limit) + 1}` : "";
+    const page = await getJSON(`${API}/orders/history?limit=${ordersPage.limit}&offset=${ordersPage.offset}&paged=true`);
+    const batches = page.items;
+    $("orders-page-info").textContent = batches.length ? `${ordersPage.offset + 1}–${Math.min(ordersPage.offset + batches.length, page.total)} of ${page.total}` : "";
     $("orders-prev").disabled = ordersPage.offset === 0;
-    $("orders-next").disabled = results.length <= ordersPage.limit;
+    $("orders-next").disabled = ordersPage.offset + batches.length >= page.total;
     if (!batches.length) {
       box.innerHTML = `<div class="panel"><p class="hint center">No order batches processed yet.</p></div>`;
       return;
@@ -993,25 +1024,27 @@ $("reorder-part").addEventListener("input", debounce((e) => {
   loadReorderList();
 }, 250));
 
-const reorderPage = { offset: 0, limit: 50 };
+const reorderPage = { offset: 0, limit: 50, requestId: 0 };
 async function loadReorderList() {
   const body = $("reorder-body");
+  const requestId = ++reorderPage.requestId;
   try {
     const params = new URLSearchParams();
     params.set("limit", reorderPage.limit);
     params.set("offset", reorderPage.offset);
     if (reorderPart) params.set("part", reorderPart);
     const page = await getJSON(`${API}/reorder-list?${params}`);
+    if (requestId !== reorderPage.requestId) return;
     const exportUrl = `${API}/reorder-list/export${reorderPart ? `?part=${encodeURIComponent(reorderPart)}` : ""}`;
     $("export-reorder").href = exportUrl;
     $("reorder-page-info").textContent = page.total ? `${page.offset + 1}–${Math.min(page.offset + page.items.length, page.total)} of ${page.total} sizes` : "";
     $("reorder-prev").disabled = page.offset === 0;
     $("reorder-next").disabled = page.offset + page.limit >= page.total;
     if (!page.items.length) { body.innerHTML = `<tr><td colspan="6" class="empty">No pending orders to restock right now.</td></tr>`; $("reorder-note").textContent = reorderPart ? `No pending orders for SKU part "${esc(reorderPart)}".` : ""; return; }
-    $("reorder-note").textContent = `Required = MAX(Pending Orders - Current Stock, 0).`;
+    $("reorder-note").textContent = `Restock = pending order quantity minus usable stock. Any existing negative balance is included in the required quantity.`;
     body.innerHTML = page.items.map((i) => `
-      <tr class="${i.is_new ? "picklist-new-row" : ""}"><td class="sku-tag">${esc(i.sku)} ${i.is_new ? '<span class="picklist-new-badge">NEW</span>' : ""}</td><td><span class="size-chip">${esc(i.size)}</span></td><td class="num">${i.current_stock}</td><td class="num">${i.ordered_qty}</td><td class="num">${i.dispatched_qty || 0}</td><td class="num" style="font-weight:800;">${i.required_qty}</td></tr>`).join("");
-  } catch (e) { body.innerHTML = `<tr><td colspan="6" class="empty">Could not load the picklist.</td></tr>`; }
+      <tr class="${i.is_new ? "picklist-new-row" : ""}"><td class="sku-tag">${esc(i.sku)} ${i.is_new ? '<span class="picklist-new-badge">NEW</span>' : ""}</td><td><span class="size-chip">${esc(i.size)}</span></td><td class="num">${i.current_stock < 0 ? `<span class="negative-stock" title="Legacy stock deficit">${Math.abs(i.current_stock)} short</span>` : i.current_stock}</td><td class="num">${i.ordered_qty}</td><td class="num">${i.dispatched_qty || 0}</td><td class="num" style="font-weight:800;">${i.required_qty}</td></tr>`).join("");
+  } catch (e) { if (requestId === reorderPage.requestId) body.innerHTML = `<tr><td colspan="6" class="empty">Could not load the picklist.</td></tr>`; }
 }
 
 // ================================================================ //
@@ -1023,13 +1056,128 @@ async function refreshInventoryViews() {
   if ($("view-dashboard")?.classList.contains("is-active")) await loadMoversChart();
 }
 
+function normalizeSpokenSize(value) {
+  const text = value.toLowerCase().replace(/\s+/g, " ").trim();
+  const aliases = { "extra large": "XL", "double extra large": "XXL", "2xl": "XXL", "triple extra large": "3XL", xxxl: "3XL", small: "S", medium: "M", large: "L", "free size": "FREE SIZE", "one size": "FREE SIZE" };
+  return aliases[text] || text.toUpperCase();
+}
+
+function parseVoiceStockCommand(transcript) {
+  const original = transcript.toLowerCase();
+  const sizeMatch = original.match(/\b(?:size\s+)?(free\s+size|one\s+size|triple\s+extra\s+large|double\s+extra\s+large|extra\s+large|xxxl|3xl|xxl|2xl|xl|xs|small|medium|large|s|m|l|\d{2})\b/);
+  const sizePhrase = sizeMatch ? sizeMatch[0] : "";
+  const size = sizeMatch ? normalizeSpokenSize(sizeMatch[1]) : null;
+  const numberWords = { one: 1, ek: 1, two: 2, do: 2, three: 3, teen: 3, four: 4, chaar: 4, five: 5, paanch: 5, panch: 5, six: 6, chhe: 6, seven: 7, saat: 7, eight: 8, aath: 8, nine: 9, nau: 9, ten: 10, dus: 10 };
+  const numericMatches = Array.from(original.matchAll(/\b\d+\b/g));
+  const actionQuantity = original.match(/\b(?:add|plus|increase|jod|jodo|daal|dalo|badhao|set|count)\D{0,14}(\d+)\b|\b(\d+)\s*(?:pcs|pieces|units)?\s*(?:add|plus|increase|jod|jodo|daal|dalo|badhao|set|count|kar\s+do|kardo)\b/);
+  const quantityMatch = actionQuantity
+    ? { 0: actionQuantity[1] || actionQuantity[2] }
+    : numericMatches.find((match) => !(/^\d{2}$/.test(match[0]) && size === match[0])) || null;
+  const spokenNumber = original.match(/\b(one|ek|two|do|three|teen|four|chaar|five|paanch|panch|six|chhe|seven|saat|eight|aath|nine|nau|ten|dus)\b/);
+  const quantity = quantityMatch ? Number(quantityMatch[0]) : spokenNumber ? numberWords[spokenNumber[1]] : null;
+  const isAdd = /\b(add|plus|increase|jod|jodo|daal|dalo|badhao|bhar do)\b/.test(original);
+  let search = original;
+  if (sizePhrase) search = search.replace(sizePhrase, " ");
+  if (quantityMatch) search = search.replace(quantityMatch[0], " ");
+  if (spokenNumber) search = search.replace(spokenNumber[0], " ");
+  search = search
+    .replace(/\b(twins lady|assistant|inventory|stock|size|color|colour|design|product|please|plz|add|plus|increase|jod|jodo|daal|dalo|badhao|bhar|do|kar|karo|kardo|mein|me|mai|is|us|ka|ki|ke|ko|par|to|pcs|pieces|units|set|count|make|it|hai|for|the|in|and)\b/g, " ")
+    .replace(/[^\p{L}\p{N}_-]+/gu, " ").trim();
+  return { size, quantity, mode: isAdd ? "add" : "set", search };
+}
+
+async function resolveVoiceStockCommand(transcript) {
+  const status = $("voice-agent-status");
+  const command = parseVoiceStockCommand(transcript);
+  if (!command.size || command.quantity == null || command.quantity < 0 || !command.search) {
+    status.hidden = false;
+    status.innerHTML = `<strong>Twins Lady Assistant</strong><p>Design/color, size aur quantity ke saath bolein. Misal: “Black design size M mein 5 add karo.”</p><small>Heard: ${esc(transcript)}</small>`;
+    return;
+  }
+  status.hidden = false;
+  status.innerHTML = `<strong>Twins Lady Assistant</strong><p>Catalog mein “${esc(command.search)}”, size ${esc(command.size)} dhoondh rahi hoon…</p>`;
+  try {
+    const matches = await getJSON(`${API}/products?q=${encodeURIComponent(command.search)}&limit=100`);
+    const choices = matches.flatMap((product) => {
+      const variant = product.variants.find((entry) => normalizeSpokenSize(entry.size) === command.size);
+      return variant ? [{ product, variant }] : [];
+    });
+    if (!choices.length) {
+      status.innerHTML = `<strong>Twins Lady Assistant</strong><p>“${esc(command.search)}”, size ${esc(command.size)} nahi mila. SKU, color ya design ka naam dobara boliye.</p>`;
+      return;
+    }
+    if (choices.length === 1) {
+      showVoiceStockConfirmation(choices[0].product, choices[0].variant, command);
+      return;
+    }
+    status.innerHTML = `<strong>Twins Lady Assistant</strong><p>Is size ke ${choices.length} designs mile. Sahi design chunein:</p><div class="voice-match-list">${choices.slice(0, 8).map((choice, index) => `<button class="voice-match" type="button" data-match="${index}"><strong>${esc(choice.product.sku)}</strong><span>${esc(choice.product.name)} · ${esc(choice.variant.size)} · Stock ${choice.variant.current_stock}</span></button>`).join("")}</div>`;
+    status.querySelectorAll(".voice-match").forEach((button) => button.addEventListener("click", () => {
+      const choice = choices[Number(button.dataset.match)];
+      showVoiceStockConfirmation(choice.product, choice.variant, command);
+    }));
+  } catch (error) {
+    status.innerHTML = `<strong>Twins Lady Assistant</strong><p>Catalog search abhi load nahi hua. Thodi der baad phir try karein.</p>`;
+  }
+}
+
+function showVoiceStockConfirmation(product, variant, command) {
+  const current = Number(variant.current_stock || 0);
+  const next = command.mode === "add" ? current + command.quantity : command.quantity;
+  const action = command.mode === "add" ? `Add ${command.quantity}` : `Set count to ${command.quantity}`;
+  const status = $("voice-agent-status");
+  status.innerHTML = `<strong>Twins Lady Assistant · Confirm stock</strong><p>${esc(product.sku)} · ${esc(product.name)} · Size ${esc(variant.size)}: ${current} → <b>${next}</b></p><button class="btn-primary voice-confirm" type="button">${action} and update</button><button class="btn-ghost voice-cancel" type="button">Cancel</button>`;
+  status.querySelector(".voice-cancel").addEventListener("click", () => { status.hidden = true; status.replaceChildren(); });
+  status.querySelector(".voice-confirm").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      await apiPost(`${API}/inventory/adjust`, { variant_code: variant.variant_code, new_count: next, note: "voice inventory assistant" });
+      showToast(`${product.sku} · ${variant.size} updated to ${next}`, "success", 2600);
+      speakInventoryMessage(`${product.name}, size ${variant.size}, stock ${next} ho gaya.`);
+      status.innerHTML = `<strong>Updated</strong><p>${esc(product.sku)} · ${esc(variant.size)} stock is now ${next}.</p>`;
+      await refreshInventoryViews();
+    } catch (error) {
+      button.disabled = false;
+      status.insertAdjacentHTML("beforeend", `<p class="msg error">${esc(error.message || error)}</p>`);
+    }
+  });
+}
+
+$("voice-command-btn")?.addEventListener("click", () => {
+  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const status = $("voice-agent-status");
+  if (!Recognition) {
+    status.hidden = false;
+    status.innerHTML = "<strong>Twins Lady Assistant</strong><p>Voice input is not supported in this browser. Use Chrome, or enter the stock number manually.</p>";
+    return;
+  }
+  const recognition = new Recognition();
+  recognition.lang = "hi-IN";
+  recognition.interimResults = false;
+  recognition.maxAlternatives = 1;
+  status.hidden = false;
+  status.innerHTML = "<strong>Twins Lady Assistant</strong><p class=\"voice-listening\"><i class=\"fa-solid fa-microphone\"></i> Listening… Speak design/color, size and quantity.</p>";
+  recognition.onresult = (event) => resolveVoiceStockCommand(event.results[0][0].transcript);
+  recognition.onerror = () => { status.innerHTML = "<strong>Twins Lady Assistant</strong><p>Voice input nahi mil saka. Microphone permission check karke dobara try karein.</p>"; };
+  recognition.onend = () => $("voice-command-btn")?.focus({ preventScroll: true });
+  recognition.start();
+});
+
 async function loadAlerts() {
   const list = $("alerts-list");
+  const requestId = ++alertPage.requestId;
   try {
     const q = $("alerts-search")?.value.trim() || "";
     const params = new URLSearchParams({ limit: "30", offset: alertPage.offset });
     if (q) params.set("q", q);
     const page = await getJSON(`${API}/alerts/groups?${params}`);
+    if (requestId !== alertPage.requestId) return;
+    if (pendingAlertAnnouncement && spokenAlertsEnabled && page.items.length) {
+      const group = page.items[0], alert = group.items[0];
+      const details = alert.alert_type === "ORDER_SHORTAGE" ? `pending order ${alert.ordered_qty}, restock ${alert.required_qty}` : `stock ${alert.stock_at_alert}`;
+      speakInventoryMessage(`${group.product_name}, size ${alert.size}, ${details}. Please check the alert.`);
+      pendingAlertAnnouncement = false;
+    }
     $("alerts-note").textContent = page.total ? `${page.total.toLocaleString()} designs with alerts · grouped by design and sorted by severity` : (q ? `No alerts match “${q}”.` : "No open alerts.");
     $("alerts-page-info").textContent = page.total ? `${page.offset + 1}–${Math.min(page.offset + page.items.length, page.total)} of ${page.total} designs` : "";
     $("alerts-prev").disabled = page.offset === 0;
@@ -1054,14 +1202,14 @@ async function loadAlerts() {
       button.disabled = true;
       try {
         const r = await apiPost(`${API}/inventory/adjust`, { variant_code: form.dataset.code, new_count: Number(input.value), note: "alert quick-update" });
-        showToast(`${form.dataset.code} set to ${r.current_stock}`);
+        showToast(`${form.dataset.code} set to ${r.current_stock}`, "success", 2600);
         await refreshInventoryViews();
       } catch (err) { showToast("Update failed: " + err.message, true); }
       finally { button.disabled = false; }
     }));
-  } catch (e) { list.innerHTML = `<p class="hint">Could not load alerts.</p>`; }
+  } catch (e) { if (requestId === alertPage.requestId) list.innerHTML = `<p class="hint">Could not load alerts.</p>`; }
 }
-const alertPage = { offset: 0 };
+const alertPage = { offset: 0, requestId: 0 };
 $("alerts-search").addEventListener("input", debounce(() => { alertPage.offset = 0; loadAlerts(); }, 220));
 $("alerts-prev").addEventListener("click", () => { alertPage.offset = Math.max(0, alertPage.offset - 30); loadAlerts(); });
 $("alerts-next").addEventListener("click", () => { alertPage.offset += 30; loadAlerts(); });
@@ -1076,11 +1224,11 @@ $("hist-next").addEventListener("click", () => { history.offset += history.limit
 
 async function loadHistory(reset) {
   const body = $("history-body");
-  const params = new URLSearchParams({ limit: history.limit + 1, offset: history.offset });
+  const params = new URLSearchParams({ limit: history.limit, offset: history.offset, paged: "true" });
   if (history.q) params.set("q", history.q);
   try {
-    const results = await getJSON(`${API}/transactions?${params}`);
-    const rows = results.slice(0, history.limit);
+    const page = await getJSON(`${API}/transactions?${params}`);
+    const rows = page.items;
     const html = rows.map((t) => `
       <tr>
         <td class="hide-sm" style="white-space:nowrap;">${new Date(t.created_at).toLocaleString()}</td>
@@ -1093,9 +1241,9 @@ async function loadHistory(reset) {
         <td class="hide-sm hint">${esc(t.reference || "")}</td>
       </tr>`).join("");
     body.innerHTML = html || `<tr><td colspan="8" class="empty">No history yet.</td></tr>`;
-    $("hist-page-info").textContent = rows.length ? `Page ${Math.floor(history.offset / history.limit) + 1}` : "";
+    $("hist-page-info").textContent = rows.length ? `${history.offset + 1}–${Math.min(history.offset + rows.length, page.total)} of ${page.total}` : "";
     $("hist-prev").disabled = history.offset === 0;
-    $("hist-next").disabled = results.length <= history.limit;
+    $("hist-next").disabled = history.offset + rows.length >= page.total;
   } catch (e) { if (reset) body.innerHTML = `<tr><td colspan="8" class="empty">Could not load history.</td></tr>`; }
 }
 
@@ -1112,14 +1260,15 @@ $("labels-prev").addEventListener("click", () => { labelPage.offset = Math.max(0
 $("labels-next").addEventListener("click", () => { labelPage.offset += labelPage.limit; loadLabelResults(); });
 async function loadLabelResults() {
   const q = labelPage.q, box = $("label-results");
-  if (q.length < 2) { box.innerHTML = ""; $("labels-page-info").textContent = ""; $("labels-prev").disabled = $("labels-next").disabled = true; return; }
+  if (q.length < 2) { box.innerHTML = ""; $("labels-page-info").textContent = ""; $("labels-pager").hidden = true; $("labels-prev").disabled = $("labels-next").disabled = true; return; }
   try {
-    const results = await getJSON(`${API}/products?q=${encodeURIComponent(q)}&limit=${labelPage.limit + 1}&offset=${labelPage.offset}`);
-    const products = results.slice(0, labelPage.limit);
+    const page = await getJSON(`${API}/products?q=${encodeURIComponent(q)}&limit=${labelPage.limit}&offset=${labelPage.offset}&paged=true`);
+    const products = page.items;
     box.innerHTML = products.length ? products.map((p) => `<button type="button" class="result-row" data-sku="${esc(p.sku)}">${esc(p.sku)} — ${esc(p.name)}</button>`).join("") : `<p class="hint">No design matches "${esc(q)}".</p>`;
-    $("labels-page-info").textContent = products.length ? `Page ${Math.floor(labelPage.offset / labelPage.limit) + 1}` : "";
+    $("labels-page-info").textContent = products.length ? `${labelPage.offset + 1}–${Math.min(labelPage.offset + products.length, page.total)} of ${page.total}` : "";
+    $("labels-pager").hidden = page.total <= labelPage.limit;
     $("labels-prev").disabled = labelPage.offset === 0;
-    $("labels-next").disabled = results.length <= labelPage.limit;
+    $("labels-next").disabled = labelPage.offset + products.length >= page.total;
     box.querySelectorAll(".result-row").forEach((btn, i) => btn.addEventListener("click", () => selectLabelProduct(products[i])));
   } catch (err) { box.innerHTML = ""; }
 }
