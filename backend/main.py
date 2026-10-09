@@ -1,11 +1,14 @@
 import shutil
 import uuid
 import re
+import time
+from collections import defaultdict, deque
+from threading import Lock
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
 from pathlib import Path
 
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Query
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse, RedirectResponse
@@ -17,7 +20,7 @@ import models
 import schemas
 from services import (
     inventory_service, alert_service, excel_service, reorder_service,
-    barcode_service, bulk_stock_service, bulk_product_service,
+    barcode_service, bulk_stock_service, bulk_product_service, assistant_service,
 )
 
 Base.metadata.create_all(bind=engine)
@@ -259,6 +262,195 @@ def list_products(q: str | None = None, limit: int | None = Query(None, ge=1, le
         query = query.offset(offset).limit(limit)
     items = [_product_out(p) for p in query.all()]
     return {"items": items, "total": total, "offset": offset, "limit": limit} if paged else items
+
+
+_assistant_request_times: dict[str, deque] = defaultdict(deque)
+_assistant_rate_lock = Lock()
+
+
+def _assistant_rate_limit(client_ip: str) -> bool:
+    now = time.monotonic()
+    with _assistant_rate_lock:
+        recent = _assistant_request_times[client_ip]
+        while recent and now - recent[0] > 60:
+            recent.popleft()
+        if len(recent) >= 12:
+            return False
+        recent.append(now)
+        return True
+
+
+def _assistant_size(value: str) -> str:
+    normalized = re.sub(r"\s+", " ", (value or "").strip().upper())
+    aliases = {"SMALL": "S", "MEDIUM": "M", "LARGE": "L", "2XL": "XXL", "XXXL": "3XL", "FREE-SIZE": "FREE SIZE", "ONE SIZE": "FREE SIZE"}
+    return aliases.get(normalized, normalized)
+
+
+def _daily_sales_summary(db: Session) -> dict:
+    """Summarize units actually dispatched today in India Standard Time."""
+    ist = timezone(timedelta(hours=5, minutes=30))
+    today = datetime.now(ist).date()
+    start_utc = datetime.combine(today, datetime.min.time(), tzinfo=ist).astimezone(timezone.utc)
+    end_utc = datetime.combine(today + timedelta(days=1), datetime.min.time(), tzinfo=ist).astimezone(timezone.utc)
+    T, V, P = models.InventoryTransaction, models.Variant, models.Product
+    base = db.query(T).filter(
+        T.transaction_type == models.TransactionType.ORDER_DEDUCTION,
+        T.created_at >= start_utc,
+        T.created_at < end_utc,
+        T.change_qty < 0,
+    )
+    units = base.with_entities(func.coalesce(-func.sum(T.change_qty), 0)).scalar()
+    line_count = base.with_entities(func.count(T.id)).scalar()
+    design_count = (
+        db.query(func.count(func.distinct(P.id)))
+        .join(V, V.product_id == P.id).join(T, T.variant_id == V.id)
+        .filter(
+            T.transaction_type == models.TransactionType.ORDER_DEDUCTION,
+            T.created_at >= start_utc, T.created_at < end_utc, T.change_qty < 0,
+        ).scalar()
+    )
+    rows = (
+        db.query(P.sku, P.name, func.sum(-T.change_qty).label("units"))
+        .join(V, V.product_id == P.id)
+        .join(T, T.variant_id == V.id)
+        .filter(
+            T.transaction_type == models.TransactionType.ORDER_DEDUCTION,
+            T.created_at >= start_utc,
+            T.created_at < end_utc,
+            T.change_qty < 0,
+        )
+        .group_by(P.id, P.sku, P.name)
+        .order_by(func.sum(-T.change_qty).desc(), P.sku.asc())
+        .limit(5).all()
+    )
+    return {
+        "date": today.isoformat(),
+        "timezone": "Asia/Kolkata",
+        "dispatched_units": int(units or 0),
+        "dispatch_lines": int(line_count or 0),
+        "designs_sold": int(design_count or 0),
+        "top_products": [{"sku": row.sku, "name": row.name, "units": int(row.units or 0)} for row in rows],
+    }
+
+
+@app.get("/api/analytics/daily-sales")
+def daily_sales_summary(db: Session = Depends(get_db)):
+    return _daily_sales_summary(db)
+
+
+@app.post("/api/assistant/chat")
+async def inventory_assistant_chat(payload: schemas.AssistantChatRequest, request: Request, db: Session = Depends(get_db)):
+    """Interpret a chat turn, ground it in catalog data, and prepare a safe action.
+
+    This route never changes stock. Inventory writes still require the existing
+    explicit stock-adjustment confirmation flow.
+    """
+    if not assistant_service.token_configured():
+        raise HTTPException(status_code=503, detail="Hugging Face is not configured. Add HF_TOKEN to Railway Variables.")
+    client_ip = request.client.host if request.client else "unknown"
+    if not _assistant_rate_limit(client_ip):
+        raise HTTPException(status_code=429, detail="Assistant request limit reached. Please wait a minute and try again.")
+    try:
+        intent = await assistant_service.parse_inventory_request(
+            payload.message,
+            [item.model_dump() for item in payload.history],
+        )
+    except assistant_service.AssistantProviderError as exc:
+        raise HTTPException(status_code=503, detail="AI assistant is temporarily unavailable. Please use manual stock entry and try again later.") from exc
+
+    action = intent["intent"]
+    if action == "conversation":
+        text = payload.message.casefold().strip()
+        if any(word in text for word in ("thank", "thanks", "dhanyavaad", "shukriya", "धन्यवाद", "शुक्रिया")):
+            reply = "Aapka swagat hai! Main Disha hoon—stock, size-wise inventory aur aaj ki dispatched sales mein madad ke liye yahin hoon."
+        elif any(word in text for word in ("how are you", "kaisi ho", "कैसी हो", "कैसे हो")):
+            reply = "Main bilkul ready hoon, shukriya! Aap bataiye—inventory mein kya dekhna ya update karna hai?"
+        else:
+            reply = "Namaste! Main Disha, aapki inventory assistant hoon. Product aur size ka stock poochiye, update boliye, ya ‘aaj ki sales’ ka short summary maangiye."
+        return {"status": "reply", "reply": reply}
+    if action == "daily_sales":
+        summary = _daily_sales_summary(db)
+        if not summary["dispatched_units"]:
+            reply = f"Aaj ({summary['date']}) abhi tak koi dispatched sale record nahi hai. Pending orders sale mein count nahi kiye jaate."
+        else:
+            top = ", ".join(f"{item['name']} ({item['sku']}): {item['units']}" for item in summary["top_products"][:3])
+            reply = f"Aaj ({summary['date']}) {summary['dispatched_units']} units dispatch hue, {summary['designs_sold']} designs mein. Top: {top}. Ye dispatched units hain; revenue/rupee sales app mein record nahi hote."
+        return {"status": "daily_sales", "reply": reply, "summary": summary}
+    if action == "help":
+        return {"status": "reply", "reply": "Main product aur size ka stock dhoondh sakti hoon, ya aapke confirm karne ke baad quantity add/set kar sakti hoon. Misal: 'Black design M size mein 5 add karo.'"}
+    if action not in {"stock_add", "stock_set", "stock_check"}:
+        return {"status": "reply", "reply": "Main stock check ya size-wise stock update mein madad kar sakti hoon. Product/SKU, size aur quantity batayein."}
+
+    product_query = payload.selected_sku.strip().upper() if payload.selected_sku else intent["product_query"]
+    if not product_query:
+        return {"status": "clarify", "reply": "Kaunsa design ya SKU? Product ka naam, rang, ya SKU batayein."}
+    products_query = db.query(models.Product).options(selectinload(models.Product.variants)).filter(models.Product.is_deleted == False)  # noqa: E712
+    if payload.selected_sku:
+        products_query = products_query.filter(models.Product.sku == payload.selected_sku.strip().upper())
+    else:
+        products_query = _apply_smart_search(products_query, (models.Product.sku, models.Product.name, models.Product.category), product_query)
+    products = products_query.order_by(models.Product.created_at.desc(), models.Product.id.desc()).limit(30).all()
+    if not products:
+        return {"status": "not_found", "reply": f"'{product_query}' naam ya SKU ka design catalog mein nahi mila. SKU, rang, ya product name dobara batayein."}
+
+    requested_size = _assistant_size(intent["size"])
+    operation = "set" if action == "stock_set" else "add"
+    quantity = intent["quantity"]
+    if action in {"stock_add", "stock_set"} and quantity is None:
+        return {"status": "clarify", "reply": "Kitne pieces? Quantity batayein—jaise '5 add karo' ya 'total stock 12 set karo'."}
+
+    live_products = []
+    for product in products:
+        live_variants = [variant for variant in product.variants if not variant.is_deleted]
+        if live_variants:
+            live_products.append((product, live_variants))
+    if not requested_size:
+        if len(live_products) == 1:
+            sizes = ", ".join(variant.size for variant in live_products[0][1])
+            return {"status": "clarify", "reply": f"{live_products[0][0].name} mil gaya. Is design ke sizes {sizes} hain. Kaunsa size?"}
+        choices = [{"sku": product.sku, "name": product.name} for product, _ in live_products[:8]]
+        return {"status": "choose_product", "reply": "Kaunsa size aur kaunsa design? Sahi product chunein:", "choices": choices}
+
+    matches = []
+    for product, variants in live_products:
+        variant = next((item for item in variants if _assistant_size(item.size) == requested_size), None)
+        if variant:
+            matches.append((product, variant))
+
+    if not matches:
+        if len(live_products) == 1:
+            product, variants = live_products[0]
+            sizes = ", ".join(variant.size for variant in variants) or "koi active size nahi"
+            return {"status": "missing_size", "reply": f"{product.name} / {product.sku} mil gaya, lekin {requested_size} size nahi hai. Available sizes: {sizes}.", "available_sizes": [variant.size for variant in variants]}
+        choices = [{"sku": product.sku, "name": product.name, "sizes": [variant.size for variant in variants]} for product, variants in live_products[:8]]
+        return {"status": "choose_product", "reply": f"In designs mein {requested_size} size nahi mila. Sahi design chunein:", "choices": choices}
+
+    if len(matches) > 1:
+        choices = [{"sku": product.sku, "name": product.name, "size": variant.size, "current_stock": variant.current_stock} for product, variant in matches[:8]]
+        return {"status": "choose_product", "reply": f"{requested_size} size ke kai matching designs mile. Sahi design chunein:", "choices": choices}
+
+    product, variant = matches[0]
+    counted = variant.last_counted_at is not None
+    if action == "stock_check":
+        if not counted:
+            reply = f"{product.name}, size {variant.size} ka stock abhi physical count nahi hua hai. Pehle count karke enter karna hoga."
+            return {"status": "reply", "reply": reply}
+        return {"status": "reply", "reply": f"{product.name}, size {variant.size} mein abhi {variant.current_stock} pieces hain.", "stock": {"sku": product.sku, "name": product.name, "size": variant.size, "current_stock": variant.current_stock}}
+    if operation == "add" and not counted:
+        return {"status": "clarify", "reply": f"{product.name}, size {variant.size} ka purana stock abhi count nahi hua. Galat total se bachne ke liye pehle is size ka kul physical count batayein."}
+
+    current_stock = int(variant.current_stock) if counted else 0
+    proposed_stock = current_stock + int(quantity) if operation == "add" else int(quantity)
+    return {
+        "status": "confirm_stock",
+        "reply": f"{product.name}, size {variant.size}: abhi {current_stock}, update ke baad {proposed_stock} pieces honge. Kya confirm karun?",
+        "action": {
+            "sku": product.sku, "name": product.name, "size": variant.size,
+            "variant_code": variant.variant_code, "current_stock": current_stock,
+            "proposed_stock": proposed_stock, "quantity": int(quantity),
+            "operation": operation, "counted": counted,
+        },
+    }
 
 
 @app.get("/api/products/bulk-template")
@@ -568,6 +760,9 @@ def adjust_stock(payload: schemas.StockAdjustment, db: Session = Depends(get_db)
     if payload.new_count < 0:
         raise HTTPException(400, "Count cannot be negative.")
     variant = _get_variant_by_code(db, payload.variant_code)
+    variant = db.query(models.Variant).filter(models.Variant.id == variant.id).populate_existing().with_for_update().one()
+    if payload.expected_current_stock is not None and variant.current_stock != payload.expected_current_stock:
+        raise HTTPException(409, f"Stock changed since this update was prepared. Current stock is {variant.current_stock}; refresh and try again.")
     inventory_service.set_absolute_stock(db, variant, payload.new_count, note=payload.note)
     alert_service.check_variant_alert(db, variant)
     db.commit()

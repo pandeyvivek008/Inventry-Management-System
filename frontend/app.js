@@ -87,6 +87,9 @@ function noteAlertCount(n) {
 }
 
 let spokenAlertsEnabled = localStorage.getItem("spokenAlertsEnabled") === "true";
+let assistantSpeaking = false;
+let assistantSpeechId = 0;
+let assistantSpeechGuardTimer = null;
 function updateSpeechToggle() {
   const button = $("alert-speech-toggle");
   if (!button) return;
@@ -99,11 +102,23 @@ function speakInventoryMessage(message) {
 }
 function speakAssistantMessage(message) {
   if (!window.speechSynthesis || !window.SpeechSynthesisUtterance) return;
+  const speechId = ++assistantSpeechId;
   window.speechSynthesis.cancel();
+  clearTimeout(assistantSpeechGuardTimer);
+  assistantSpeaking = true;
   const utterance = new SpeechSynthesisUtterance(message);
   utterance.lang = "hi-IN";
-  utterance.rate = 0.95;
+  utterance.rate = 0.94;
+  utterance.pitch = 1.12;
+  const voices = window.speechSynthesis.getVoices();
+  const hindiVoices = voices.filter((voice) => /^hi(-|_)?in$/i.test(voice.lang));
+  const preferredVoice = hindiVoices.find((voice) => /female|swara|kalpana|heera|priya/i.test(voice.name)) || hindiVoices[0];
+  if (preferredVoice) utterance.voice = preferredVoice;
+  const finishSpeech = () => { if (speechId === assistantSpeechId) assistantSpeaking = false; };
+  utterance.onend = finishSpeech;
+  utterance.onerror = finishSpeech;
   window.speechSynthesis.speak(utterance);
+  assistantSpeechGuardTimer = setTimeout(finishSpeech, Math.max(4000, String(message).length * 85));
 }
 updateSpeechToggle();
 $("alert-speech-toggle")?.addEventListener("click", () => {
@@ -1224,6 +1239,338 @@ $("voice-command-btn")?.addEventListener("click", () => {
     status.innerHTML = "<strong>Inventory Assistant</strong><p>Microphone start nahi hua. Permission check karein ya command type karein.</p>";
   }
 });
+
+// ---------------- Global conversational inventory assistant ----------------
+const assistantHistoryKey = "inventoryAssistantHistory.v1";
+const assistantHistoryLimit = 60;
+let assistantHistory = [];
+let assistantBusy = false;
+let assistantRecognition = null;
+let assistantWakeEnabled = localStorage.getItem("dishaWakeEnabled") === "true";
+let assistantWakeActiveUntil = 0;
+let assistantConfirmationButton = null;
+let assistantWakeRestartTimer = null;
+try {
+  const saved = JSON.parse(localStorage.getItem(assistantHistoryKey) || "[]");
+  if (Array.isArray(saved)) assistantHistory = saved.filter((item) => item && ["user", "assistant"].includes(item.role) && typeof item.content === "string").slice(-assistantHistoryLimit);
+} catch (error) { assistantHistory = []; }
+
+function saveAssistantHistory() {
+  assistantHistory = assistantHistory.slice(-assistantHistoryLimit);
+  try { localStorage.setItem(assistantHistoryKey, JSON.stringify(assistantHistory)); }
+  catch (error) { showToast("Chat history could not be saved in this browser.", "info", 2500); }
+}
+
+function addAssistantMessage(role, content, options = {}) {
+  const messages = $("assistant-messages");
+  if (!messages) return null;
+  const bubble = document.createElement("div");
+  bubble.className = `assistant-message ${role}`;
+  bubble.textContent = content;
+  messages.appendChild(bubble);
+  if (options.action) {
+    const action = options.action;
+    const card = document.createElement("div");
+    card.className = "assistant-action-card";
+    card.innerHTML = `<strong>${esc(action.name)} · ${esc(action.sku)}</strong><div>Size ${esc(action.size)}: ${Number(action.current_stock)} → <b>${Number(action.proposed_stock)}</b> pieces</div><button class="btn-primary assistant-confirm-stock" type="button">Confirm stock update</button>`;
+    bubble.appendChild(card);
+    const button = card.querySelector(".assistant-confirm-stock");
+    assistantConfirmationButton = button;
+    button.addEventListener("click", async () => {
+      if (button.disabled) return;
+      button.disabled = true;
+      button.textContent = "Updating…";
+      try {
+        const updated = await apiPost(`${API}/inventory/adjust`, {
+          variant_code: action.variant_code,
+          new_count: Number(action.proposed_stock),
+          note: `AI assistant confirmed ${action.operation} ${action.quantity}`,
+          expected_current_stock: Number(action.current_stock),
+        });
+        const success = `${action.name}, ${action.sku}, size ${action.size}: stock ${Number(action.current_stock)} se ${updated.current_stock} pieces ho gaya. Update complete.`;
+        card.innerHTML = `<strong><i class="fa-solid fa-circle-check"></i> Stock updated</strong><div>${esc(action.sku)} · ${esc(action.size)}: ${Number(action.current_stock)} → ${Number(updated.current_stock)}</div>`;
+        assistantConfirmationButton = null;
+        assistantHistory.push({ role: "assistant", content: success });
+        saveAssistantHistory();
+        addAssistantMessage("assistant", success);
+        speakAssistantMessage(success);
+        playSuccessSound();
+        showToast(`${action.sku} · ${action.size} stock updated to ${updated.current_stock}`, "success", 2800);
+        await refreshInventoryViews();
+      } catch (error) {
+        button.disabled = false;
+        button.textContent = "Retry update";
+        addAssistantMessage("system", `Update nahi hua: ${error.message || error}. Stock badla nahi gaya; dobara try karein.`);
+      }
+    });
+  }
+  if (options.choices?.length) {
+    const list = document.createElement("div");
+    list.className = "assistant-choice-list";
+    options.choices.forEach((choice) => {
+      const button = document.createElement("button");
+      button.className = "assistant-choice";
+      button.type = "button";
+      button.innerHTML = `<strong>${esc(choice.sku)}</strong><small>${esc(choice.name)}${choice.size ? ` · ${esc(choice.size)}` : ""}${choice.current_stock != null ? ` · Stock ${Number(choice.current_stock)}` : ""}</small>`;
+      button.addEventListener("click", () => sendAssistantMessage(`Use ${choice.sku} for the product I just asked about.`, choice.sku));
+      list.appendChild(button);
+    });
+    bubble.appendChild(list);
+  }
+  messages.scrollTop = messages.scrollHeight;
+  return bubble;
+}
+
+function restoreAssistantMessages() {
+  const messages = $("assistant-messages");
+  if (!messages) return;
+  messages.replaceChildren();
+  if (!assistantHistory.length) return;
+  assistantHistory.forEach((item) => addAssistantMessage(item.role, item.content));
+}
+
+function assistantGreeting() {
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+  return `${greeting}! Main Disha, aapki Inventory Assistant hoon. Product, colour, size aur stock ke baare mein bataiye—main pehle current stock check karke, update se pehle aapse confirm karungi. Aaj main aapki kya help kar sakti hoon?`;
+}
+
+function openAssistant() {
+  const panel = $("assistant-panel"), launcher = $("assistant-launcher");
+  if (!panel || !launcher) return;
+  panel.hidden = false;
+  launcher.setAttribute("aria-expanded", "true");
+  restoreAssistantMessages();
+  if (!assistantHistory.length) {
+    const greeting = assistantGreeting();
+    assistantHistory.push({ role: "assistant", content: greeting });
+    saveAssistantHistory();
+    addAssistantMessage("assistant", greeting);
+    speakAssistantMessage(greeting);
+  }
+  $("assistant-chat-input")?.focus({ preventScroll: true });
+}
+
+async function sendAssistantMessage(message, selectedSku = null) {
+  const clean = String(message || "").trim().slice(0, 500);
+  if (!clean || assistantBusy) return;
+  assistantBusy = true;
+  const send = $("assistant-send"), input = $("assistant-chat-input");
+  if (send) send.disabled = true;
+  addAssistantMessage("user", clean);
+  assistantHistory.push({ role: "user", content: clean });
+  saveAssistantHistory();
+  const typing = document.createElement("div");
+  typing.className = "assistant-message assistant-typing";
+  typing.textContent = "Samajh rahi hoon…";
+  $("assistant-messages")?.appendChild(typing);
+  try {
+    if (isDailySalesRequest(clean)) {
+      const summary = await getJSON(`${API}/analytics/daily-sales`);
+      const reply = formatDailySalesSummary(summary);
+      assistantHistory.push({ role: "assistant", content: reply });
+      saveAssistantHistory();
+      addAssistantMessage("assistant", reply);
+      speakAssistantMessage(reply);
+      return;
+    }
+    const history = assistantHistory.slice(0, -1).slice(-12);
+    const response = await fetch(`${API}/assistant/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: clean, history, selected_sku: selectedSku }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.detail || `Assistant request failed (${response.status})`);
+    const reply = String(result.reply || "Is request ko samajhne mein dikkat hui. Product aur size dobara batayein.");
+    assistantHistory.push({ role: "assistant", content: reply });
+    saveAssistantHistory();
+    addAssistantMessage("assistant", reply, { action: result.status === "confirm_stock" ? result.action : null, choices: result.status === "choose_product" ? result.choices : null });
+    speakAssistantMessage(reply);
+  } catch (error) {
+    const reply = `Assistant abhi connect nahi ho paayi: ${error.message || error}. Manual stock entry abhi use kar sakte hain.`;
+    assistantHistory.push({ role: "assistant", content: reply });
+    saveAssistantHistory();
+    addAssistantMessage("assistant", reply);
+  } finally {
+    typing.remove();
+    assistantBusy = false;
+    if (send) send.disabled = false;
+    if (input) input.focus({ preventScroll: true });
+  }
+}
+
+$("assistant-launcher")?.addEventListener("click", () => {
+  if ($("assistant-panel").hidden) openAssistant();
+  else { $("assistant-panel").hidden = true; $("assistant-launcher").setAttribute("aria-expanded", "false"); }
+});
+$("assistant-close")?.addEventListener("click", () => {
+  $("assistant-panel").hidden = true;
+  $("assistant-launcher").setAttribute("aria-expanded", "false");
+});
+$("assistant-clear")?.addEventListener("click", () => {
+  assistantHistory = [];
+  assistantConfirmationButton = null;
+  saveAssistantHistory();
+  $("assistant-messages")?.replaceChildren();
+  openAssistant();
+});
+$("assistant-chat-form")?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const input = $("assistant-chat-input"), message = input.value.trim();
+  if (!message) { input.focus(); return; }
+  input.value = "";
+  sendAssistantMessage(message);
+});
+$("assistant-mic")?.addEventListener("click", () => {
+  if (assistantWakeEnabled) stopDishaWake();
+  else startDishaWake();
+});
+
+function updateDishaListeningUI(message = "") {
+  const button = $("assistant-mic"), state = $("assistant-state"), dot = document.querySelector(".assistant-online-dot");
+  if (button) {
+    button.classList.toggle("is-listening", assistantWakeEnabled);
+    button.setAttribute("aria-label", assistantWakeEnabled ? "Disable Disha wake word" : "Enable Disha wake word");
+    button.title = assistantWakeEnabled ? "Disha hands-free listening is on · click to turn off" : "Enable hands-free listening for “Disha”";
+    button.innerHTML = `<i class="fa-solid ${assistantWakeEnabled ? "fa-ear-listen" : "fa-microphone"}"></i>`;
+  }
+  if (state) state.textContent = message || (assistantWakeEnabled ? "Listening for ‘Disha’" : "Ready to help");
+  dot?.classList.toggle("is-listening", assistantWakeEnabled);
+}
+
+function startDishaWake(isAutomaticResume = false) {
+  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!Recognition) {
+    assistantWakeEnabled = false;
+    localStorage.setItem("dishaWakeEnabled", "false");
+    updateDishaListeningUI("Voice unavailable · type to chat");
+    if (!isAutomaticResume) addAssistantMessage("system", "Is browser mein wake-word voice input supported nahi hai. Chrome/Edge ya chat typing use karein.");
+    return;
+  }
+  if (assistantRecognition || document.visibilityState === "hidden") return;
+  assistantWakeEnabled = true;
+  localStorage.setItem("dishaWakeEnabled", "true");
+  assistantWakeActiveUntil = Date.now() + 15000;
+  updateDishaListeningUI();
+  const recognition = new Recognition();
+  assistantRecognition = recognition;
+  recognition.lang = "hi-IN";
+  recognition.continuous = true;
+  recognition.interimResults = false;
+  recognition.maxAlternatives = 1;
+  recognition.onresult = (event) => {
+    for (let index = event.resultIndex; index < event.results.length; index += 1) {
+      if (event.results[index].isFinal) handleDishaUtterance(event.results[index][0].transcript);
+    }
+  };
+  recognition.onerror = (event) => {
+    if (["not-allowed", "service-not-allowed"].includes(event.error)) {
+      assistantWakeEnabled = false;
+      localStorage.setItem("dishaWakeEnabled", "false");
+      updateDishaListeningUI("Mic permission needed");
+      addAssistantMessage("system", "Disha ko sunne ke liye browser mic permission allow karein. Aap type karke bhi baat kar sakte hain.");
+    }
+  };
+  recognition.onend = () => {
+    if (assistantRecognition === recognition) assistantRecognition = null;
+    if (!assistantWakeEnabled) updateDishaListeningUI();
+    else if (document.visibilityState === "visible") {
+      clearTimeout(assistantWakeRestartTimer);
+      assistantWakeRestartTimer = setTimeout(() => startDishaWake(true), 650);
+    }
+  };
+  try { recognition.start(); }
+  catch (error) {
+    assistantRecognition = null;
+    assistantWakeEnabled = false;
+    localStorage.setItem("dishaWakeEnabled", "false");
+    updateDishaListeningUI("Mic did not start");
+    if (!isAutomaticResume) addAssistantMessage("system", "Mic start nahi hua. Browser permission check karein, ya type karein.");
+  }
+}
+
+function stopDishaWake() {
+  assistantWakeEnabled = false;
+  assistantWakeActiveUntil = 0;
+  localStorage.setItem("dishaWakeEnabled", "false");
+  clearTimeout(assistantWakeRestartTimer);
+  assistantRecognition?.stop();
+  updateDishaListeningUI("Disha listening off");
+}
+
+function isAffirmative(text) { return /^(?:(?:haan|han|ha|yes|yeah|yep|ji|jee|bilkul|confirm)(?:\b|$)|(?:हाँ|हां|जी)(?:\s|$)|कर\s+दो)/iu.test(text.trim().replace(/[.!?,।]+$/g, "")); }
+function isNegative(text) { return /^(?:(?:nahi|nahin|no|nope|cancel)(?:\b|$)|(?:नहीं|ना|रद्द)(?:\s|$)|मत\s+करो)/iu.test(text.trim().replace(/[.!?,।]+$/g, "")); }
+
+function handleDishaUtterance(transcript) {
+  if (assistantSpeaking) return;
+  let message = String(transcript || "").trim();
+  const wakeWord = /\bdisha\b|दीशा/iu;
+  const woke = wakeWord.test(message);
+  if (woke) {
+    message = message.replace(wakeWord, "").replace(/^[\s,.:;!?।-]+|[\s,.:;!?।-]+$/g, "").trim();
+    assistantWakeActiveUntil = Date.now() + 45000;
+    if ($("assistant-panel").hidden) openAssistant();
+    updateDishaListeningUI("Disha is listening to you");
+    if (!message) {
+      const response = "Ji, main sun rahi hoon. Product, size aur kya karna hai batayein.";
+      assistantHistory.push({ role: "assistant", content: response });
+      saveAssistantHistory();
+      addAssistantMessage("assistant", response);
+      speakAssistantMessage(response);
+      return;
+    }
+  } else if (Date.now() > assistantWakeActiveUntil) return;
+
+  if (assistantConfirmationButton && isAffirmative(message)) {
+    if ($("assistant-panel").hidden) openAssistant();
+    assistantHistory.push({ role: "user", content: message });
+    saveAssistantHistory();
+    addAssistantMessage("user", message);
+    assistantConfirmationButton.click();
+    assistantWakeActiveUntil = Date.now() + 45000;
+    return;
+  }
+  if (assistantConfirmationButton && isNegative(message)) {
+    if ($("assistant-panel").hidden) openAssistant();
+    const button = assistantConfirmationButton;
+    assistantConfirmationButton = null;
+    button.disabled = true;
+    button.textContent = "Cancelled";
+    const response = "Theek hai, stock update cancel kar diya. Inventory change nahi hui.";
+    assistantHistory.push({ role: "user", content: message }, { role: "assistant", content: response });
+    saveAssistantHistory();
+    addAssistantMessage("user", message);
+    addAssistantMessage("assistant", response);
+    speakAssistantMessage(response);
+    return;
+  }
+  if (message) {
+    assistantWakeActiveUntil = Date.now() + 45000;
+    sendAssistantMessage(message);
+  }
+}
+
+function isDailySalesRequest(message) {
+  const text = String(message || "").toLocaleLowerCase("hi-IN");
+  const asksTime = /\b(aaj|today|daily|din bhar)\b|आज|दैनिक/u.test(text);
+  const asksSales = /\b(sale|sales|bik|bika|biki|bikri|sold|dispatch|dispatched|report|summary)\b|सेल|बिक|बिक्री/u.test(text);
+  return (asksTime && asksSales) || /\b(daily|aaj)\b.*\b(report|summary|short)\b|आज.*(?:report|summary|रिपोर्ट|सारांश)/u.test(text);
+}
+
+function formatDailySalesSummary(summary) {
+  if (!summary.dispatched_units) return `Aaj (${summary.date}) abhi tak koi dispatched sale record nahi hai. Pending orders ko sale count nahi kiya hai.`;
+  const top = (summary.top_products || []).slice(0, 3).map((item) => `${item.name} (${item.sku}) ${item.units} pcs`).join(", ");
+  return `Aaj (${summary.date}) ${summary.dispatched_units} pieces dispatch hue, ${summary.designs_sold} designs se. Top: ${top || "koi item detail nahi"}. Ye dispatched pieces hain; rupee revenue system mein record nahi hota.`;
+}
+
+$("assistant-sales-summary")?.addEventListener("click", () => sendAssistantMessage("Aaj ki dispatched sales ka short summary batao."));
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") assistantRecognition?.stop();
+  else if (assistantWakeEnabled && !assistantRecognition) startDishaWake(true);
+});
+updateDishaListeningUI();
+if (assistantWakeEnabled) setTimeout(() => startDishaWake(true), 900);
 
 async function loadAlerts() {
   const list = $("alerts-list");

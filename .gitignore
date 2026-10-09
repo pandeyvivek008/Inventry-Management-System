@@ -6,3 +6,5 @@ venv/
 backend/static/product_images/*
 !backend/static/product_images/.gitkeep
 .env
+.env.*
+!.env.example

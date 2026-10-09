@@ -63,6 +63,26 @@ class StockAdjustment(BaseModel):
     variant_code: str
     new_count: int          # the physically-counted true value
     note: Optional[str] = "manual recount"
+    expected_current_stock: Optional[int] = None
+
+
+class AssistantHistoryMessage(BaseModel):
+    role: str
+    content: str = Field(max_length=1000)
+
+
+class AssistantChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=500)
+    history: List[AssistantHistoryMessage] = Field(default_factory=list, max_length=12)
+    selected_sku: Optional[str] = Field(default=None, max_length=160)
+
+
+class AssistantIntent(BaseModel):
+    intent: str
+    product_query: str = ""
+    size: str = ""
+    quantity: Optional[int] = None
+    operation: str = "add"
 
 
 class OrderLineResult(BaseModel):

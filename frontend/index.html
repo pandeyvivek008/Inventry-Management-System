@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Inventory Management System</title>
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=disha-20261010">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
 </head>
 <body>
@@ -315,9 +315,31 @@
   </div>
 </div>
 
+<div id="assistant-widget" class="assistant-widget">
+  <section id="assistant-panel" class="assistant-panel" aria-label="Disha Inventory Assistant" hidden>
+    <header class="assistant-panel-head">
+      <span class="assistant-avatar"><i class="fa-solid fa-robot"></i></span>
+      <div class="assistant-head-copy"><strong>Disha · Inventory Assistant</strong><small><span class="assistant-online-dot"></span><span id="assistant-state">Ready to help</span></small></div>
+      <button id="assistant-clear" class="assistant-head-btn" type="button" aria-label="Clear chat history" title="Clear chat"><i class="fa-solid fa-rotate-left"></i></button>
+      <button id="assistant-close" class="assistant-head-btn" type="button" aria-label="Close assistant"><i class="fa-solid fa-xmark"></i></button>
+    </header>
+    <div id="assistant-messages" class="assistant-messages" aria-live="polite"></div>
+    <form id="assistant-chat-form" class="assistant-chat-form">
+      <button id="assistant-mic" class="assistant-mic" type="button" aria-label="Enable Disha wake word" title="Enable hands-free listening for “Disha”"><i class="fa-solid fa-microphone"></i></button>
+      <input id="assistant-chat-input" type="text" maxlength="500" autocomplete="off" placeholder="Product, size, ya stock batayein…" aria-label="Message the inventory assistant">
+      <button id="assistant-send" type="submit" aria-label="Send message"><i class="fa-solid fa-paper-plane"></i></button>
+    </form>
+    <div class="assistant-quick-actions"><button id="assistant-sales-summary" type="button"><i class="fa-solid fa-chart-line"></i> Aaj ki sales</button></div>
+    <p class="assistant-footnote">Mic icon se wake listener on karein · “Disha” bolein · “haan” se confirm</p>
+  </section>
+  <button id="assistant-launcher" class="assistant-launcher" type="button" aria-label="Open Disha Inventory Assistant" title="Talk with Disha" aria-expanded="false">
+    <i class="fa-solid fa-robot"></i><span class="assistant-launcher-dot"></span>
+  </button>
+</div>
+
 <div id="toast" class="toast" hidden></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
-<script src="app.js"></script>
+<script src="app.js?v=disha-20261010"></script>
 </body>
 </html>
