@@ -1,9 +1,14 @@
 const API = "/api";
 const STANDARD_SIZES = ["S", "M", "L", "XL", "XXL"];
 const PAGE_SIZE = 100;
-const LIST_CAP = 500;
 
 const $ = (id) => document.getElementById(id);
+
+// Keep the page behind dialogs still; touch scrolling stays inside the modal.
+const modalScrollObserver = new MutationObserver(() => {
+  document.body.classList.toggle("modal-open", Boolean(document.querySelector(".modal-backdrop:not([hidden])")));
+});
+document.querySelectorAll(".modal-backdrop").forEach((modal) => modalScrollObserver.observe(modal, { attributes: true, attributeFilter: ["hidden"] }));
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
@@ -107,6 +112,13 @@ function openDrawer() { $("sidebar").classList.add("is-open"); $("nav-backdrop")
 function closeDrawer() { $("sidebar").classList.remove("is-open"); $("nav-backdrop").hidden = true; }
 $("menu-toggle").addEventListener("click", openDrawer);
 $("sidebar-close").addEventListener("click", closeDrawer);
+$("sidebar-collapse").addEventListener("click", () => {
+  const collapsed = $("shell").classList.toggle("sidebar-collapsed");
+  localStorage.setItem("sidebarCollapsed", String(collapsed));
+  $("sidebar-collapse").setAttribute("aria-label", collapsed ? "Expand sidebar" : "Collapse sidebar");
+  $("sidebar-collapse").title = collapsed ? "Expand sidebar" : "Collapse sidebar";
+});
+if (localStorage.getItem("sidebarCollapsed") === "true") $("shell").classList.add("sidebar-collapsed");
 $("nav-backdrop").addEventListener("click", closeDrawer);
 $("topbar-alerts").addEventListener("click", () => switchView("alerts"));
 
@@ -138,9 +150,7 @@ function switchView(name) {
 // every time the user changes sidebar pages.
 setInterval(() => {
   loadSummary();
-  if ($("view-alerts")?.classList.contains("is-active")) loadAlerts();
-  if ($("view-reorder")?.classList.contains("is-active")) loadReorderList();
-}, 10000);
+}, 30000);
 
 // ================================================================ //
 // DASHBOARD
@@ -227,21 +237,41 @@ async function loadMoversChart() {
 // ================================================================ //
 // PRODUCTS (search) -> PRODUCT DETAIL
 // ================================================================ //
-$("product-search").addEventListener("input", debounce((e) => searchProducts(e.target.value.trim()), 300));
+$("product-search").addEventListener("input", debounce((e) => {
+  productPage.q = e.target.value.trim();
+  productPage.offset = 0;
+  loadProductsPage();
+}, 300));
 
+const productPage = { q: "", offset: 0, limit: 12, total: 0 };
 async function loadLatestProducts() {
+  productPage.q = "";
+  productPage.offset = 0;
+  $("product-search").value = "";
+  await loadProductsPage();
+}
+
+async function loadProductsPage() {
   const grid = $("product-cards"), hint = $("product-search-hint");
   try {
-    const products = await getJSON(`${API}/products?limit=12`);
+    const params = new URLSearchParams({ limit: productPage.limit + 1, offset: productPage.offset });
+    if (productPage.q) params.set("q", productPage.q);
+    const results = await getJSON(`${API}/products?${params}`);
+    const products = results.slice(0, productPage.limit);
     if (!products.length) {
       grid.innerHTML = "";
       hint.hidden = false;
-      hint.textContent = "No products yet. Add your first product.";
+      hint.textContent = productPage.q ? `No design matches "${productPage.q}".` : "No products yet. Add your first product.";
       $("product-result-count").textContent = "";
+      $("products-page-info").textContent = "";
+      $("products-prev").disabled = $("products-next").disabled = true;
       return;
     }
     hint.hidden = true;
-    $("product-result-count").textContent = `Latest ${products.length} product${products.length === 1 ? "" : "s"}`;
+    $("product-result-count").textContent = productPage.q ? `Search results · ${productPage.offset + 1}–${productPage.offset + products.length}` : `Latest designs`;
+    $("products-page-info").textContent = `Page ${Math.floor(productPage.offset / productPage.limit) + 1}`;
+    $("products-prev").disabled = productPage.offset === 0;
+    $("products-next").disabled = results.length <= productPage.limit;
     grid.innerHTML = products.map(productCardHTML).join("");
     grid.querySelectorAll(".pcard").forEach((card) => card.addEventListener("click", () => openProductDetail(card.dataset.sku)));
   } catch (e) {
@@ -252,17 +282,12 @@ async function loadLatestProducts() {
 }
 
 async function searchProducts(q) {
-  const grid = $("product-cards"), hint = $("product-search-hint");
-  if (q.length < 2) { grid.innerHTML = ""; hint.hidden = false; hint.textContent = "Type at least 2 characters to search your catalog."; $("product-result-count").textContent = ""; return; }
-  hint.hidden = true;
-  try {
-    const products = await getJSON(`${API}/products?q=${encodeURIComponent(q)}&limit=30`);
-    if (!products.length) { grid.innerHTML = ""; hint.hidden = false; hint.textContent = `No design matches "${q}".`; $("product-result-count").textContent = ""; return; }
-    $("product-result-count").textContent = `${products.length} product${products.length === 1 ? "" : "s"} found`;
-    grid.innerHTML = products.map(productCardHTML).join("");
-    grid.querySelectorAll(".pcard").forEach((card) => card.addEventListener("click", () => openProductDetail(card.dataset.sku)));
-  } catch (e) { grid.innerHTML = ""; hint.hidden = false; hint.textContent = "Could not search right now."; }
+  productPage.q = q;
+  productPage.offset = 0;
+  await loadProductsPage();
 }
+$("products-prev").addEventListener("click", () => { productPage.offset = Math.max(0, productPage.offset - productPage.limit); loadProductsPage(); });
+$("products-next").addEventListener("click", () => { productPage.offset += productPage.limit; loadProductsPage(); });
 
 function productCardHTML(p) {
   const sizes = p.variants.map((v) => `<span class="size-chip status-${v.status}">${esc(v.size)}: ${v.status === "UNCOUNTED" ? "—" : v.current_stock}</span>`).join("");
@@ -450,6 +475,7 @@ $("open-add-product").addEventListener("click", () => {
   $("add-product-msg").textContent = "";
   $("add-product-msg").className = "msg";
   $("bulk-product-file").value = "";
+  bulkProductFile = null;
   $("bulk-product-file-title").textContent = "Choose your filled Excel file";
   $("bulk-product-file-meta").textContent = ".xlsx, .xls or .csv · up to 20,000 rows";
   $("bulk-product-submit").disabled = true;
@@ -588,12 +614,13 @@ bulkProductDropzone.addEventListener("drop", (event) => {
 function renderBulkProductResult(data) {
   const box = $("bulk-product-result");
   const hasErrors = data.errors.length > 0;
-  const title = data.variants_created
+  const changed = data.variants_created || data.variants_merged;
+  const title = changed
     ? (hasErrors ? "Import complete with a few rows to fix" : "Your products are ready!")
     : "No products were added";
-  const summary = `${data.products_created} product${data.products_created === 1 ? "" : "s"} and ${data.variants_created} size${data.variants_created === 1 ? "" : "s"} added. ${data.rows_skipped} row${data.rows_skipped === 1 ? "" : "s"} skipped.`;
+  const summary = `${data.products_created} new product${data.products_created === 1 ? "" : "s"}; ${data.products_merged || 0} old size-product${data.products_merged === 1 ? "" : "s"} grouped into designs. ${data.variants_created} sizes added, ${data.variants_merged || 0} existing sizes kept. ${data.duplicate_rows_merged || 0} duplicate listing rows matched; ${data.free_size_rows || 0} missing-size rows imported as FREE SIZE. ${data.rows_skipped} row${data.rows_skipped === 1 ? "" : "s"} skipped.`;
   const errors = data.errors.length ? `<div class="bulk-row-errors"><strong>Rows to review</strong>${data.errors.map((item) => `<div>Row ${item.row}${item.sku ? ` · ${esc(item.sku)}` : ""}: ${esc(item.message)}</div>`).join("")}${data.errors_truncated ? "<div>More row errors were omitted. Correct these and upload again.</div>" : ""}</div>` : "";
-  box.innerHTML = `<div class="bulk-import-result ${hasErrors ? "has-errors" : ""}"><div class="bulk-result-mark"><i class="fa-solid ${data.variants_created ? "fa-check" : "fa-triangle-exclamation"}"></i></div><div class="bulk-result-copy"><strong>${title}</strong><p>${summary}</p><div class="bulk-result-numbers"><span class="bulk-result-pill">${data.products_created} products</span><span class="bulk-result-pill">${data.variants_created} size rows</span><span class="bulk-result-pill">${data.blank_rows} blank rows</span></div></div></div>${errors}`;
+  box.innerHTML = `<div class="bulk-import-result ${hasErrors ? "has-errors" : ""}"><div class="bulk-result-mark"><i class="fa-solid ${changed ? "fa-check" : "fa-triangle-exclamation"}"></i></div><div class="bulk-result-copy"><strong>${title}</strong><p>${summary}</p><div class="bulk-result-numbers"><span class="bulk-result-pill">${data.products_created} new designs</span><span class="bulk-result-pill">${data.variants_created + (data.variants_merged || 0)} sizes grouped</span><span class="bulk-result-pill">${data.blank_rows} blank rows</span></div></div></div>${errors}`;
   box.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
@@ -615,9 +642,13 @@ $("bulk-product-submit").addEventListener("click", async () => {
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.detail || `Import failed (HTTP ${response.status})`);
     renderBulkProductResult(data);
-    if (data.variants_created) {
+    bulkProductFile = null;
+    bulkProductInput.value = "";
+    $("bulk-product-file-title").textContent = "Import finished — choose another file";
+    $("bulk-product-file-meta").textContent = "Select a new workbook to start the next import";
+    if (data.variants_created || data.variants_merged) {
       playSuccessSound();
-      showToast(`${data.products_created} products and ${data.variants_created} sizes added`, "success", 2600);
+      showToast(`${data.products_created} new products; ${data.variants_created} sizes added and ${data.variants_merged || 0} grouped`, "success", 2600);
       $("product-search").value = "";
       window.__keepProductSearch = true;
       await refreshInventoryViews();
@@ -849,11 +880,18 @@ $("bulk-file-input").addEventListener("change", async () => {
 // ================================================================ //
 // ORDERS
 // ================================================================ //
+const ordersPage = { offset: 0, limit: 25 };
+$("orders-prev").addEventListener("click", () => { ordersPage.offset = Math.max(0, ordersPage.offset - ordersPage.limit); loadOrderHistory(); });
+$("orders-next").addEventListener("click", () => { ordersPage.offset += ordersPage.limit; loadOrderHistory(); });
 async function loadOrderHistory() {
   const box = $("order-history");
   if (!box) return;
   try {
-    const batches = await getJSON(`${API}/orders/history?limit=50`);
+    const results = await getJSON(`${API}/orders/history?limit=${ordersPage.limit + 1}&offset=${ordersPage.offset}`);
+    const batches = results.slice(0, ordersPage.limit);
+    $("orders-page-info").textContent = batches.length ? `Page ${Math.floor(ordersPage.offset / ordersPage.limit) + 1}` : "";
+    $("orders-prev").disabled = ordersPage.offset === 0;
+    $("orders-next").disabled = results.length <= ordersPage.limit;
     if (!batches.length) {
       box.innerHTML = `<div class="panel"><p class="hint center">No order batches processed yet.</p></div>`;
       return;
@@ -889,6 +927,7 @@ async function handleOrderUpload() {
     const data = await res.json();
     if (!res.ok) { box.innerHTML = `<div class="msg error">${esc(data.detail)}</div>`; return; }
     renderUploadResult(data);
+    ordersPage.offset = 0;
     await loadOrderHistory();
     await refreshInventoryViews();
   } catch (err) { box.innerHTML = `<div class="msg error">Upload failed: ${esc(err)}</div>`; }
@@ -946,23 +985,31 @@ async function dispatchOrderBatch(uploadId, fromHistory = false) {
 // REORDER LIST
 // ================================================================ //
 let reorderPart = "";
+$("reorder-prev").addEventListener("click", () => { reorderPage.offset = Math.max(0, reorderPage.offset - reorderPage.limit); loadReorderList(); });
+$("reorder-next").addEventListener("click", () => { reorderPage.offset += reorderPage.limit; loadReorderList(); });
 $("reorder-part").addEventListener("input", debounce((e) => {
   reorderPart = e.target.value.trim().toUpperCase();
+  reorderPage.offset = 0;
   loadReorderList();
 }, 250));
 
+const reorderPage = { offset: 0, limit: 50 };
 async function loadReorderList() {
   const body = $("reorder-body");
   try {
     const params = new URLSearchParams();
+    params.set("limit", reorderPage.limit);
+    params.set("offset", reorderPage.offset);
     if (reorderPart) params.set("part", reorderPart);
-    const items = await getJSON(`${API}/reorder-list${params.toString() ? "?" + params : ""}`);
+    const page = await getJSON(`${API}/reorder-list?${params}`);
     const exportUrl = `${API}/reorder-list/export${reorderPart ? `?part=${encodeURIComponent(reorderPart)}` : ""}`;
     $("export-reorder").href = exportUrl;
-    if (!items.length) { body.innerHTML = `<tr><td colspan="6" class="empty">No pending orders to restock right now.</td></tr>`; $("reorder-note").textContent = reorderPart ? `No pending orders for SKU part "${esc(reorderPart)}".` : ""; return; }
-    const shown = items.slice(0, LIST_CAP);
-    $("reorder-note").textContent = items.length > LIST_CAP ? `Showing ${LIST_CAP} of ${items.length} pending-order lines. Export for the full list.` : `${items.length} pending-order line${items.length === 1 ? "" : "s"}. Required = MAX(Pending Orders - Current Stock, 0).`;
-    body.innerHTML = shown.map((i) => `
+    $("reorder-page-info").textContent = page.total ? `${page.offset + 1}–${Math.min(page.offset + page.items.length, page.total)} of ${page.total} sizes` : "";
+    $("reorder-prev").disabled = page.offset === 0;
+    $("reorder-next").disabled = page.offset + page.limit >= page.total;
+    if (!page.items.length) { body.innerHTML = `<tr><td colspan="6" class="empty">No pending orders to restock right now.</td></tr>`; $("reorder-note").textContent = reorderPart ? `No pending orders for SKU part "${esc(reorderPart)}".` : ""; return; }
+    $("reorder-note").textContent = `Required = MAX(Pending Orders - Current Stock, 0).`;
+    body.innerHTML = page.items.map((i) => `
       <tr class="${i.is_new ? "picklist-new-row" : ""}"><td class="sku-tag">${esc(i.sku)} ${i.is_new ? '<span class="picklist-new-badge">NEW</span>' : ""}</td><td><span class="size-chip">${esc(i.size)}</span></td><td class="num">${i.current_stock}</td><td class="num">${i.ordered_qty}</td><td class="num">${i.dispatched_qty || 0}</td><td class="num" style="font-weight:800;">${i.required_qty}</td></tr>`).join("");
   } catch (e) { body.innerHTML = `<tr><td colspan="6" class="empty">Could not load the picklist.</td></tr>`; }
 }
@@ -979,50 +1026,61 @@ async function refreshInventoryViews() {
 async function loadAlerts() {
   const list = $("alerts-list");
   try {
-    const [alerts, s] = await Promise.all([getJSON(`${API}/alerts?limit=300`), getJSON(`${API}/summary`)]);
-    noteAlertCount(s.open_alerts);
-    $("alerts-note").textContent = s.open_alerts > alerts.length ? `Showing the ${alerts.length} lowest of ${s.open_alerts.toLocaleString()} open alerts.` : "";
-    if (!alerts.length) { list.innerHTML = `<p class="hint">No open alerts.</p>`; return; }
-    list.innerHTML = alerts.map((a) => `
-      <div class="alert-row ${a.alert_type}" data-code="${esc(a.variant_code)}">
-        <div><div class="name">${esc(a.product_name)} <span class="sku-tag">(${esc(a.variant_code)})</span></div>
-          <div class="meta">${a.alert_type === "ORDER_SHORTAGE" ? `Order shortage — Stock ${a.stock_at_alert}, Orders ${a.ordered_qty}, Need ${a.required_qty}` : a.alert_type === "OUT_OF_STOCK" ? `Out of stock — ${a.stock_at_alert} pcs` : `Low stock — ${a.stock_at_alert} pcs left`}</div></div>
-        <div class="alert-quick">
-          <input type="number" min="0" class="input quick-count" placeholder="new count">
-          <button class="btn-secondary quick-save" type="button">Update</button>
-        </div>
-      </div>`).join("");
-    list.querySelectorAll(".alert-row").forEach((row) => {
-      row.querySelector(".quick-save").addEventListener("click", async () => {
-        const input = row.querySelector(".quick-count");
-        if (input.value === "") { showToast("Enter a count first", true); return; }
-        const button = row.querySelector(".quick-save");
-        if (button.disabled) return;
-        button.disabled = true;
-        try {
-          const r = await apiPost(`${API}/inventory/adjust`, { variant_code: row.dataset.code, new_count: Number(input.value), note: "alert quick-update" });
-          showToast(`${row.dataset.code} set to ${r.current_stock}`);
-          await refreshInventoryViews();
-        } catch (err) { showToast("Update failed: " + err.message, true); }
-        finally { button.disabled = false; }
-      });
-    });
+    const q = $("alerts-search")?.value.trim() || "";
+    const params = new URLSearchParams({ limit: "30", offset: alertPage.offset });
+    if (q) params.set("q", q);
+    const page = await getJSON(`${API}/alerts/groups?${params}`);
+    $("alerts-note").textContent = page.total ? `${page.total.toLocaleString()} designs with alerts · grouped by design and sorted by severity` : (q ? `No alerts match “${q}”.` : "No open alerts.");
+    $("alerts-page-info").textContent = page.total ? `${page.offset + 1}–${Math.min(page.offset + page.items.length, page.total)} of ${page.total} designs` : "";
+    $("alerts-prev").disabled = page.offset === 0;
+    $("alerts-next").disabled = page.offset + page.limit >= page.total;
+    if (!page.items.length) { list.innerHTML = `<p class="hint">${q ? "No matching alerts." : "No open alerts."}</p>`; return; }
+    list.innerHTML = page.items.map((group) => `
+      <section class="alert-design">
+        <header class="alert-design-head"><div><div class="name">${esc(group.product_name)}</div><div class="sku-tag">${esc(group.sku)}</div></div><span class="alert-group-count">${group.alert_count} size alert${group.alert_count === 1 ? "" : "s"}</span></header>
+        <div class="alert-design-sizes">${group.items.map((a) => {
+          const message = a.alert_type === "ORDER_SHORTAGE" ? `Order shortage · Stock ${a.stock_at_alert} · Orders ${a.ordered_qty} · Need ${a.required_qty}` : a.alert_type === "OUT_OF_STOCK" ? `Out of stock · ${a.stock_at_alert} pcs` : `Low stock · ${a.stock_at_alert} pcs`;
+          return `<form class="alert-row ${a.alert_type} alert-quick-form" data-code="${esc(a.variant_code)}">
+            <div class="alert-size-label"><span class="size-chip">${esc(a.size)}</span><span class="meta">${message}</span></div>
+            <div class="alert-quick"><input type="number" min="0" class="input quick-count" placeholder="New count" aria-label="New count for ${esc(group.sku)} size ${esc(a.size)}"><button class="btn-secondary quick-save" type="submit">Update</button></div>
+          </form>`;
+        }).join("")}</div>
+      </section>`).join("");
+    list.querySelectorAll(".alert-quick-form").forEach((form) => form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const input = form.querySelector(".quick-count"), button = form.querySelector(".quick-save");
+      if (input.value === "") { showToast("Enter a count first", true); input.focus(); return; }
+      if (button.disabled) return;
+      button.disabled = true;
+      try {
+        const r = await apiPost(`${API}/inventory/adjust`, { variant_code: form.dataset.code, new_count: Number(input.value), note: "alert quick-update" });
+        showToast(`${form.dataset.code} set to ${r.current_stock}`);
+        await refreshInventoryViews();
+      } catch (err) { showToast("Update failed: " + err.message, true); }
+      finally { button.disabled = false; }
+    }));
   } catch (e) { list.innerHTML = `<p class="hint">Could not load alerts.</p>`; }
 }
+const alertPage = { offset: 0 };
+$("alerts-search").addEventListener("input", debounce(() => { alertPage.offset = 0; loadAlerts(); }, 220));
+$("alerts-prev").addEventListener("click", () => { alertPage.offset = Math.max(0, alertPage.offset - 30); loadAlerts(); });
+$("alerts-next").addEventListener("click", () => { alertPage.offset += 30; loadAlerts(); });
 
 // ================================================================ //
 // HISTORY
 // ================================================================ //
-const history = { q: "", offset: 0 };
+const history = { q: "", offset: 0, limit: 50 };
 $("history-search").addEventListener("input", debounce((e) => { history.q = e.target.value.trim(); history.offset = 0; loadHistory(true); }));
-$("hist-more").addEventListener("click", () => loadHistory(false));
+$("hist-prev").addEventListener("click", () => { history.offset = Math.max(0, history.offset - history.limit); loadHistory(true); });
+$("hist-next").addEventListener("click", () => { history.offset += history.limit; loadHistory(true); });
 
 async function loadHistory(reset) {
   const body = $("history-body");
-  const params = new URLSearchParams({ limit: 50, offset: history.offset });
+  const params = new URLSearchParams({ limit: history.limit + 1, offset: history.offset });
   if (history.q) params.set("q", history.q);
   try {
-    const rows = await getJSON(`${API}/transactions?${params}`);
+    const results = await getJSON(`${API}/transactions?${params}`);
+    const rows = results.slice(0, history.limit);
     const html = rows.map((t) => `
       <tr>
         <td class="hide-sm" style="white-space:nowrap;">${new Date(t.created_at).toLocaleString()}</td>
@@ -1034,24 +1092,37 @@ async function loadHistory(reset) {
         <td class="hide-sm">${esc(t.transaction_type.replace(/_/g, " "))}</td>
         <td class="hide-sm hint">${esc(t.reference || "")}</td>
       </tr>`).join("");
-    body.innerHTML = reset ? (html || `<tr><td colspan="8" class="empty">No history yet.</td></tr>`) : body.innerHTML + html;
-    history.offset += rows.length;
-    $("hist-more").disabled = rows.length < 50;
+    body.innerHTML = html || `<tr><td colspan="8" class="empty">No history yet.</td></tr>`;
+    $("hist-page-info").textContent = rows.length ? `Page ${Math.floor(history.offset / history.limit) + 1}` : "";
+    $("hist-prev").disabled = history.offset === 0;
+    $("hist-next").disabled = results.length <= history.limit;
   } catch (e) { if (reset) body.innerHTML = `<tr><td colspan="8" class="empty">Could not load history.</td></tr>`; }
 }
 
 // ================================================================ //
 // PRINT LABELS
 // ================================================================ //
+const labelPage = { q: "", offset: 0, limit: 15 };
 $("label-search").addEventListener("input", debounce(async (e) => {
-  const q = e.target.value.trim(), box = $("label-results");
-  if (q.length < 2) { box.innerHTML = ""; return; }
+  labelPage.q = e.target.value.trim();
+  labelPage.offset = 0;
+  loadLabelResults();
+}, 250));
+$("labels-prev").addEventListener("click", () => { labelPage.offset = Math.max(0, labelPage.offset - labelPage.limit); loadLabelResults(); });
+$("labels-next").addEventListener("click", () => { labelPage.offset += labelPage.limit; loadLabelResults(); });
+async function loadLabelResults() {
+  const q = labelPage.q, box = $("label-results");
+  if (q.length < 2) { box.innerHTML = ""; $("labels-page-info").textContent = ""; $("labels-prev").disabled = $("labels-next").disabled = true; return; }
   try {
-    const products = await getJSON(`${API}/products?q=${encodeURIComponent(q)}&limit=15`);
+    const results = await getJSON(`${API}/products?q=${encodeURIComponent(q)}&limit=${labelPage.limit + 1}&offset=${labelPage.offset}`);
+    const products = results.slice(0, labelPage.limit);
     box.innerHTML = products.length ? products.map((p) => `<button type="button" class="result-row" data-sku="${esc(p.sku)}">${esc(p.sku)} — ${esc(p.name)}</button>`).join("") : `<p class="hint">No design matches "${esc(q)}".</p>`;
+    $("labels-page-info").textContent = products.length ? `Page ${Math.floor(labelPage.offset / labelPage.limit) + 1}` : "";
+    $("labels-prev").disabled = labelPage.offset === 0;
+    $("labels-next").disabled = results.length <= labelPage.limit;
     box.querySelectorAll(".result-row").forEach((btn, i) => btn.addEventListener("click", () => selectLabelProduct(products[i])));
   } catch (err) { box.innerHTML = ""; }
-}));
+}
 
 function selectLabelProduct(product) {
   $("label-results").innerHTML = "";
@@ -1069,10 +1140,17 @@ function updateLabelDownloadLink() {
 // ================================================================ //
 // TRASH
 // ================================================================ //
+const trashPage = { offset: 0, limit: 24 };
+$("trash-prev").addEventListener("click", () => { trashPage.offset = Math.max(0, trashPage.offset - trashPage.limit); loadTrash(); });
+$("trash-next").addEventListener("click", () => { trashPage.offset += trashPage.limit; loadTrash(); });
 async function loadTrash() {
   const grid = $("trash-list"), empty = $("trash-empty");
   try {
-    const items = await getJSON(`${API}/trash`);
+    const page = await getJSON(`${API}/trash?limit=${trashPage.limit}&offset=${trashPage.offset}`);
+    const items = page.items;
+    $("trash-page-info").textContent = page.total ? `${page.offset + 1}–${Math.min(page.offset + items.length, page.total)} of ${page.total} designs` : "";
+    $("trash-prev").disabled = page.offset === 0;
+    $("trash-next").disabled = page.offset + page.limit >= page.total;
     if (!items.length) { grid.innerHTML = ""; empty.hidden = false; return; }
     empty.hidden = true;
     grid.innerHTML = items.map((t) => `
@@ -1092,13 +1170,13 @@ async function loadTrash() {
       </article>`).join("");
     grid.querySelectorAll(".trash-restore").forEach((btn) => btn.addEventListener("click", async () => {
       const sku = btn.closest(".tcard").dataset.sku;
-      try { await apiPost(`${API}/products/${encodeURIComponent(sku)}/restore`); showToast(`${sku} restored successfully`, "success"); loadTrash(); loadSummary(); }
+      try { await apiPost(`${API}/products/${encodeURIComponent(sku)}/restore`); showToast(`${sku} restored successfully`, "success"); if (trashPage.offset && items.length === 1) trashPage.offset = Math.max(0, trashPage.offset - trashPage.limit); loadTrash(); loadSummary(); }
       catch (err) { showToast("Restore failed: " + err.message, "error", 2200); }
     }));
     grid.querySelectorAll(".trash-wipe").forEach((btn) => btn.addEventListener("click", () => {
       const sku = btn.closest(".tcard").dataset.sku;
       askConfirm("Delete forever?", `${sku} and its full history will be permanently removed. This cannot be undone.`, async () => {
-        try { await apiDelete(`${API}/trash/${encodeURIComponent(sku)}`); showToast(`${sku} permanently deleted`, "success"); loadTrash(); }
+        try { await apiDelete(`${API}/trash/${encodeURIComponent(sku)}`); showToast(`${sku} permanently deleted`, "success"); if (trashPage.offset && items.length === 1) trashPage.offset = Math.max(0, trashPage.offset - trashPage.limit); loadTrash(); }
         catch (err) { showToast("Delete failed: " + err.message, "error", 2200); }
       }, "Delete Forever");
     }));

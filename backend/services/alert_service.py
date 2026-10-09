@@ -10,7 +10,8 @@ low while XL is fine, and that's a real, distinct signal to act on.
 """
 from datetime import datetime, timezone
 
-from sqlalchemy.orm import Session
+from sqlalchemy import or_
+from sqlalchemy.orm import Session, selectinload
 
 from models import Variant, Alert, Product
 
@@ -59,14 +60,20 @@ def check_variant_alert(db: Session, variant: Variant) -> Alert | None:
     return None
 
 
-def get_open_alerts(db: Session, limit: int | None = None, offset: int = 0):
+def get_open_alerts(db: Session, limit: int | None = None, offset: int = 0, q: str | None = None):
     query = (
         db.query(Alert)
+        .options(selectinload(Alert.variant).selectinload(Variant.product))
         .join(Variant).join(Product)
         .filter(Alert.resolved == False, Variant.is_deleted == False, Product.is_deleted == False)  # noqa: E712
-        .order_by(Variant.current_stock.asc(), Alert.id.asc())
-        .offset(offset)
     )
+    if q and q.strip():
+        like = f"%{q.strip()}%"
+        query = query.filter(or_(
+            Product.sku.ilike(like), Product.name.ilike(like), Variant.size.ilike(like),
+            Variant.variant_code.ilike(like), Alert.alert_type.ilike(like),
+        ))
+    query = query.order_by(Variant.current_stock.asc(), Alert.id.asc()).offset(offset)
     if limit is not None:
         query = query.limit(limit)
     return query.all()

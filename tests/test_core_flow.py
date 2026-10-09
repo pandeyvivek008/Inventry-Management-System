@@ -440,6 +440,11 @@ expect(client.post(f"/api/orders/{shortfall_upload.json()['order_upload_id']}/di
 expect(client.get("/api/variants/RS1-M").json()["current_stock"] == -3,
        "dispatch records the actual 5-piece shipment against stock 2")
 
+print("30b. Railway root opens the app and variant SKUs group by their final size")
+root = client.get("/", follow_redirects=False)
+expect(root.status_code == 307 and root.headers.get("location") == "/app/",
+       "service root redirects directly to the inventory app")
+
 print("31. Bulk product template and size-wise Excel import")
 template = client.get("/api/products/bulk-template")
 expect(template.status_code == 200 and "bulk_product_template.xlsx" in template.headers.get("content-disposition", ""),
@@ -464,20 +469,71 @@ bulk_products = make_xlsx(
 bulk_result = client.post("/api/products/bulk", files={"file": ("bulk_products.xlsx", bulk_products, XLSX)})
 expect(bulk_result.status_code == 200, f"bulk import responds, got {bulk_result.status_code}: {bulk_result.text[:180]}")
 bulk_body = bulk_result.json()
-expect(bulk_body["products_created"] == 1 and bulk_body["variants_created"] == 2 and bulk_body["rows_skipped"] == 5,
+expect(bulk_body["products_created"] == 1 and bulk_body["variants_created"] == 3 and bulk_body["rows_skipped"] == 4,
        f"valid SKU grouped by size; invalid and existing groups skipped, got {bulk_body}")
-expect(len(bulk_body["errors"]) == 5, "row errors explain the invalid stock, duplicate size and existing SKU")
+expect(len(bulk_body["errors"]) == 4, "row errors explain the invalid stock and duplicate size")
 bulk_product = next(p for p in client.get("/api/products").json() if p["sku"] == "BLK_OK")
 bulk_sizes = {variant["size"]: variant for variant in bulk_product["variants"]}
 expect(bulk_product["image_path"] is None and bulk_sizes["S"]["current_stock"] == 5
        and bulk_sizes["M"]["current_stock"] == 0, "size-wise opening stock imports and image stays ready for later editing")
 expect("BLK_OK_M" in {alert["variant_code"] for alert in client.get("/api/alerts").json()},
        "zero-stock imported size enters normal alert flow")
+expect("XL" in {variant["size"] for variant in next(p for p in client.get("/api/products").json() if p["sku"] == "T1")["variants"]},
+       "a new size can be added to an existing design without changing its old sizes")
 repeat_bulk = client.post("/api/products/bulk", files={"file": ("repeat.xlsx", make_xlsx(
-    ["SKU", "Product Name", "Size", "Stock"], [("BLK_OK", "Bulk Linen Set", "XL", 4)]), XLSX)})
+    ["SKU", "Product Name", "Size", "Stock"], [("BLK_OK", "Bulk Linen Set", "M", 4)]), XLSX)})
 expect(repeat_bulk.status_code == 200 and repeat_bulk.json()["products_created"] == 0
-       and repeat_bulk.json()["variants_created"] == 0 and repeat_bulk.json()["errors"][0]["row"] == 2,
-       "re-upload cannot silently duplicate an existing product")
+       and repeat_bulk.json()["variants_created"] == 0 and repeat_bulk.json()["rows_skipped"] == 1,
+       "re-upload leaves an existing size and its stock unchanged")
+suffix_products = make_xlsx(
+    ["SKU", "Category", "Size", "Current Inventory"],
+    [("ZIA-MUSTARD-XXL", "Kurta Set", "XXL", 2), ("ZIA-MUSTARD-XL", "Kurta Set", "XL", 4), ("ZIA-MUSTARD-S", "Kurta Set", "S", 7)],
+)
+suffix_result = client.post("/api/products/bulk", files={"file": ("master_inventory.xlsx", suffix_products, XLSX)})
+expect(suffix_result.status_code == 200 and suffix_result.json()["products_created"] == 1
+       and suffix_result.json()["variants_created"] == 3, "size-suffixed master SKUs create one design with size-wise current inventory")
+zia = next(p for p in client.get("/api/products").json() if p["sku"] == "ZIA-MUSTARD")
+expect({v["size"]: v["current_stock"] for v in zia["variants"]} == {"XXL": 2, "XL": 4, "S": 7},
+       "Current Inventory, Category and size columns import without a Product Name column")
+alias_result = client.post("/api/products/bulk", files={"file": ("aliases.xlsx", make_xlsx(
+    ["SKU", "Category", "Size", "Current Inventory"],
+    [("ALIAS-DESIGN", "Kurta Set", "XXL", 10), ("ALIAS-DESIGN_XXL", "KURTA SET", "XXL", 10)],
+), XLSX)})
+expect(alias_result.status_code == 200 and alias_result.json()["duplicate_rows_merged"] == 1,
+       "base SKU and explicit size SKU for the same stock row are combined")
+alias_order = post_orders(make_xlsx(["SKU", "Size", "Quantity"], [("ALIAS-DESIGN", "XXL", 1)]), "alias_order.xlsx")
+expect(alias_order.status_code == 200 and alias_order.json()["not_found_count"] == 0,
+       "the alternate source SKU remains usable when matching incoming orders")
+free_size_result = client.post("/api/products/bulk", files={"file": ("free_size.xlsx", make_xlsx(
+    ["SKU", "Category", "Size", "Current Inventory"], [("M-217", "Kurta Set", None, 0)],
+), XLSX)})
+expect(free_size_result.status_code == 200 and free_size_result.json()["free_size_rows"] == 1,
+       "a blank size is retained as a FREE SIZE variant instead of dropped")
+free_size_product = client.get("/api/products/M-217").json()
+expect(free_size_product["variants"][0]["size"] == "FREE SIZE"
+       and free_size_product["variants"][0]["variant_code"] == "M-217",
+       "one-size variants remain scannable and order-matchable by their source SKU")
+legacy = client.post("/api/products", json={"sku": "OLD-DESIGN-XL", "name": "Old Design", "variants": [{"size": "XL", "initial_stock": 8}]})
+expect(legacy.status_code == 200, "legacy one-size product created for merge regression")
+merge_result = client.post("/api/products/bulk", files={"file": ("legacy.xlsx", make_xlsx(
+    ["SKU", "Product Name", "Size", "Stock"], [("OLD-DESIGN-XL", "Old Design", "XL", 0)]), XLSX)})
+expect(merge_result.status_code == 200 and merge_result.json()["variants_merged"] == 1,
+       "old one-size product joins its design while preserving the existing size record")
+old_product = client.get("/api/products/OLD-DESIGN").json()
+expect(old_product["variants"][0]["current_stock"] == 8 and old_product["variants"][0]["variant_code"] == "OLD-DESIGN-XL",
+       "legacy stock and variant identity survive product grouping")
+expect(client.get("/api/alerts?q=ZIA-MUSTARD-XXL").status_code == 200
+       and any(a["variant_code"] == "ZIA-MUSTARD-XXL" for a in client.get("/api/alerts?q=ZIA-MUSTARD-XXL").json()),
+       "alerts can be searched by the exact imported variant SKU")
+grouped_alerts = client.get("/api/alerts/groups?q=ZIA-MUSTARD&limit=1").json()
+expect(grouped_alerts["total"] == 1 and grouped_alerts["items"][0]["sku"] == "ZIA-MUSTARD"
+       and {a["size"] for a in grouped_alerts["items"][0]["items"]} == {"XL", "XXL"},
+       "alerts group multiple affected sizes under one design and paginate by design")
+expect(len(client.get("/api/products?limit=1&offset=1").json()) == 1,
+       "product search supports previous/next page offsets")
+reorder_page = client.get("/api/reorder-list?limit=1&offset=0").json()
+expect(reorder_page["limit"] == 1 and len(reorder_page["items"]) == 1,
+       "reorder list supports page-sized responses while legacy list remains available")
 bad_template = client.post("/api/products/bulk", files={"file": ("wrong.xlsx", make_xlsx(["SKU", "Size"], [("X", "M")]), XLSX)})
 expect(bad_template.status_code == 400 and "Missing required columns" in bad_template.json()["detail"],
        "wrong format returns a clear template-column error")

@@ -10,7 +10,7 @@ from io import BytesIO
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 from sqlalchemy import func, case
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from models import Variant, Product, ReorderBatch, ReorderBatchItem, OrderLine, OrderLineStatus
 
@@ -33,6 +33,7 @@ def generate_reorder_list(db: Session, save_batch: bool = True, part: str | None
             )), 0).label("dispatched_qty"),
         )
         .join(Product, Variant.product_id == Product.id)
+        .options(selectinload(Variant.product))
         .outerjoin(
             OrderLine,
             (OrderLine.variant_id == Variant.id)

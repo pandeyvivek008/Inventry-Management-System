@@ -104,6 +104,21 @@ class AlertOut(BaseModel):
     required_qty: Optional[int] = None
 
 
+class AlertDesignGroup(BaseModel):
+    sku: str
+    product_name: str
+    alert_count: int
+    highest_severity: str
+    items: List[AlertOut]
+
+
+class AlertGroupPage(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    items: List[AlertDesignGroup]
+
+
 class ReorderItemOut(BaseModel):
     sku: str
     size: str
@@ -115,6 +130,13 @@ class ReorderItemOut(BaseModel):
     required_qty: int
     image_path: Optional[str] = None
     is_new: bool = False
+
+
+class ReorderPage(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    items: List[ReorderItemOut]
 
 
 class TransactionOut(BaseModel):
@@ -195,6 +217,10 @@ class BulkProductImportResult(BaseModel):
     rows_skipped: int
     blank_rows: int
     errors: List[BulkProductRowError]
+    products_merged: int = 0
+    variants_merged: int = 0
+    duplicate_rows_merged: int = 0
+    free_size_rows: int = 0
     errors_truncated: bool = False
 
 
@@ -204,6 +230,13 @@ class TrashProductOut(BaseModel):
     image_path: Optional[str] = None
     variant_count: int
     deleted_at: datetime
+
+
+class TrashPage(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    items: List[TrashProductOut]
 
 
 class TransactionLogOut(BaseModel):

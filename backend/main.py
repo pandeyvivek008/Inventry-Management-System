@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, RedirectResponse
 from sqlalchemy import case, func, or_, delete as sa_delete, inspect as sa_inspect, text
 from sqlalchemy.orm import Session, joinedload, selectinload, contains_eager
 
@@ -59,6 +59,12 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 FRONTEND_DIR = BASE_DIR.parent / "frontend"
 if FRONTEND_DIR.exists():
     app.mount("/app", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+
+
+@app.get("/", include_in_schema=False)
+def app_home():
+    """Open the inventory UI directly from the Railway service root."""
+    return RedirectResponse(url="/app/", status_code=307)
 
 XLSX_MEDIA = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
@@ -230,7 +236,7 @@ def summary(db: Session = Depends(get_db)):
 # Products (+ their size variants)
 # ------------------------------------------------------------------ #
 @app.get("/api/products", response_model=list[schemas.ProductOut])
-def list_products(q: str | None = None, limit: int | None = Query(None, ge=1, le=500), db: Session = Depends(get_db)):
+def list_products(q: str | None = None, limit: int | None = Query(None, ge=1, le=500), offset: int = Query(0, ge=0), db: Session = Depends(get_db)):
     query = db.query(models.Product).options(selectinload(models.Product.variants), joinedload(models.Product.vendor)) \
         .filter(models.Product.is_deleted == False)  # noqa: E712
     if q and q.strip():
@@ -238,7 +244,7 @@ def list_products(q: str | None = None, limit: int | None = Query(None, ge=1, le
         query = query.filter(or_(models.Product.sku.ilike(like), models.Product.name.ilike(like)))
     query = query.order_by(models.Product.created_at.desc(), models.Product.id.desc())
     if limit:
-        query = query.limit(limit)
+        query = query.offset(offset).limit(limit)
     return [_product_out(p) for p in query.all()]
 
 
@@ -256,6 +262,8 @@ async def bulk_create_products(file: UploadFile = File(...), db: Session = Depen
     content = await file.read(bulk_product_service.MAX_FILE_BYTES + 1)
     try:
         result = bulk_product_service.import_bulk_products(db, content, file.filename or "")
+        if result.get("products_created") or result.get("variants_created"):
+            excel_service.reconcile_unmapped_order_lines(db)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     return result
@@ -299,6 +307,7 @@ def create_product(payload: schemas.ProductCreate, db: Session = Depends(get_db)
         alert_service.check_variant_alert(db, variant)
 
     db.commit()
+    excel_service.reconcile_unmapped_order_lines(db)
     db.refresh(product)
     return _product_out(product)
 
@@ -361,6 +370,7 @@ def add_size(sku: str, payload: schemas.VariantCreate, db: Session = Depends(get
         variant.last_counted_at = datetime.now(timezone.utc)
     alert_service.check_variant_alert(db, variant)
     db.commit()
+    excel_service.reconcile_unmapped_order_lines(db)
     db.refresh(product)
     return _product_out(product)
 
@@ -438,6 +448,7 @@ def restore_product(sku: str, db: Session = Depends(get_db)):
             count += 1
         alert_service.check_variant_alert(db, v)
     db.commit()
+    excel_service.reconcile_unmapped_order_lines(db)
     return {"restored": product.sku, "variants_restored": count}
 
 
@@ -477,20 +488,24 @@ def restore_variant(variant_code: str, db: Session = Depends(get_db)):
         variant.product.deleted_at = None
     alert_service.check_variant_alert(db, variant)
     db.commit()
+    excel_service.reconcile_unmapped_order_lines(db)
     return {"restored": variant.variant_code}
 
 
-@app.get("/api/trash", response_model=list[schemas.TrashProductOut])
-def list_trash(db: Session = Depends(get_db)):
-    products = (
+@app.get("/api/trash")
+def list_trash(limit: int | None = Query(None, ge=1, le=100), offset: int = Query(0, ge=0), db: Session = Depends(get_db)):
+    query = (
         db.query(models.Product).options(selectinload(models.Product.variants))
         .filter(models.Product.is_deleted == True)  # noqa: E712
-        .order_by(models.Product.deleted_at.desc()).all()
+        .order_by(models.Product.deleted_at.desc())
     )
-    return [{
+    total = query.count()
+    products = query.offset(offset).limit(limit).all() if limit else query.all()
+    items = [{
         "sku": p.sku, "name": p.name, "image_path": p.image_path,
         "variant_count": len(p.variants), "deleted_at": p.deleted_at,
     } for p in products]
+    return {"total": total, "limit": limit, "offset": offset, "items": items} if limit is not None else items
 
 
 @app.delete("/api/trash/{sku}")
@@ -599,17 +614,14 @@ def global_transactions(
 # Order history / batches
 # ------------------------------------------------------------------ #
 @app.get("/api/orders/history")
-def order_history(limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db)):
-    # Re-resolve legacy SKU_NOT_FOUND rows using the current canonical SKU
-    # matcher so older uploads become normal pending orders after a fix.
-    excel_service.reconcile_unmapped_order_lines(db)
+def order_history(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), db: Session = Depends(get_db)):
     uploads = (
         db.query(models.OrderUpload)
         .options(
             selectinload(models.OrderUpload.lines).joinedload(models.OrderLine.variant).joinedload(models.Variant.product)
         )
         .order_by(models.OrderUpload.uploaded_at.desc(), models.OrderUpload.id.desc())
-        .limit(limit).all()
+        .offset(offset).limit(limit).all()
     )
     result = []
     for u in uploads:
@@ -661,10 +673,8 @@ async def upload_orders(file: UploadFile = File(...), db: Session = Depends(get_
 # ------------------------------------------------------------------ #
 # Alerts
 # ------------------------------------------------------------------ #
-@app.get("/api/alerts", response_model=list[schemas.AlertOut])
-def list_alerts(limit: int = Query(1000, ge=1, le=5000), offset: int = Query(0, ge=0), db: Session = Depends(get_db)):
-    excel_service.reconcile_unmapped_order_lines(db)
-    alerts = alert_service.get_open_alerts(db, limit=None, offset=0)
+def _collect_alerts(db: Session, q: str | None = None):
+    alerts = alert_service.get_open_alerts(db, limit=None, offset=0, q=q)
     result = [{
         "id": a.id, "variant_code": a.variant.variant_code, "sku": a.variant.product.sku, "size": a.variant.size,
         "product_name": a.variant.product.name, "alert_type": a.alert_type, "stock_at_alert": a.stock_at_alert,
@@ -695,7 +705,46 @@ def list_alerts(limit: int = Query(1000, ge=1, le=5000), offset: int = Query(0, 
             "required_qty": item["required_qty"],
         })
     result.sort(key=lambda a: (a["alert_type"] != "OUT_OF_STOCK", a["stock_at_alert"], a["variant_code"]))
-    return result[offset:offset + limit]
+    if q and q.strip():
+        needle = q.strip().casefold()
+        result = [a for a in result if any(
+            needle in str(a.get(key) or "").casefold()
+            for key in ("variant_code", "sku", "size", "product_name", "alert_type")
+        )]
+    return result
+
+
+@app.get("/api/alerts", response_model=list[schemas.AlertOut])
+def list_alerts(limit: int = Query(1000, ge=1, le=5000), offset: int = Query(0, ge=0), q: str | None = None, db: Session = Depends(get_db)):
+    alerts = _collect_alerts(db, q)
+    return alerts[offset:offset + limit]
+
+
+@app.get("/api/alerts/groups", response_model=schemas.AlertGroupPage)
+def list_alert_groups(limit: int = Query(30, ge=1, le=100), offset: int = Query(0, ge=0), q: str | None = None, db: Session = Depends(get_db)):
+    alerts = _collect_alerts(db, q)
+    rank = {"OUT_OF_STOCK": 0, "ORDER_SHORTAGE": 1, "LOW_STOCK": 2}
+    size_rank = {name: index for index, name in enumerate(("FREE SIZE", "XS", "S", "M", "L", "XL", "XXL", "3XL", "4XL"))}
+    groups = {}
+    for alert in alerts:
+        group = groups.setdefault(alert["sku"], {
+            "sku": alert["sku"], "product_name": alert["product_name"], "items": [],
+            "highest_severity": alert["alert_type"], "_severity": 99, "_stock": alert["stock_at_alert"],
+        })
+        group["items"].append(alert)
+        severity = rank.get(alert["alert_type"], 3)
+        group["_severity"] = min(group["_severity"], severity)
+        group["_stock"] = min(group["_stock"], alert["stock_at_alert"])
+        if severity == group["_severity"]:
+            group["highest_severity"] = alert["alert_type"]
+    page_groups = list(groups.values())
+    for group in page_groups:
+        group["items"].sort(key=lambda a: (size_rank.get(a["size"].upper(), 100), a["size"].upper()))
+        group["alert_count"] = len(group["items"])
+        del group["_severity"], group["_stock"]
+    page_groups.sort(key=lambda g: (rank.get(g["highest_severity"], 3), min(a["stock_at_alert"] for a in g["items"]), g["sku"].casefold()))
+    total = len(page_groups)
+    return {"total": total, "limit": limit, "offset": offset, "items": page_groups[offset:offset + limit]}
 
 
 # ------------------------------------------------------------------ #
@@ -764,15 +813,14 @@ def dispatch_order_upload(order_upload_id: int, db: Session = Depends(get_db)):
 # ------------------------------------------------------------------ #
 # Reorder list
 # ------------------------------------------------------------------ #
-@app.get("/api/reorder-list", response_model=list[schemas.ReorderItemOut])
-def reorder_list(part: str | None = None, db: Session = Depends(get_db)):
-    excel_service.reconcile_unmapped_order_lines(db)
-    return reorder_service.generate_reorder_list(db, save_batch=False, part=part)
+@app.get("/api/reorder-list")
+def reorder_list(part: str | None = None, limit: int | None = Query(None, ge=1, le=200), offset: int = Query(0, ge=0), db: Session = Depends(get_db)):
+    items = reorder_service.generate_reorder_list(db, save_batch=False, part=part)
+    return {"total": len(items), "limit": limit, "offset": offset, "items": items[offset:offset + limit]} if limit is not None else items
 
 
 @app.get("/api/reorder-list/export")
 def reorder_list_export(part: str | None = None, db: Session = Depends(get_db)):
-    excel_service.reconcile_unmapped_order_lines(db)
     items = reorder_service.generate_reorder_list(db, save_batch=True, part=part)
     items = [item for item in items if item["required_qty"] > 0 or item.get("is_new")]
     xlsx_bytes = reorder_service.reorder_list_to_excel(items)
