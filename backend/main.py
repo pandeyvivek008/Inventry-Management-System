@@ -359,27 +359,140 @@ async def inventory_assistant_chat(payload: schemas.AssistantChatRequest, reques
         raise HTTPException(status_code=503, detail="AI assistant is temporarily unavailable. Please use manual stock entry and try again later.") from exc
 
     action = intent["intent"]
-    if action == "conversation":
-        text = payload.message.casefold().strip()
-        if any(word in text for word in ("thank", "thanks", "dhanyavaad", "shukriya", "धन्यवाद", "शुक्रिया")):
-            reply = "Aapka swagat hai! Main Disha hoon—stock, size-wise inventory aur aaj ki dispatched sales mein madad ke liye yahin hoon."
-        elif any(word in text for word in ("how are you", "kaisi ho", "कैसी हो", "कैसे हो")):
-            reply = "Main bilkul ready hoon, shukriya! Aap bataiye—inventory mein kya dekhna ya update karna hai?"
-        else:
-            reply = "Namaste! Main Disha, aapki inventory assistant hoon. Product aur size ka stock poochiye, update boliye, ya ‘aaj ki sales’ ka short summary maangiye."
-        return {"status": "reply", "reply": reply}
     if action == "daily_sales":
-        summary = _daily_sales_summary(db)
-        if not summary["dispatched_units"]:
-            reply = f"Aaj ({summary['date']}) abhi tak koi dispatched sale record nahi hai. Pending orders sale mein count nahi kiye jaate."
+        sales_summary = _daily_sales_summary(db)
+        if not sales_summary["dispatched_units"]:
+            reply = f"Aaj ({sales_summary['date']}) abhi tak koi dispatched sale record nahi hai. Pending orders sale mein count nahi kiye jaate."
         else:
-            top = ", ".join(f"{item['name']} ({item['sku']}): {item['units']}" for item in summary["top_products"][:3])
-            reply = f"Aaj ({summary['date']}) {summary['dispatched_units']} units dispatch hue, {summary['designs_sold']} designs mein. Top: {top}. Ye dispatched units hain; revenue/rupee sales app mein record nahi hote."
-        return {"status": "daily_sales", "reply": reply, "summary": summary}
-    if action == "help":
-        return {"status": "reply", "reply": "Main product aur size ka stock dhoondh sakti hoon, ya aapke confirm karne ke baad quantity add/set kar sakti hoon. Misal: 'Black design M size mein 5 add karo.'"}
+            top = ", ".join(f"{item['name']} ({item['sku']}): {item['units']}" for item in sales_summary["top_products"][:3])
+            reply = f"Aaj ({sales_summary['date']}) {sales_summary['dispatched_units']} units dispatch hue, {sales_summary['designs_sold']} designs mein. Top: {top}. Ye dispatched units hain; revenue/rupee sales app mein record nahi hote."
+        return {"status": "daily_sales", "reply": reply, "summary": sales_summary}
+    if action == "app_status":
+        dashboard = summary(db)
+        pending_line_count, pending_units = db.query(
+            func.count(models.OrderLine.id),
+            func.coalesce(func.sum(models.OrderLine.qty_ordered), 0),
+        ).filter(models.OrderLine.status == models.OrderLineStatus.PENDING).one()
+        total_stock = db.query(func.coalesce(func.sum(models.Variant.current_stock), 0)).join(models.Product).filter(
+            models.Variant.is_deleted == False, models.Product.is_deleted == False  # noqa: E712
+        ).scalar()
+        sales = _daily_sales_summary(db)
+        reply = (
+            f"App ka live status: {dashboard['products']} designs aur {dashboard['variants']} sizes. "
+            f"Counted stock total {int(total_stock or 0)} pieces hai; {dashboard['ok']} sizes in stock, "
+            f"{dashboard['low']} low stock, {dashboard['out']} out of stock aur {dashboard['uncounted']} abhi count nahi hue. "
+            f"{dashboard['open_alerts']} open alerts hain. Pending orders {int(pending_line_count or 0)} lines / "
+            f"{int(pending_units or 0)} pieces; aaj {sales['dispatched_units']} pieces dispatch hue."
+        )
+        return {"status": "app_status", "reply": reply, "summary": {**dashboard, "total_stock": int(total_stock or 0), "pending_order_lines": int(pending_line_count or 0), "pending_order_units": int(pending_units or 0), "today_dispatched_units": sales["dispatched_units"]}}
+    if action == "product_search":
+        query = db.query(models.Product).options(selectinload(models.Product.variants)).filter(models.Product.is_deleted == False)  # noqa: E712
+        query = _apply_smart_search(query, (models.Product.sku, models.Product.name, models.Product.category), intent.get("product_query"))
+        products = query.order_by(models.Product.name.asc()).limit(8).all()
+        if not products:
+            return {"status": "not_found", "reply": f"{intent.get('product_query') or 'Is search'} ke matching designs nahi mile. SKU, colour, ya naam ka koi aur hissa boliye."}
+        details = []
+        for product in products:
+            variants = [v for v in product.variants if not v.is_deleted]
+            size_rows = [{"size": v.size, "stock": v.current_stock, "counted": v.last_counted_at is not None} for v in variants]
+            details.append({"sku": product.sku, "name": product.name, "category": product.category, "sizes": size_rows})
+        reply = "\n".join(
+            f"{product['name']} ({product['sku']}): " + ", ".join(
+                f"{size['size']} {size['stock'] if size['counted'] else 'not counted'}" for size in product["sizes"]
+            ) for product in details
+        )
+        return {"status": "product_search", "reply": reply, "products": details}
+    if action == "alerts_summary":
+        alerts = _collect_alerts(db, intent.get("product_query") or None)
+        if not alerts:
+            return {"status": "alerts_summary", "reply": "Is search ke liye abhi koi open stock ya order-shortage alert nahi hai.", "total": 0}
+        lines = [f"{a['product_name']} ({a['sku']}), {a['size']}: {a['alert_type'].replace('_', ' ').lower()}, stock {a['stock_at_alert']}" + (f", orders {a['ordered_qty']}, restock {a['required_qty']}" if a['alert_type'] == "ORDER_SHORTAGE" else "") for a in alerts[:8]]
+        more = f" Aur {len(alerts) - 8} alerts hain." if len(alerts) > 8 else ""
+        return {"status": "alerts_summary", "reply": f"{len(alerts)} open size alerts hain. " + "; ".join(lines) + "." + more, "total": len(alerts)}
+    if action == "reorder_summary":
+        items = reorder_service.generate_reorder_list(db, save_batch=False, part=intent.get("product_query") or None)
+        needed = [item for item in items if item["required_qty"] > 0]
+        if not needed:
+            return {"status": "reorder_summary", "reply": "Abhi pending orders ke liye koi restock quantity required nahi hai.", "total": 0}
+        lines = [f"{i['name']} ({i['sku']}), {i['size']}: stock {i['current_stock']}, pending orders {i['ordered_qty']}, mangwana {i['required_qty']}" for i in needed[:8]]
+        more = f" Aur {len(needed) - 8} sizes hain." if len(needed) > 8 else ""
+        return {"status": "reorder_summary", "reply": f"{len(needed)} sizes mein restock chahiye. " + "; ".join(lines) + "." + more, "total": len(needed)}
+    if action == "pending_orders":
+        pending_lines, pending_units = db.query(func.count(models.OrderLine.id), func.coalesce(func.sum(models.OrderLine.qty_ordered), 0)).filter(models.OrderLine.status == models.OrderLineStatus.PENDING).one()
+        batches = db.query(models.OrderUpload).join(models.OrderLine).filter(models.OrderLine.status == models.OrderLineStatus.PENDING).distinct().order_by(models.OrderUpload.uploaded_at.desc()).limit(5).all()
+        batch_text = ", ".join(f"batch {b.id} ({b.filename or 'orders'})" for b in batches) or "koi pending batch nahi"
+        return {"status": "pending_orders", "reply": f"{int(pending_lines or 0)} pending order lines hain, total {int(pending_units or 0)} pieces. Recent batches: {batch_text}. Dispatch se pehle stock validate hota hai."}
+    if action == "recent_activity":
+        T, V, P = models.InventoryTransaction, models.Variant, models.Product
+        query = db.query(T).join(V, T.variant_id == V.id).join(P, V.product_id == P.id)
+        if intent.get("product_query"):
+            query = _apply_smart_search(query, (P.sku, P.name, V.variant_code, V.size), intent["product_query"])
+        rows = query.options(contains_eager(T.variant).contains_eager(V.product)).order_by(T.created_at.desc(), T.id.desc()).limit(8).all()
+        if not rows:
+            return {"status": "recent_activity", "reply": "Is search ke liye inventory history nahi mili."}
+        lines = [f"{t.variant.product.name}, {t.variant.size}: {t.change_qty:+d} ({t.transaction_type.value}), balance {t.balance_after}" for t in rows]
+        return {"status": "recent_activity", "reply": "Recent stock changes: " + "; ".join(lines) + "."}
+    if action == "product_create":
+        sku = intent["sku"].strip().upper()
+        name = intent["product_name"].strip()
+        sizes = [_assistant_size(value) for value in re.split(r"[,/]+", intent["sizes"]) if value.strip()]
+        sizes = list(dict.fromkeys(size for size in sizes if size))
+        if not sku or not name or not sizes:
+            return {"status": "clarify", "reply": "Product banane ke liye SKU, product name aur sizes batayein. Example: 'SKU DRESS-21, name Blue Dress, sizes S M L ke saath product banao.'"}
+        if len(sku) > 64 or len(name) > 300:
+            return {"status": "clarify", "reply": "SKU ya product name allowed length se zyada hai. Chhota SKU aur naam batayein."}
+        existing = db.query(models.Product).filter(models.Product.sku == sku).first()
+        if existing:
+            return {"status": "clarify", "reply": f"SKU {sku} pehle se catalog ya Trash mein hai. Existing design ko edit/restore karein ya alag SKU dein."}
+        return {"status": "confirm_action", "reply": f"Naya design {name} ({sku}) banega, sizes {', '.join(sizes)} ke saath. Har size ka starting stock 0 rahega. Confirm karun?", "action": {"type": "product_create", "sku": sku, "name": name, "category": intent["category"] or None, "sizes": sizes}}
+    if action in {"product_update", "product_archive", "product_restore"}:
+        product_query = payload.selected_sku.strip().upper() if payload.selected_sku else intent.get("product_query", "").strip()
+        if not product_query:
+            return {"status": "clarify", "reply": "Kaunsa design? Product name ya SKU batayein."}
+        include_deleted = action == "product_restore"
+        query = db.query(models.Product).filter(models.Product.is_deleted == include_deleted)
+        if payload.selected_sku:
+            query = query.filter(models.Product.sku == product_query)
+        else:
+            query = _apply_smart_search(query, (models.Product.sku, models.Product.name, models.Product.category), product_query)
+        matches = query.order_by(models.Product.name.asc()).limit(9).all()
+        if not matches:
+            state = "Trash mein" if include_deleted else "active catalog mein"
+            return {"status": "not_found", "reply": f"{product_query} {state} nahi mila."}
+        if len(matches) > 1:
+            return {"status": "choose_product", "reply": "Kai designs match hue. Sahi design chunein:", "choices": [{"sku": p.sku, "name": p.name} for p in matches[:8]]}
+        product = matches[0]
+        if action == "product_update":
+            changes = {}
+            if intent["new_sku"]: changes["sku"] = intent["new_sku"]
+            if intent["new_name"]: changes["name"] = intent["new_name"]
+            if intent["new_category"]: changes["category"] = intent["new_category"]
+            if not changes:
+                return {"status": "clarify", "reply": "Kya badalna hai? Naya product name, SKU, ya category clearly batayein."}
+            if changes.get("sku"):
+                conflict = db.query(models.Product).filter(models.Product.sku == changes["sku"], models.Product.id != product.id).first()
+                if conflict:
+                    return {"status": "clarify", "reply": f"SKU {changes['sku']} doosre design mein already use ho raha hai."}
+            description = ", ".join(f"{key}: {getattr(product, key) or '—'} → {value}" for key, value in changes.items())
+            return {"status": "confirm_action", "reply": f"{product.name} ({product.sku}) mein ye change hoga: {description}. Confirm karun?", "action": {"type": "product_update", "sku": product.sku, "changes": changes}}
+        kind = "product_archive" if action == "product_archive" else "product_restore"
+        verb = "Trash mein move" if action == "product_archive" else "restore"
+        return {"status": "confirm_action", "reply": f"{product.name} ({product.sku}) aur uske sabhi sizes ko {verb} karungi. Stock history preserve rahegi. Confirm?", "action": {"type": kind, "sku": product.sku}}
+    if action == "order_dispatch":
+        order_id = intent.get("order_id")
+        if not order_id or order_id < 1:
+            return {"status": "clarify", "reply": "Dispatch se pehle batch ID chahiye. 'Pending orders batao' bolkar batch ID dekhein, phir 'batch 123 dispatch karo' kahe."}
+        batch = db.query(models.OrderUpload).filter(models.OrderUpload.id == order_id).first()
+        if not batch:
+            return {"status": "not_found", "reply": f"Order batch {order_id} nahi mila."}
+        lines = db.query(models.OrderLine).filter(models.OrderLine.order_upload_id == order_id, models.OrderLine.status == models.OrderLineStatus.PENDING).all()
+        if not lines:
+            return {"status": "clarify", "reply": f"Batch {order_id} mein koi pending order line nahi hai."}
+        units = sum(line.qty_ordered for line in lines)
+        return {"status": "confirm_action", "reply": f"Batch {order_id} ({batch.filename or 'orders'}) ke {len(lines)} pending lines, total {units} pieces dispatch honge. Dispatch ke waqt har size ka stock validate hoga; shortage hui to poora batch rukega. Confirm?", "action": {"type": "order_dispatch", "order_id": order_id, "filename": batch.filename, "lines": len(lines), "units": units}}
     if action not in {"stock_add", "stock_set", "stock_check"}:
-        return {"status": "reply", "reply": "Main stock check ya size-wise stock update mein madad kar sakti hoon. Product/SKU, size aur quantity batayein."}
+        reply = intent.get("reply") or "Main Disha hoon. Aap mujhse normal baat kar sakte hain, ya inventory ke baare mein pooch sakte hain."
+        return {"status": "reply", "reply": reply}
 
     product_query = payload.selected_sku.strip().upper() if payload.selected_sku else intent["product_query"]
     if not product_query:

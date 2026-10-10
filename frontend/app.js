@@ -21,6 +21,12 @@ async function apiPost(url, body) {
   if (!r.ok) throw new Error(typeof d.detail === "string" ? d.detail : `HTTP ${r.status}`);
   return d;
 }
+async function apiPatch(url, body) {
+  const r = await fetch(url, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(typeof d.detail === "string" ? d.detail : `HTTP ${r.status}`);
+  return d;
+}
 
 // ---------------- Toast ----------------
 let toastTimer;
@@ -101,6 +107,7 @@ function speakInventoryMessage(message) {
   speakAssistantMessage(message);
 }
 function speakAssistantMessage(message) {
+  if (assistantPaused) return;
   if (!window.speechSynthesis || !window.SpeechSynthesisUtterance) return;
   const speechId = ++assistantSpeechId;
   window.speechSynthesis.cancel();
@@ -1077,13 +1084,19 @@ async function refreshInventoryViews() {
 
 // ---------------- Global conversational inventory assistant ----------------
 const assistantHistoryKey = "inventoryAssistantHistory.v1";
+const assistantSessionsKey = "inventoryAssistantSessions.v1";
+const assistantSessionIdKey = "inventoryAssistantSessionId.v1";
 const assistantHistoryLimit = 60;
 let assistantHistory = [];
+let assistantSessions = [];
+let assistantSessionId = localStorage.getItem(assistantSessionIdKey) || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 let assistantBusy = false;
+let assistantRequestSequence = 0;
 let assistantRecognition = null;
+let assistantPaused = localStorage.getItem("dishaPaused") === "true";
 // Wake word starts automatically when the page opens. The browser may ask once
 // for microphone permission; after permission is granted, no in-app mic button is needed.
-let assistantWakeEnabled = true;
+let assistantWakeEnabled = !assistantPaused;
 let assistantMicBlocked = false;
 let assistantPermissionNoticeShown = false;
 let assistantWakeActiveUntil = 0;
@@ -1093,12 +1106,90 @@ try {
   const saved = JSON.parse(localStorage.getItem(assistantHistoryKey) || "[]");
   if (Array.isArray(saved)) assistantHistory = saved.filter((item) => item && ["user", "assistant"].includes(item.role) && typeof item.content === "string").slice(-assistantHistoryLimit);
 } catch (error) { assistantHistory = []; }
+try {
+  const savedSessions = JSON.parse(localStorage.getItem(assistantSessionsKey) || "[]");
+  if (Array.isArray(savedSessions)) assistantSessions = savedSessions.filter((session) => session && typeof session.id === "string" && Array.isArray(session.messages)).slice(0, 30);
+} catch (error) { assistantSessions = []; }
 
 function saveAssistantHistory() {
   assistantHistory = assistantHistory.slice(-assistantHistoryLimit);
-  try { localStorage.setItem(assistantHistoryKey, JSON.stringify(assistantHistory)); }
+  try {
+    localStorage.setItem(assistantHistoryKey, JSON.stringify(assistantHistory));
+    localStorage.setItem(assistantSessionIdKey, assistantSessionId);
+    if (assistantHistory.length) {
+      const firstUserMessage = assistantHistory.find((item) => item.role === "user")?.content || "New conversation";
+      const session = { id: assistantSessionId, title: firstUserMessage.slice(0, 72), updatedAt: new Date().toISOString(), messages: assistantHistory };
+      assistantSessions = [session, ...assistantSessions.filter((item) => item.id !== assistantSessionId)].slice(0, 30);
+      localStorage.setItem(assistantSessionsKey, JSON.stringify(assistantSessions));
+    }
+  }
   catch (error) { showToast("Chat history could not be saved in this browser.", "info", 2500); }
 }
+
+function renderAssistantHistory() {
+  const list = $("assistant-history-list");
+  if (!list) return;
+  list.replaceChildren();
+  const previousSessions = assistantSessions.filter((session) => session.id !== assistantSessionId);
+  if (!previousSessions.length) {
+    const empty = document.createElement("p");
+    empty.className = "assistant-history-empty";
+    empty.textContent = "No previous conversations yet.";
+    list.appendChild(empty);
+  } else {
+    previousSessions.forEach((session) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "assistant-history-item";
+      const title = document.createElement("strong");
+      title.textContent = session.title || "Conversation";
+      const date = document.createElement("small");
+      date.textContent = session.updatedAt ? new Date(session.updatedAt).toLocaleString() : "Saved conversation";
+      button.append(title, date);
+      button.addEventListener("click", () => openAssistantSession(session.id));
+      list.appendChild(button);
+    });
+  }
+  list.hidden = false;
+}
+
+function openAssistantSession(sessionId) {
+  const session = assistantSessions.find((item) => item.id === sessionId);
+  if (!session) return;
+  assistantRequestSequence += 1;
+  assistantBusy = false;
+  $("assistant-send").disabled = false;
+  assistantSessionId = session.id;
+  assistantHistory = session.messages.slice(-assistantHistoryLimit);
+  assistantConfirmationButton = null;
+  localStorage.setItem(assistantHistoryKey, JSON.stringify(assistantHistory));
+  localStorage.setItem(assistantSessionIdKey, assistantSessionId);
+  $("assistant-history-list").hidden = true;
+  $("assistant-panel").hidden = false;
+  $("assistant-launcher").setAttribute("aria-expanded", "true");
+  restoreAssistantMessages();
+}
+
+function startNewAssistantConversation({ fromVoice = false } = {}) {
+  if (assistantHistory.length) saveAssistantHistory();
+  assistantRequestSequence += 1;
+  assistantBusy = false;
+  const send = $("assistant-send");
+  if (send) send.disabled = false;
+  assistantHistory = [];
+  assistantConfirmationButton = null;
+  assistantSessionId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  localStorage.setItem(assistantHistoryKey, "[]");
+  localStorage.setItem(assistantSessionIdKey, assistantSessionId);
+  $("assistant-messages")?.replaceChildren();
+  $("assistant-history-list").hidden = true;
+  openAssistant({ speakGreeting: true, focusInput: !fromVoice, greetingText: fromVoice ? "Ji, nayi conversation shuru kar di. Ab pehle se alag baat kar sakte hain." : undefined });
+}
+
+function isNewConversationRequest(message) {
+  return /\b(new\s+(?:chat|conversation|convo|session)|start\s+(?:a\s+)?fresh\s+(?:chat|conversation)|fresh\s+start|start\s+over|reset\s+(?:(?:this|the)\s+)?(?:chat|conversation))\b|nayi\s+(?:chat|conversation|baatcheet)|नई\s+(?:चैट|बातचीत)|नई\s+बात/iu.test(message);
+}
+if (assistantHistory.length) saveAssistantHistory();
 
 function addAssistantMessage(role, content, options = {}) {
   const messages = $("assistant-messages");
@@ -1111,7 +1202,18 @@ function addAssistantMessage(role, content, options = {}) {
     const action = options.action;
     const card = document.createElement("div");
     card.className = "assistant-action-card";
-    card.innerHTML = `<strong>${esc(action.name)} · ${esc(action.sku)}</strong><div>Size ${esc(action.size)}: ${Number(action.current_stock)} → <b>${Number(action.proposed_stock)}</b> pieces</div><button class="btn-primary assistant-confirm-stock" type="button">Confirm stock update</button>`;
+    const actionText = action.type === "stock_update"
+      ? `${esc(action.name)} · ${esc(action.sku)}<div>Size ${esc(action.size)}: ${Number(action.current_stock)} → <b>${Number(action.proposed_stock)}</b> pieces</div>`
+      : action.type === "product_create"
+        ? `Create ${esc(action.name)} · ${esc(action.sku)}<div>Sizes: ${action.sizes.map(esc).join(", ")} · starting stock 0</div>`
+        : action.type === "product_update"
+          ? `Edit ${esc(action.sku)}<div>${Object.entries(action.changes).map(([key, value]) => `${esc(key)}: ${esc(value)}`).join(" · ")}</div>`
+          : action.type === "product_archive"
+            ? `Move ${esc(action.sku)} to Trash<div>Design and all its sizes</div>`
+            : action.type === "product_restore"
+              ? `Restore ${esc(action.sku)}<div>Design and its trashed sizes</div>`
+              : `Dispatch batch ${Number(action.order_id)}<div>${esc(action.filename || "Orders")} · ${Number(action.lines)} lines · ${Number(action.units)} pieces</div>`;
+    card.innerHTML = `<strong>${actionText}</strong><button class="btn-primary assistant-confirm-stock" type="button">${action.type === "stock_update" ? "Confirm stock update" : "Confirm this action"}</button>`;
     bubble.appendChild(card);
     const button = card.querySelector(".assistant-confirm-stock");
     assistantConfirmationButton = button;
@@ -1120,26 +1222,46 @@ function addAssistantMessage(role, content, options = {}) {
       button.disabled = true;
       button.textContent = "Updating…";
       try {
-        const updated = await apiPost(`${API}/inventory/adjust`, {
-          variant_code: action.variant_code,
-          new_count: Number(action.proposed_stock),
-          note: `AI assistant confirmed ${action.operation} ${action.quantity}`,
-          expected_current_stock: Number(action.current_stock),
-        });
-        const success = `${action.name}, ${action.sku}, size ${action.size}: stock ${Number(action.current_stock)} se ${updated.current_stock} pieces ho gaya. Update complete.`;
-        card.innerHTML = `<strong><i class="fa-solid fa-circle-check"></i> Stock updated</strong><div>${esc(action.sku)} · ${esc(action.size)}: ${Number(action.current_stock)} → ${Number(updated.current_stock)}</div>`;
+        let success = "Action complete.";
+        if (action.type === "stock_update") {
+          const updated = await apiPost(`${API}/inventory/adjust`, {
+            variant_code: action.variant_code, new_count: Number(action.proposed_stock),
+            note: `AI assistant confirmed ${action.operation} ${action.quantity}`,
+            expected_current_stock: Number(action.current_stock),
+          });
+          success = `${action.name}, ${action.sku}, size ${action.size}: stock ${Number(action.current_stock)} se ${updated.current_stock} pieces ho gaya. Update complete.`;
+        } else if (action.type === "product_create") {
+          await apiPost(`${API}/products`, { sku: action.sku, name: action.name, category: action.category || null, variants: action.sizes.map((size) => ({ size, initial_stock: 0 })) });
+          success = `${action.name} (${action.sku}) product ${action.sizes.length} sizes ke saath create ho gaya. Starting stock 0 hai; physical count ke baad stock set karein.`;
+        } else if (action.type === "product_update") {
+          await apiPatch(`${API}/products/${encodeURIComponent(action.sku)}`, action.changes);
+          success = `${action.sku} product details update ho gayi.`;
+        } else if (action.type === "product_archive") {
+          await apiDelete(`${API}/products/${encodeURIComponent(action.sku)}`);
+          success = `${action.sku} aur uske sizes Trash mein move ho gaye; history preserved hai.`;
+        } else if (action.type === "product_restore") {
+          await apiPost(`${API}/products/${encodeURIComponent(action.sku)}/restore`);
+          success = `${action.sku} product Trash se restore ho gaya.`;
+        } else if (action.type === "order_dispatch") {
+          const result = await apiPost(`${API}/orders/${Number(action.order_id)}/dispatch`);
+          success = `Batch ${Number(action.order_id)} dispatch complete: ${Number(result.dispatched_units)} pieces, ${Number(result.dispatched_lines)} lines.`;
+        } else {
+          throw new Error("This action is not supported.");
+        }
+        card.innerHTML = `<strong><i class="fa-solid fa-circle-check"></i> ${esc(success)}</strong>`;
         assistantConfirmationButton = null;
         assistantHistory.push({ role: "assistant", content: success });
         saveAssistantHistory();
         addAssistantMessage("assistant", success);
         speakAssistantMessage(success);
         playSuccessSound();
-        showToast(`${action.sku} · ${action.size} stock updated to ${updated.current_stock}`, "success", 2800);
+        showToast(success, "success", 3200);
         await refreshInventoryViews();
+        if ($("view-orders")?.classList.contains("is-active")) await loadOrderHistory();
       } catch (error) {
         button.disabled = false;
-        button.textContent = "Retry update";
-        addAssistantMessage("system", `Update nahi hua: ${error.message || error}. Stock badla nahi gaya; dobara try karein.`);
+        button.textContent = "Retry after checking";
+        addAssistantMessage("system", `Action confirm nahi hui: ${error.message || error}. Agar connection ke waqt issue aaya, retry se pehle page refresh karke current data verify karein.`);
       }
     });
   }
@@ -1151,7 +1273,10 @@ function addAssistantMessage(role, content, options = {}) {
       button.className = "assistant-choice";
       button.type = "button";
       button.innerHTML = `<strong>${esc(choice.sku)}</strong><small>${esc(choice.name)}${choice.size ? ` · ${esc(choice.size)}` : ""}${choice.current_stock != null ? ` · Stock ${Number(choice.current_stock)}` : ""}</small>`;
-      button.addEventListener("click", () => sendAssistantMessage(`Use ${choice.sku} for the product I just asked about.`, choice.sku));
+      button.addEventListener("click", () => {
+        const originalRequest = [...assistantHistory].reverse().find((item) => item.role === "user")?.content || `Find ${choice.sku}`;
+        sendAssistantMessage(originalRequest, choice.sku);
+      });
       list.appendChild(button);
     });
     bubble.appendChild(list);
@@ -1174,14 +1299,14 @@ function assistantGreeting() {
   return `${greeting}! Main Disha, aapki Inventory Assistant hoon. Product, colour, size aur stock ke baare mein bataiye—main pehle current stock check karke, update se pehle aapse confirm karungi. Aaj main aapki kya help kar sakti hoon?`;
 }
 
-function openAssistant({ speakGreeting = true, focusInput = true } = {}) {
+function openAssistant({ speakGreeting = true, focusInput = true, greetingText = null } = {}) {
   const panel = $("assistant-panel"), launcher = $("assistant-launcher");
   if (!panel || !launcher) return;
   panel.hidden = false;
   launcher.setAttribute("aria-expanded", "true");
   restoreAssistantMessages();
   if (!assistantHistory.length) {
-    const greeting = assistantGreeting();
+    const greeting = greetingText || assistantGreeting();
     assistantHistory.push({ role: "assistant", content: greeting });
     saveAssistantHistory();
     addAssistantMessage("assistant", greeting);
@@ -1192,8 +1317,12 @@ function openAssistant({ speakGreeting = true, focusInput = true } = {}) {
 
 async function sendAssistantMessage(message, selectedSku = null, { fromVoice = false } = {}) {
   const clean = String(message || "").trim().slice(0, 500);
-  if (!clean || assistantBusy) return;
+  if (!clean) return;
+  if (isNewConversationRequest(clean)) { startNewAssistantConversation({ fromVoice }); return; }
+  if (assistantBusy) return;
   assistantBusy = true;
+  const requestSequence = ++assistantRequestSequence;
+  const requestSessionId = assistantSessionId;
   const send = $("assistant-send"), input = $("assistant-chat-input");
   if (send) send.disabled = true;
   addAssistantMessage("user", clean);
@@ -1206,6 +1335,7 @@ async function sendAssistantMessage(message, selectedSku = null, { fromVoice = f
   try {
     if (isDailySalesRequest(clean)) {
       const summary = await getJSON(`${API}/analytics/daily-sales`);
+      if (requestSequence !== assistantRequestSequence || requestSessionId !== assistantSessionId) return;
       const reply = formatDailySalesSummary(summary);
       assistantHistory.push({ role: "assistant", content: reply });
       saveAssistantHistory();
@@ -1220,22 +1350,26 @@ async function sendAssistantMessage(message, selectedSku = null, { fromVoice = f
       body: JSON.stringify({ message: clean, history, selected_sku: selectedSku }),
     });
     const result = await response.json().catch(() => ({}));
+    if (requestSequence !== assistantRequestSequence || requestSessionId !== assistantSessionId) return;
     if (!response.ok) throw new Error(result.detail || `Assistant request failed (${response.status})`);
     const reply = String(result.reply || "Is request ko samajhne mein dikkat hui. Product aur size dobara batayein.");
     assistantHistory.push({ role: "assistant", content: reply });
     saveAssistantHistory();
-    addAssistantMessage("assistant", reply, { action: result.status === "confirm_stock" ? result.action : null, choices: result.status === "choose_product" ? result.choices : null });
+    addAssistantMessage("assistant", reply, { action: ["confirm_stock", "confirm_action"].includes(result.status) ? { type: result.status === "confirm_stock" ? "stock_update" : result.action.type, ...result.action } : null, choices: result.status === "choose_product" ? result.choices : null });
     speakAssistantMessage(reply);
   } catch (error) {
+    if (requestSequence !== assistantRequestSequence || requestSessionId !== assistantSessionId) return;
     const reply = `Assistant abhi connect nahi ho paayi: ${error.message || error}. Manual stock entry abhi use kar sakte hain.`;
     assistantHistory.push({ role: "assistant", content: reply });
     saveAssistantHistory();
     addAssistantMessage("assistant", reply);
   } finally {
     typing.remove();
-    assistantBusy = false;
-    if (send) send.disabled = false;
-    if (input && !fromVoice) input.focus({ preventScroll: true });
+    if (requestSequence === assistantRequestSequence && requestSessionId === assistantSessionId) {
+      assistantBusy = false;
+      if (send) send.disabled = false;
+      if (input && !fromVoice) input.focus({ preventScroll: true });
+    }
   }
 }
 
@@ -1249,12 +1383,11 @@ $("assistant-close")?.addEventListener("click", () => {
   $("assistant-panel").hidden = true;
   $("assistant-launcher").setAttribute("aria-expanded", "false");
 });
-$("assistant-clear")?.addEventListener("click", () => {
-  assistantHistory = [];
-  assistantConfirmationButton = null;
-  saveAssistantHistory();
-  $("assistant-messages")?.replaceChildren();
-  openAssistant();
+$("assistant-new-chat")?.addEventListener("click", () => startNewAssistantConversation());
+$("assistant-history-button")?.addEventListener("click", () => {
+  const list = $("assistant-history-list");
+  if (list.hidden) { saveAssistantHistory(); renderAssistantHistory(); }
+  else list.hidden = true;
 });
 $("assistant-chat-form")?.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -1265,11 +1398,39 @@ $("assistant-chat-form")?.addEventListener("submit", (event) => {
 });
 function updateDishaListeningUI(message = "") {
   const indicator = $("assistant-mic-status"), state = $("assistant-state"), dot = document.querySelector(".assistant-online-dot");
-  const isListening = assistantWakeEnabled && !assistantMicBlocked;
+  const button = $("assistant-pause");
+  const isListening = assistantWakeEnabled && !assistantPaused && !assistantMicBlocked;
   indicator?.classList.toggle("is-listening", isListening);
-  if (state) state.textContent = message || (assistantMicBlocked ? "Allow microphone access in browser settings" : isListening ? "Listening for ‘Disha’" : "Starting voice assistant…");
+  if (state) state.textContent = message || (assistantPaused ? "Paused · voice and listening off" : assistantMicBlocked ? "Allow microphone access in browser settings" : isListening ? "Listening for ‘Disha’" : "Starting voice assistant…");
   dot?.classList.toggle("is-listening", isListening);
+  if (button) {
+    button.classList.toggle("is-paused", assistantPaused);
+    button.setAttribute("aria-label", assistantPaused ? "Resume Disha voice and listening" : "Pause Disha voice and listening");
+    button.title = assistantPaused ? "Resume Disha voice and listening" : "Pause Disha voice and listening";
+    button.innerHTML = `<i class="fa-solid ${assistantPaused ? "fa-play" : "fa-pause"}"></i>`;
+  }
 }
+
+function setDishaPaused(paused) {
+  assistantPaused = paused;
+  localStorage.setItem("dishaPaused", String(paused));
+  if (paused) {
+    assistantWakeEnabled = false;
+    assistantWakeActiveUntil = 0;
+    assistantSpeechId += 1;
+    clearTimeout(assistantSpeechGuardTimer);
+    assistantSpeaking = false;
+    window.speechSynthesis?.cancel();
+    clearTimeout(assistantWakeRestartTimer);
+    assistantRecognition?.stop();
+  } else {
+    assistantWakeEnabled = true;
+    assistantMicBlocked = false;
+    startDishaWake();
+  }
+  updateDishaListeningUI();
+}
+$("assistant-pause")?.addEventListener("click", () => setDishaPaused(!assistantPaused));
 
 function startDishaWake(isAutomaticResume = false) {
   const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -1279,7 +1440,7 @@ function startDishaWake(isAutomaticResume = false) {
     if (!isAutomaticResume) addAssistantMessage("system", "Is browser mein wake-word voice input supported nahi hai. Chrome/Edge ya chat typing use karein.");
     return;
   }
-  if (assistantRecognition || document.visibilityState === "hidden" || assistantMicBlocked) return;
+  if (assistantPaused || assistantRecognition || document.visibilityState === "hidden" || assistantMicBlocked) return;
   assistantWakeEnabled = true;
   updateDishaListeningUI();
   const recognition = new Recognition();
@@ -1336,7 +1497,7 @@ function isAffirmative(text) { return /^(?:(?:haan|han|ha|yes|yeah|yep|ji|jee|bi
 function isNegative(text) { return /^(?:(?:nahi|nahin|no|nope|cancel)(?:\b|$)|(?:नहीं|ना|रद्द)(?:\s|$)|मत\s+करो)/iu.test(text.trim().replace(/[.!?,।]+$/g, "")); }
 
 function handleDishaUtterance(transcript) {
-  if (assistantSpeaking) return;
+  if (assistantPaused || assistantSpeaking) return;
   let message = String(transcript || "").trim();
   const wakeWord = /\bd[iy]s?ha\b|दिशा|दीशा/iu;
   const woke = wakeWord.test(message);
@@ -1400,16 +1561,16 @@ function formatDailySalesSummary(summary) {
 $("assistant-sales-summary")?.addEventListener("click", () => sendAssistantMessage("Aaj ki dispatched sales ka short summary batao."));
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") assistantRecognition?.stop();
-  else if (assistantWakeEnabled && !assistantRecognition) { assistantMicBlocked = false; startDishaWake(true); }
+  else if (assistantWakeEnabled && !assistantPaused && !assistantRecognition) { assistantMicBlocked = false; startDishaWake(true); }
 });
 window.addEventListener("focus", () => {
-  if (assistantWakeEnabled && !assistantRecognition && assistantMicBlocked) {
+  if (assistantWakeEnabled && !assistantPaused && !assistantRecognition && assistantMicBlocked) {
     assistantMicBlocked = false;
     startDishaWake(true);
   }
 });
 updateDishaListeningUI();
-setTimeout(() => startDishaWake(true), 900);
+if (!assistantPaused) setTimeout(() => startDishaWake(true), 900);
 
 async function loadAlerts() {
   const list = $("alerts-list");

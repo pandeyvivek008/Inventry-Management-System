@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Inventory Management System</title>
-<link rel="stylesheet" href="style.css?v=disha-wake-auto-20261010">
+<link rel="stylesheet" href="style.css?v=disha-app-wide-mobile-20261010">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
 </head>
 <body>
@@ -311,9 +311,12 @@
     <header class="assistant-panel-head">
       <span class="assistant-avatar"><i class="fa-solid fa-robot"></i></span>
       <div class="assistant-head-copy"><strong>Disha · Inventory Assistant</strong><small><span class="assistant-online-dot"></span><span id="assistant-state">Ready to help</span></small></div>
-      <button id="assistant-clear" class="assistant-head-btn" type="button" aria-label="Clear chat history" title="Clear chat"><i class="fa-solid fa-rotate-left"></i></button>
+      <button id="assistant-new-chat" class="assistant-head-btn" type="button" aria-label="Start a new conversation" title="New conversation"><i class="fa-solid fa-plus"></i></button>
+      <button id="assistant-history-button" class="assistant-head-btn" type="button" aria-label="Conversation history" title="Conversation history"><i class="fa-solid fa-clock-rotate-left"></i></button>
+      <button id="assistant-pause" class="assistant-head-btn assistant-pause-btn" type="button" aria-label="Pause Disha voice and listening" title="Pause Disha voice and listening"><i class="fa-solid fa-pause"></i></button>
       <button id="assistant-close" class="assistant-head-btn" type="button" aria-label="Close assistant"><i class="fa-solid fa-xmark"></i></button>
     </header>
+    <div id="assistant-history-list" class="assistant-history-list" hidden></div>
     <div id="assistant-messages" class="assistant-messages" aria-live="polite"></div>
     <form id="assistant-chat-form" class="assistant-chat-form">
       <span id="assistant-mic-status" class="assistant-mic-status" aria-hidden="true"><i class="fa-solid fa-ear-listen"></i></span>
@@ -321,7 +324,7 @@
       <button id="assistant-send" type="submit" aria-label="Send message"><i class="fa-solid fa-paper-plane"></i></button>
     </form>
     <div class="assistant-quick-actions"><button id="assistant-sales-summary" type="button"><i class="fa-solid fa-chart-line"></i> Aaj ki sales</button></div>
-    <p class="assistant-footnote">Disha hands-free sun rahi hai · “Disha” bolkar baat shuru karein · stock update se pehle “haan” bolkar confirm karein</p>
+    <p class="assistant-footnote">Products, stock, alerts, reorder, orders aur sales poochhein · stock update confirm ke baad · Pause voice rokta hai</p>
   </section>
   <button id="assistant-launcher" class="assistant-launcher" type="button" aria-label="Open Disha Inventory Assistant" title="Talk with Disha" aria-expanded="false">
     <i class="fa-solid fa-robot"></i><span class="assistant-launcher-dot"></span>
@@ -331,6 +334,6 @@
 <div id="toast" class="toast" hidden></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
-<script src="app.js?v=disha-wake-auto-20261010"></script>
+<script src="app.js?v=disha-app-wide-mobile-20261010"></script>
 </body>
 </html>

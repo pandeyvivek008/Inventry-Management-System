@@ -634,6 +634,14 @@ img { max-width: 100%; display: block; }
 .assistant-online-dot { width:7px; height:7px; border-radius:50%; background:#8cf1b5; }
 .assistant-head-btn { display:grid; place-items:center; width:30px; height:30px; border:1px solid rgba(255,255,255,.2); border-radius:9px; color:#fff; background:rgba(255,255,255,.08); cursor:pointer; }
 .assistant-head-btn:hover { background:rgba(255,255,255,.18); }
+.assistant-pause-btn.is-paused { color:#17334a; background:#fff; }
+.assistant-history-list { max-height:180px; overflow:auto; padding:8px; border-bottom:1px solid #e2e9e6; background:#fff; }
+.assistant-history-list[hidden] { display:none; }
+.assistant-history-empty { margin:5px 8px; color:var(--ink-soft); font-size:11px; }
+.assistant-history-item { display:flex; flex-direction:column; width:100%; gap:3px; padding:9px 10px; border:0; border-radius:9px; background:transparent; color:var(--ink); text-align:left; cursor:pointer; }
+.assistant-history-item:hover { background:#eef8f2; }
+.assistant-history-item strong { overflow:hidden; font-size:11px; font-weight:700; text-overflow:ellipsis; white-space:nowrap; }
+.assistant-history-item small { color:var(--ink-soft); font-size:9px; }
 .assistant-messages { display:flex; flex:1; flex-direction:column; gap:10px; overflow:auto; padding:14px 12px; overscroll-behavior:contain; }
 .assistant-message { max-width:88%; padding:10px 12px; border:1px solid #e4eae8; border-radius:14px 14px 14px 4px; background:#fff; color:var(--ink); font-size:12px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; box-shadow:0 2px 6px rgba(25,47,64,.035); }
 .assistant-message.user { align-self:flex-end; border-color:#c9ecdb; border-radius:14px 14px 4px 14px; background:#eaf8f0; }
@@ -720,4 +728,34 @@ img { max-width: 100%; display: block; }
   #trash-list .tcard { grid-template-columns:96px minmax(0,1fr); gap:11px; }
   #trash-list .tcard-photo-wrap { width:96px; height:135px; }
   #trash-list .tcard-actions { grid-template-columns:1fr; }
+}
+
+/* Disha uses the available phone viewport, including safe areas and the
+   resized viewport when the software keyboard is open. */
+@media (max-width:760px) {
+  .assistant-widget {
+    top:calc(var(--topbar-h) + env(safe-area-inset-top) + 8px);
+    right:8px;
+    bottom:calc(env(safe-area-inset-bottom) + 8px);
+    left:8px;
+    align-items:stretch;
+    justify-content:flex-end;
+    gap:8px;
+  }
+  .assistant-widget:has(.assistant-panel:not([hidden])) .assistant-panel {
+    width:100%;
+    height:auto;
+    min-height:0;
+    flex:1 1 auto;
+  }
+  .assistant-panel { width:100%; max-height:100%; border-radius:16px; }
+  .assistant-launcher { width:52px; height:52px; flex:0 0 52px; align-self:flex-end; }
+  .assistant-head-btn { width:40px; height:40px; flex:0 0 40px; }
+  .assistant-panel-head { gap:6px; min-height:62px; padding:8px; }
+  .assistant-avatar { width:36px; height:36px; flex:0 0 36px; }
+  .assistant-head-copy strong { font-size:12px; }
+  .assistant-chat-form { padding-bottom:max(10px, env(safe-area-inset-bottom)); }
+  .assistant-chat-form input { height:44px; font-size:16px; }
+  .assistant-chat-form button, .assistant-mic-status { width:44px; height:44px; flex-basis:44px; }
+  .assistant-message { font-size:14px; }
 }
