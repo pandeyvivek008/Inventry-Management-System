@@ -208,24 +208,21 @@ dispatched, use **Mark This Batch as Dispatched**; only then is physical stock d
 
 ### Conversational stock assistant
 
-The floating assistant uses Hugging Face Inference Providers to interpret Hindi,
-Hinglish, and English requests. The model only extracts the requested product,
-size, operation, and quantity. The app resolves that request against its own
-catalog and stock ledger; an inventory change is written only after the user clicks
+The floating Disha assistant uses the Gemini API to interpret Hindi, Hinglish,
+and English requests. Gemini only extracts the requested product, size,
+operation, and quantity. The app resolves that request against its own catalog
+and stock ledger; an inventory change is written only after the user clicks
 **Confirm stock update**. A stale proposal is rejected if stock changed in the meantime.
 
-Configure `HF_TOKEN` as a **Railway service variable** (or as a local environment
-variable for development: copy `.env.example` to `.env` and fill in a new key).
-Use a fine-grained Hugging Face token with only
-**Make calls to Inference Providers** permission. Never place the token in HTML,
-JavaScript, Git, or screenshots. The default model is
-`openai/gpt-oss-20b:fastest`; set `HF_MODEL` to override it. If Hugging Face is
-unavailable or the token is missing, manual inventory tools continue to work and
-the assistant shows a clear connection message.
+Configure `GEMINI_API_KEY` as a **Railway app-service variable** (or locally in
+the ignored `.env` file after copying `.env.example`). `GEMINI_MODEL` defaults to
+`gemini-3.8-flash` and can be overridden. Never place the key in HTML,
+JavaScript, Git, or screenshots. If Gemini is unavailable or the key is missing,
+manual inventory tools continue to work and the assistant shows a connection message.
 
 Chat history currently stays in that browser's local storage. It is not shared
 between browsers or devices; user accounts and server-side chat history are not
-implemented yet. For hands-free use, tap the mic once and allow microphone access;
+implemented yet. For hands-free use, open Disha once and allow microphone access;
 the app remembers that opt-in and listens for **Disha** while the app is open. Say
 **haan/yes** to confirm a pending stock update or **nahi/no** to cancel. The wake
 listener pauses when the app is backgrounded and resumes when it is visible again.

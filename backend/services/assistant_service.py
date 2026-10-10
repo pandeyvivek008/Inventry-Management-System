@@ -1,11 +1,13 @@
-"""Small Hugging Face intent parser for safe, size-specific inventory actions.
+"""Gemini intent parser for safe, size-specific inventory actions.
 
 The model only extracts what the user asked for. Catalog lookup, current stock,
 authorization to mutate, and all inventory writes remain in the application DB.
 """
 import json
+import logging
 import os
 from pathlib import Path
+from urllib.parse import quote
 
 import httpx
 from dotenv import load_dotenv
@@ -15,8 +17,9 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 
-HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions"
-DEFAULT_MODEL = "openai/gpt-oss-20b:fastest"
+logger = logging.getLogger(__name__)
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+DEFAULT_MODEL = "gemini-3.8-flash"
 
 INTENT_SCHEMA = {
     "type": "object",
@@ -51,46 +54,62 @@ class AssistantProviderError(Exception):
     """The configured inference provider could not safely parse a request."""
 
 
-def token_configured() -> bool:
-    return bool(os.getenv("HF_TOKEN", "").strip())
+def api_key_configured() -> bool:
+    return bool(os.getenv("GEMINI_API_KEY", "").strip())
 
 
 async def parse_inventory_request(message: str, history: list[dict]) -> dict:
-    token = os.getenv("HF_TOKEN", "").strip()
-    if not token:
-        raise AssistantProviderError("Hugging Face assistant is not configured.")
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        raise AssistantProviderError("Gemini API is not configured.")
 
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    contents = []
     for item in history[-10:]:
         role = item.get("role")
         content = str(item.get("content", ""))[:1000]
         if role in ("user", "assistant") and content.strip():
-            messages.append({"role": role, "content": content})
-    messages.append({"role": "user", "content": message[:500]})
+            contents.append({"role": "user" if role == "user" else "model", "parts": [{"text": content}]})
+    contents.append({"role": "user", "parts": [{"text": message[:500]}]})
 
     payload = {
-        "model": os.getenv("HF_MODEL", DEFAULT_MODEL),
-        "messages": messages,
-        "temperature": 0,
-        "max_tokens": 220,
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {"name": "inventory_intent", "strict": True, "schema": INTENT_SCHEMA},
+        "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+        "contents": contents,
+        "generationConfig": {
+            "temperature": 0,
+            "maxOutputTokens": 220,
+            "thinkingConfig": {"thinkingLevel": "low"},
+            "responseMimeType": "application/json",
+            "responseSchema": {
+                "type": "OBJECT",
+                "properties": {
+                    "intent": {"type": "STRING", "enum": INTENT_SCHEMA["properties"]["intent"]["enum"]},
+                    "product_query": {"type": "STRING"},
+                    "size": {"type": "STRING"},
+                    "quantity": {"type": "INTEGER", "nullable": True},
+                    "operation": {"type": "STRING", "enum": INTENT_SCHEMA["properties"]["operation"]["enum"]},
+                },
+                "required": INTENT_SCHEMA["required"],
+            },
         },
     }
+    model = os.getenv("GEMINI_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(18.0, connect=5.0)) as client:
             response = await client.post(
-                HF_CHAT_URL,
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                GEMINI_API_URL.format(model=quote(model, safe="-._")),
+                headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
                 json=payload,
             )
         if response.status_code >= 400:
-            raise AssistantProviderError(f"Inference provider returned HTTP {response.status_code}.")
+            # Keep the API key and prompt private: log only Google's short error body and status.
+            logger.warning("Gemini generateContent returned HTTP %s: %s", response.status_code, response.text[:500])
+            raise AssistantProviderError(f"Gemini API returned HTTP {response.status_code}.")
         body = response.json()
-        content = body["choices"][0]["message"]["content"]
-        if isinstance(content, list):
-            content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+        content = "".join(
+            str(part.get("text", ""))
+            for part in body["candidates"][0]["content"]["parts"]
+            if isinstance(part, dict)
+        )
         parsed = json.loads(content)
         intent = str(parsed.get("intent", "other"))
         operation = str(parsed.get("operation", "add"))
@@ -112,5 +131,6 @@ async def parse_inventory_request(message: str, history: list[dict]) -> dict:
         }
     except AssistantProviderError:
         raise
-    except (httpx.HTTPError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+    except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+        logger.warning("Gemini assistant response could not be parsed (%s).", type(exc).__name__)
         raise AssistantProviderError("Inference provider unavailable or returned invalid JSON.") from exc

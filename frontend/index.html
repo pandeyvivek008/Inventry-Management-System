@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Inventory Management System</title>
-<link rel="stylesheet" href="style.css?v=disha-20261010">
+<link rel="stylesheet" href="style.css?v=gemini-disha-20261010">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
 </head>
 <body>
@@ -193,20 +193,11 @@
 
     <!-- ================= ALERTS ================= -->
     <section id="view-alerts" class="view">
-      <header class="view-head"><div><h1>Alerts</h1><p class="sub">Design aur size wise alerts. Count type karke Enter dabayein, ya voice command bolein.</p></div>
+      <header class="view-head"><div><h1>Alerts</h1><p class="sub">Design aur size wise alerts. Stock ko Disha se voice ya chat mein update karein.</p></div>
         <div class="alert-tools">
           <button id="alert-speech-toggle" class="btn-ghost" type="button" aria-pressed="false"><i class="fa-solid fa-volume-high"></i> Spoken alerts: Off</button>
-          <button id="voice-command-btn" class="btn-secondary" type="button"><i class="fa-solid fa-microphone"></i> Voice stock update</button>
         </div>
       </header>
-      <div class="voice-agent-panel">
-        <div class="voice-agent-intro"><span class="voice-agent-icon"><i class="fa-solid fa-wand-magic-sparkles"></i></span><div><strong>Inventory Assistant</strong><p>Speak or type naturally. Example: “Black design, M size mein 5 add karo.”</p></div></div>
-        <form id="voice-command-form" class="voice-command-form">
-          <input id="voice-command-input" class="input" type="text" autocomplete="off" placeholder="Product, size aur stock batayein…" aria-label="Tell the inventory assistant what stock to update">
-          <button id="voice-submit-btn" class="btn-primary" type="submit"><i class="fa-solid fa-paper-plane"></i><span>Ask</span></button>
-        </form>
-      </div>
-      <div id="voice-agent-status" class="voice-agent-status" role="status" hidden></div>
       <input id="alerts-search" type="search" placeholder="Search by design, SKU, size or alert type…" class="input alerts-search" aria-label="Search alerts">
       <p id="alerts-note" class="hint"></p>
       <div id="alerts-list" class="stack-list"></div>
@@ -330,7 +321,7 @@
       <button id="assistant-send" type="submit" aria-label="Send message"><i class="fa-solid fa-paper-plane"></i></button>
     </form>
     <div class="assistant-quick-actions"><button id="assistant-sales-summary" type="button"><i class="fa-solid fa-chart-line"></i> Aaj ki sales</button></div>
-    <p class="assistant-footnote">Mic icon se wake listener on karein · “Disha” bolein · “haan” se confirm</p>
+    <p class="assistant-footnote">Pehli baar Disha button dabakar mic allow karein · phir “Disha” bolein · “haan” se confirm</p>
   </section>
   <button id="assistant-launcher" class="assistant-launcher" type="button" aria-label="Open Disha Inventory Assistant" title="Talk with Disha" aria-expanded="false">
     <i class="fa-solid fa-robot"></i><span class="assistant-launcher-dot"></span>
@@ -340,6 +331,6 @@
 <div id="toast" class="toast" hidden></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
-<script src="app.js?v=disha-20261010"></script>
+<script src="app.js?v=gemini-disha-20261010"></script>
 </body>
 </html>

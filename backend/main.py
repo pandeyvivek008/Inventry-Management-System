@@ -345,8 +345,8 @@ async def inventory_assistant_chat(payload: schemas.AssistantChatRequest, reques
     This route never changes stock. Inventory writes still require the existing
     explicit stock-adjustment confirmation flow.
     """
-    if not assistant_service.token_configured():
-        raise HTTPException(status_code=503, detail="Hugging Face is not configured. Add HF_TOKEN to Railway Variables.")
+    if not assistant_service.api_key_configured():
+        raise HTTPException(status_code=503, detail="Gemini is not configured. Add GEMINI_API_KEY to Railway Variables.")
     client_ip = request.client.host if request.client else "unknown"
     if not _assistant_rate_limit(client_ip):
         raise HTTPException(status_code=429, detail="Assistant request limit reached. Please wait a minute and try again.")
