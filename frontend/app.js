@@ -1081,7 +1081,11 @@ const assistantHistoryLimit = 60;
 let assistantHistory = [];
 let assistantBusy = false;
 let assistantRecognition = null;
-let assistantWakeEnabled = localStorage.getItem("dishaWakeEnabled") === "true";
+// Wake word starts automatically when the page opens. The browser may ask once
+// for microphone permission; after permission is granted, no in-app mic button is needed.
+let assistantWakeEnabled = true;
+let assistantMicBlocked = false;
+let assistantPermissionNoticeShown = false;
 let assistantWakeActiveUntil = 0;
 let assistantConfirmationButton = null;
 let assistantWakeRestartTimer = null;
@@ -1170,7 +1174,7 @@ function assistantGreeting() {
   return `${greeting}! Main Disha, aapki Inventory Assistant hoon. Product, colour, size aur stock ke baare mein bataiye—main pehle current stock check karke, update se pehle aapse confirm karungi. Aaj main aapki kya help kar sakti hoon?`;
 }
 
-function openAssistant() {
+function openAssistant({ speakGreeting = true, focusInput = true } = {}) {
   const panel = $("assistant-panel"), launcher = $("assistant-launcher");
   if (!panel || !launcher) return;
   panel.hidden = false;
@@ -1181,12 +1185,12 @@ function openAssistant() {
     assistantHistory.push({ role: "assistant", content: greeting });
     saveAssistantHistory();
     addAssistantMessage("assistant", greeting);
-    speakAssistantMessage(greeting);
+    if (speakGreeting) speakAssistantMessage(greeting);
   }
-  $("assistant-chat-input")?.focus({ preventScroll: true });
+  if (focusInput) $("assistant-chat-input")?.focus({ preventScroll: true });
 }
 
-async function sendAssistantMessage(message, selectedSku = null) {
+async function sendAssistantMessage(message, selectedSku = null, { fromVoice = false } = {}) {
   const clean = String(message || "").trim().slice(0, 500);
   if (!clean || assistantBusy) return;
   assistantBusy = true;
@@ -1231,16 +1235,13 @@ async function sendAssistantMessage(message, selectedSku = null) {
     typing.remove();
     assistantBusy = false;
     if (send) send.disabled = false;
-    if (input) input.focus({ preventScroll: true });
+    if (input && !fromVoice) input.focus({ preventScroll: true });
   }
 }
 
 $("assistant-launcher")?.addEventListener("click", () => {
   if ($("assistant-panel").hidden) {
     openAssistant();
-    // A tap on Disha is the browser's required user gesture for microphone access.
-    // Once allowed, keep the listener ready for the spoken wake word on every page.
-    if (!assistantWakeEnabled) startDishaWake();
   }
   else { $("assistant-panel").hidden = true; $("assistant-launcher").setAttribute("aria-expanded", "false"); }
 });
@@ -1262,78 +1263,70 @@ $("assistant-chat-form")?.addEventListener("submit", (event) => {
   input.value = "";
   sendAssistantMessage(message);
 });
-$("assistant-mic")?.addEventListener("click", () => {
-  if (assistantWakeEnabled) stopDishaWake();
-  else startDishaWake();
-});
-
 function updateDishaListeningUI(message = "") {
-  const button = $("assistant-mic"), state = $("assistant-state"), dot = document.querySelector(".assistant-online-dot");
-  if (button) {
-    button.classList.toggle("is-listening", assistantWakeEnabled);
-    button.setAttribute("aria-label", assistantWakeEnabled ? "Disable Disha wake word" : "Enable Disha wake word");
-    button.title = assistantWakeEnabled ? "Disha hands-free listening is on · click to turn off" : "Enable hands-free listening for “Disha”";
-    button.innerHTML = `<i class="fa-solid ${assistantWakeEnabled ? "fa-ear-listen" : "fa-microphone"}"></i>`;
-  }
-  if (state) state.textContent = message || (assistantWakeEnabled ? "Listening for ‘Disha’" : "Ready to help");
-  dot?.classList.toggle("is-listening", assistantWakeEnabled);
+  const indicator = $("assistant-mic-status"), state = $("assistant-state"), dot = document.querySelector(".assistant-online-dot");
+  const isListening = assistantWakeEnabled && !assistantMicBlocked;
+  indicator?.classList.toggle("is-listening", isListening);
+  if (state) state.textContent = message || (assistantMicBlocked ? "Allow microphone access in browser settings" : isListening ? "Listening for ‘Disha’" : "Starting voice assistant…");
+  dot?.classList.toggle("is-listening", isListening);
 }
 
 function startDishaWake(isAutomaticResume = false) {
   const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!Recognition) {
     assistantWakeEnabled = false;
-    localStorage.setItem("dishaWakeEnabled", "false");
     updateDishaListeningUI("Voice unavailable · type to chat");
     if (!isAutomaticResume) addAssistantMessage("system", "Is browser mein wake-word voice input supported nahi hai. Chrome/Edge ya chat typing use karein.");
     return;
   }
-  if (assistantRecognition || document.visibilityState === "hidden") return;
+  if (assistantRecognition || document.visibilityState === "hidden" || assistantMicBlocked) return;
   assistantWakeEnabled = true;
-  localStorage.setItem("dishaWakeEnabled", "true");
-  assistantWakeActiveUntil = Date.now() + 15000;
   updateDishaListeningUI();
   const recognition = new Recognition();
   assistantRecognition = recognition;
   recognition.lang = "hi-IN";
   recognition.continuous = true;
-  recognition.interimResults = false;
-  recognition.maxAlternatives = 1;
+  recognition.interimResults = true;
+  recognition.maxAlternatives = 3;
   recognition.onresult = (event) => {
     for (let index = event.resultIndex; index < event.results.length; index += 1) {
-      if (event.results[index].isFinal) handleDishaUtterance(event.results[index][0].transcript);
+      if (event.results[index].isFinal) {
+        const alternatives = Array.from(event.results[index]).map((alternative) => alternative.transcript);
+        const wakeWord = /\bd[iy]s?ha\b|दिशा|दीशा/iu;
+        handleDishaUtterance(alternatives.find((transcript) => wakeWord.test(transcript)) || alternatives[0]);
+      }
     }
   };
   recognition.onerror = (event) => {
-    if (["not-allowed", "service-not-allowed"].includes(event.error)) {
-      assistantWakeEnabled = false;
-      localStorage.setItem("dishaWakeEnabled", "false");
-      updateDishaListeningUI("Mic permission needed");
-      addAssistantMessage("system", "Disha ko sunne ke liye browser mic permission allow karein. Aap type karke bhi baat kar sakte hain.");
+    if (["not-allowed", "service-not-allowed", "audio-capture"].includes(event.error)) {
+      assistantMicBlocked = true;
+      updateDishaListeningUI("Microphone permission needed · allow it in browser settings");
+      if (!assistantPermissionNoticeShown) {
+        assistantPermissionNoticeShown = true;
+        addAssistantMessage("system", "Disha ko microphone permission chahiye. Address bar ke lock/site controls mein Microphone ko Allow karein, phir page reload karein. Tab tak message type kar sakte hain.");
+      }
     }
   };
   recognition.onend = () => {
     if (assistantRecognition === recognition) assistantRecognition = null;
-    if (!assistantWakeEnabled) updateDishaListeningUI();
+    if (!assistantWakeEnabled || assistantMicBlocked) updateDishaListeningUI();
     else if (document.visibilityState === "visible") {
       clearTimeout(assistantWakeRestartTimer);
-      assistantWakeRestartTimer = setTimeout(() => startDishaWake(true), 650);
+      assistantWakeRestartTimer = setTimeout(() => startDishaWake(true), 900);
     }
   };
   try { recognition.start(); }
   catch (error) {
     assistantRecognition = null;
-    assistantWakeEnabled = false;
-    localStorage.setItem("dishaWakeEnabled", "false");
-    updateDishaListeningUI("Mic did not start");
-    if (!isAutomaticResume) addAssistantMessage("system", "Mic start nahi hua. Browser permission check karein, ya type karein.");
+    assistantMicBlocked = true;
+    updateDishaListeningUI("Microphone did not start · check browser permissions");
+    if (!isAutomaticResume) addAssistantMessage("system", "Mic start nahi hua. Browser site settings mein microphone Allow karke page reload karein, ya type karein.");
   }
 }
 
 function stopDishaWake() {
   assistantWakeEnabled = false;
   assistantWakeActiveUntil = 0;
-  localStorage.setItem("dishaWakeEnabled", "false");
   clearTimeout(assistantWakeRestartTimer);
   assistantRecognition?.stop();
   updateDishaListeningUI("Disha listening off");
@@ -1345,12 +1338,12 @@ function isNegative(text) { return /^(?:(?:nahi|nahin|no|nope|cancel)(?:\b|$)|(?
 function handleDishaUtterance(transcript) {
   if (assistantSpeaking) return;
   let message = String(transcript || "").trim();
-  const wakeWord = /\bdisha\b|दीशा/iu;
+  const wakeWord = /\bd[iy]s?ha\b|दिशा|दीशा/iu;
   const woke = wakeWord.test(message);
   if (woke) {
     message = message.replace(wakeWord, "").replace(/^[\s,.:;!?।-]+|[\s,.:;!?।-]+$/g, "").trim();
     assistantWakeActiveUntil = Date.now() + 45000;
-    if ($("assistant-panel").hidden) openAssistant();
+    if ($("assistant-panel").hidden) openAssistant({ speakGreeting: false, focusInput: false });
     updateDishaListeningUI("Disha is listening to you");
     if (!message) {
       const response = "Ji, main sun rahi hoon. Product, size aur kya karna hai batayein.";
@@ -1363,7 +1356,7 @@ function handleDishaUtterance(transcript) {
   } else if (Date.now() > assistantWakeActiveUntil) return;
 
   if (assistantConfirmationButton && isAffirmative(message)) {
-    if ($("assistant-panel").hidden) openAssistant();
+    if ($("assistant-panel").hidden) openAssistant({ speakGreeting: false, focusInput: false });
     assistantHistory.push({ role: "user", content: message });
     saveAssistantHistory();
     addAssistantMessage("user", message);
@@ -1387,7 +1380,7 @@ function handleDishaUtterance(transcript) {
   }
   if (message) {
     assistantWakeActiveUntil = Date.now() + 45000;
-    sendAssistantMessage(message);
+    sendAssistantMessage(message, null, { fromVoice: true });
   }
 }
 
@@ -1407,10 +1400,16 @@ function formatDailySalesSummary(summary) {
 $("assistant-sales-summary")?.addEventListener("click", () => sendAssistantMessage("Aaj ki dispatched sales ka short summary batao."));
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") assistantRecognition?.stop();
-  else if (assistantWakeEnabled && !assistantRecognition) startDishaWake(true);
+  else if (assistantWakeEnabled && !assistantRecognition) { assistantMicBlocked = false; startDishaWake(true); }
+});
+window.addEventListener("focus", () => {
+  if (assistantWakeEnabled && !assistantRecognition && assistantMicBlocked) {
+    assistantMicBlocked = false;
+    startDishaWake(true);
+  }
 });
 updateDishaListeningUI();
-if (assistantWakeEnabled) setTimeout(() => startDishaWake(true), 900);
+setTimeout(() => startDishaWake(true), 900);
 
 async function loadAlerts() {
   const list = $("alerts-list");
