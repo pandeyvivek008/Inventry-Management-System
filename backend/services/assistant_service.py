@@ -19,7 +19,7 @@ load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 logger = logging.getLogger(__name__)
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-DEFAULT_MODEL = "gemini-3.8-flash"
+DEFAULT_MODEL = "gemini-3.5-flash-lite"
 
 INTENT_SCHEMA = {
     "type": "object",
@@ -94,7 +94,8 @@ async def parse_inventory_request(message: str, history: list[dict]) -> dict:
     }
     model = os.getenv("GEMINI_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(18.0, connect=5.0)) as client:
+        # Leave room for cold starts and transient provider latency.
+        async with httpx.AsyncClient(timeout=httpx.Timeout(40.0, connect=8.0)) as client:
             response = await client.post(
                 GEMINI_API_URL.format(model=quote(model, safe="-._")),
                 headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
@@ -131,6 +132,12 @@ async def parse_inventory_request(message: str, history: list[dict]) -> dict:
         }
     except AssistantProviderError:
         raise
-    except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
-        logger.warning("Gemini assistant response could not be parsed (%s).", type(exc).__name__)
+    except httpx.TimeoutException as exc:
+        logger.warning("Gemini request timed out (%s).", type(exc).__name__)
+        raise AssistantProviderError("Gemini request timed out.") from exc
+    except httpx.HTTPError as exc:
+        logger.warning("Gemini network request failed (%s).", type(exc).__name__)
+        raise AssistantProviderError("Gemini provider request failed.") from exc
+    except (ValueError, KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+        logger.warning("Gemini assistant response was invalid (%s).", type(exc).__name__)
         raise AssistantProviderError("Inference provider unavailable or returned invalid JSON.") from exc

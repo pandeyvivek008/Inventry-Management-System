@@ -216,7 +216,7 @@ and stock ledger; an inventory change is written only after the user clicks
 
 Configure `GEMINI_API_KEY` as a **Railway app-service variable** (or locally in
 the ignored `.env` file after copying `.env.example`). `GEMINI_MODEL` defaults to
-`gemini-3.8-flash` and can be overridden. Never place the key in HTML,
+`gemini-3.5-flash-lite` and can be overridden. Never place the key in HTML,
 JavaScript, Git, or screenshots. If Gemini is unavailable or the key is missing,
 manual inventory tools continue to work and the assistant shows a connection message.
 
