@@ -1,4 +1,4 @@
-"""Gemini intent parser for safe, size-specific inventory actions.
+"""OpenAI/Gemini intent parser for safe, size-specific inventory actions.
 
 The model only extracts what the user asked for. Catalog lookup, current stock,
 authorization to mutate, and all inventory writes remain in the application DB.
@@ -19,7 +19,9 @@ load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 logger = logging.getLogger(__name__)
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+OPENAI_API_URL = "https://api.openai.com/v1/responses"
 DEFAULT_MODEL = "gemini-3.5-flash-lite"
+DEFAULT_OPENAI_MODEL = "gpt-5-mini"
 
 INTENT_SCHEMA = {
     "type": "object",
@@ -88,22 +90,48 @@ class AssistantProviderError(Exception):
         self.user_message = user_message or message
 
 
+def active_provider() -> str | None:
+    requested = os.getenv("AI_PROVIDER", "auto").strip().lower()
+    has_openai = bool(os.getenv("OPENAI_API_KEY", "").strip())
+    has_gemini = bool(os.getenv("GEMINI_API_KEY", "").strip())
+    if requested == "openai":
+        return "openai" if has_openai else None
+    if requested == "gemini":
+        return "gemini" if has_gemini else None
+    return "openai" if has_openai else ("gemini" if has_gemini else None)
+
+
 def api_key_configured() -> bool:
-    return bool(os.getenv("GEMINI_API_KEY", "").strip())
+    return active_provider() is not None
+
+
+def _openai_json_schema(schema: dict) -> dict:
+    """Convert nullable JSON Schema type arrays to strict-schema anyOf forms."""
+    if isinstance(schema, list):
+        return [_openai_json_schema(item) for item in schema]
+    if not isinstance(schema, dict):
+        return schema
+    result = {key: _openai_json_schema(value) for key, value in schema.items() if key != "type"}
+    value_type = schema.get("type")
+    if isinstance(value_type, list):
+        result["anyOf"] = [{"type": item} for item in value_type]
+    elif value_type is not None:
+        result["type"] = value_type
+    return result
 
 
 async def parse_inventory_request(message: str, history: list[dict]) -> dict:
-    api_key = os.getenv("GEMINI_API_KEY", "").strip()
-    if not api_key:
-        raise AssistantProviderError("Gemini API is not configured.")
+    provider = active_provider()
+    if not provider:
+        raise AssistantProviderError("No AI provider key is configured. Set OPENAI_API_KEY or GEMINI_API_KEY in Railway Variables.")
 
-    contents = []
+    conversation = []
     for item in history[-10:]:
         role = item.get("role")
         content = str(item.get("content", ""))[:1000]
         if role in ("user", "assistant") and content.strip():
-            contents.append({"role": "user" if role == "user" else "model", "parts": [{"text": content}]})
-    contents.append({"role": "user", "parts": [{"text": message[:500]}]})
+            conversation.append({"role": "user" if role == "user" else "assistant", "content": content})
+    conversation.append({"role": "user", "content": message[:500]})
 
     payload = {
         "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
@@ -135,39 +163,81 @@ async def parse_inventory_request(message: str, history: list[dict]) -> dict:
             },
         },
     }
-    model = os.getenv("GEMINI_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
     try:
-        # Leave room for cold starts and transient provider latency.
-        async with httpx.AsyncClient(timeout=httpx.Timeout(40.0, connect=8.0)) as client:
-            response = await client.post(
-                GEMINI_API_URL.format(model=quote(model, safe="-._")),
-                headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
-                json=payload,
-            )
-        if response.status_code >= 400:
-            # Keep the API key and prompt private: log only Google's short error body and status.
-            logger.warning("Gemini generateContent returned HTTP %s: %s", response.status_code, response.text[:500])
-            status = response.status_code
-            if status in (401, 403):
-                advice = "Gemini ne API key reject ki. Railway Variables mein GEMINI_API_KEY check karein aur key ke project par Generative Language API access verify karein."
-            elif status == 404:
-                advice = "Gemini model nahi mila. GEMINI_MODEL ko gemini-3.5-flash-lite set karke redeploy karein."
-            elif status == 429:
-                advice = "Gemini quota ya rate limit poori hui. Google AI Studio ke isi API-key project ka quota/billing check karein, phir kuch der baad retry karein."
-            elif status == 400:
-                advice = "Gemini request reject hui. Railway ka GEMINI_MODEL aur structured-output request config check karna hoga."
+        # Keep the response latency bounded; full app work is performed by the
+        # database-backed routes after the model returns a structured intent.
+        async with httpx.AsyncClient(timeout=httpx.Timeout(25.0, connect=7.0)) as client:
+            if provider == "openai":
+                api_key = os.getenv("OPENAI_API_KEY", "").strip()
+                model = os.getenv("OPENAI_MODEL", DEFAULT_OPENAI_MODEL).strip() or DEFAULT_OPENAI_MODEL
+                openai_payload = {
+                    "model": model,
+                    "instructions": SYSTEM_PROMPT,
+                    "input": conversation,
+                    "max_output_tokens": 420,
+                    "reasoning": {"effort": "low"},
+                    "text": {"format": {
+                        "type": "json_schema", "name": "inventory_intent", "strict": True,
+                        "schema": _openai_json_schema(INTENT_SCHEMA),
+                    }},
+                }
+                response = await client.post(
+                    OPENAI_API_URL,
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json=openai_payload,
+                )
             else:
-                advice = "Gemini provider abhi request serve nahi kar raha. Thodi der baad retry karein."
+                api_key = os.getenv("GEMINI_API_KEY", "").strip()
+                model = os.getenv("GEMINI_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
+                gemini_contents = [
+                    {"role": "user" if item["role"] == "user" else "model", "parts": [{"text": item["content"]}]}
+                    for item in conversation
+                ]
+                payload["contents"] = gemini_contents
+                payload["systemInstruction"] = {"parts": [{"text": SYSTEM_PROMPT}]}
+                response = await client.post(
+                    GEMINI_API_URL.format(model=quote(model, safe="-._")),
+                    headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+                    json=payload,
+                )
+        if response.status_code >= 400:
+            # Keep provider keys private; only log the upstream status and safe error body.
+            logger.warning("%s assistant request returned HTTP %s: %s", provider, response.status_code, response.text[:500])
+            status = response.status_code
+            model_variable = "OPENAI_MODEL" if provider == "openai" else "GEMINI_MODEL"
+            key_label = "OpenAI API key" if provider == "openai" else "Gemini API key"
+            if status in (401, 403):
+                advice = f"{key_label} reject hui ya is project ko API access nahi mila. Railway Variables mein {provider.upper()} key check karein."
+            elif status == 404:
+                default_model = DEFAULT_OPENAI_MODEL if provider == "openai" else DEFAULT_MODEL
+                advice = f"{provider.title()} model nahi mila. Railway mein {model_variable} ko {default_model} set karein."
+            elif status == 429:
+                advice = f"{provider.title()} quota/rate limit poori hui. Provider dashboard mein isi project ka usage aur billing check karein, phir retry karein."
+            elif status == 400:
+                advice = f"{provider.title()} request reject hui. Railway ka {model_variable} aur structured-output/API configuration check karein."
+            else:
+                advice = f"{provider.title()} provider abhi request serve nahi kar raha. Thodi der baad retry karein."
             raise AssistantProviderError(
-                f"Gemini API returned HTTP {status}.", upstream_status=status,
-                user_message=f"{advice} (Gemini HTTP {status})",
+                f"{provider} API returned HTTP {status}.", upstream_status=status,
+                user_message=f"{advice} ({provider.title()} HTTP {status})",
             )
         body = response.json()
-        content = "".join(
-            str(part.get("text", ""))
-            for part in body["candidates"][0]["content"]["parts"]
-            if isinstance(part, dict)
-        )
+        if provider == "openai":
+            content = str(body.get("output_text") or "")
+            if not content:
+                content = "".join(
+                    str(part.get("text", ""))
+                    for item in body.get("output", []) if item.get("type") == "message"
+                    for part in item.get("content", []) if part.get("type") == "output_text"
+                )
+            if body.get("status") not in (None, "completed"):
+                raise AssistantProviderError(f"OpenAI response status: {body.get('status')}.")
+        else:
+            content = "".join(
+                str(part.get("text", ""))
+                for part in body["candidates"][0]["content"]["parts"]
+                if isinstance(part, dict)
+            )
         parsed = json.loads(content)
         intent = str(parsed.get("intent", "other"))
         operation = str(parsed.get("operation", "add"))
@@ -202,11 +272,11 @@ async def parse_inventory_request(message: str, history: list[dict]) -> dict:
     except AssistantProviderError:
         raise
     except httpx.TimeoutException as exc:
-        logger.warning("Gemini request timed out (%s).", type(exc).__name__)
-        raise AssistantProviderError("Gemini request timed out.") from exc
+        logger.warning("%s request timed out (%s).", provider, type(exc).__name__)
+        raise AssistantProviderError(f"{provider.title()} request timed out. Please retry.") from exc
     except httpx.HTTPError as exc:
-        logger.warning("Gemini network request failed (%s).", type(exc).__name__)
-        raise AssistantProviderError("Gemini provider request failed.") from exc
+        logger.warning("%s network request failed (%s).", provider, type(exc).__name__)
+        raise AssistantProviderError(f"{provider.title()} network request failed. Check provider access and retry.") from exc
     except (ValueError, KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
-        logger.warning("Gemini assistant response was invalid (%s).", type(exc).__name__)
+        logger.warning("%s assistant response was invalid (%s).", provider, type(exc).__name__)
         raise AssistantProviderError("Inference provider unavailable or returned invalid JSON.") from exc

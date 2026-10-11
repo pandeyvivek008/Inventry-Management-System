@@ -208,22 +208,25 @@ dispatched, use **Mark This Batch as Dispatched**; only then is physical stock d
 
 ### Conversational stock assistant
 
-The floating Disha assistant uses the Gemini API to interpret Hindi, Hinglish,
-and English requests. Gemini only extracts the requested product, size,
-operation, and quantity. The app resolves that request against its own catalog
-and stock ledger; an inventory change is written only after the user clicks
-**Confirm stock update**. A stale proposal is rejected if stock changed in the meantime.
+The floating Disha assistant uses OpenAI when `OPENAI_API_KEY` is configured,
+otherwise it can use Gemini. It interprets Hindi, Hinglish, English, and casual
+conversation, then the app resolves inventory requests against its own catalog
+and stock ledger. Inventory and product changes are validated by the app and
+shown for confirmation; the model does not write directly to the database.
 
-Configure `GEMINI_API_KEY` as a **Railway app-service variable** (or locally in
-the ignored `.env` file after copying `.env.example`). `GEMINI_MODEL` defaults to
-`gemini-3.5-flash-lite` and can be overridden. Never place the key in HTML,
-JavaScript, Git, or screenshots. If Gemini is unavailable or the key is missing,
-manual inventory tools continue to work and the assistant shows a connection message.
+Configure `OPENAI_API_KEY` as a **Railway app-service variable** to use OpenAI.
+`OPENAI_MODEL` defaults to `gpt-5-mini` and can be overridden. Optional
+`AI_PROVIDER=openai` forces OpenAI; `AI_PROVIDER=gemini` forces Gemini; the
+default `auto` uses OpenAI when its key is present and otherwise falls back to
+Gemini. Never place API keys in HTML, JavaScript, Git, or screenshots. Provider
+errors show a safe HTTP status and the relevant next step; manual inventory
+tools continue to work when an AI provider is unavailable.
 
 Chat history currently stays in that browser's local storage. It is not shared
 between browsers or devices; user accounts and server-side chat history are not
-implemented yet. For hands-free use, open Disha once and allow microphone access;
-the app remembers that opt-in and listens for **Disha** while the app is open. Say
+implemented yet. For hands-free use, allow microphone access; while the app is
+open and visible, the wake phrase is **Hi Disha**. The app ignores a bare “Disha”
+so casual mentions do not open the assistant. Say
 **haan/yes** to confirm a pending stock update or **nahi/no** to cancel. The wake
 listener pauses when the app is backgrounded and resumes when it is visible again.
 Daily sales summaries count dispatched inventory units (not pending orders); the

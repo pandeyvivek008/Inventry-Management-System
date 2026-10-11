@@ -375,7 +375,7 @@ async def inventory_assistant_chat(payload: schemas.AssistantChatRequest, reques
     explicit stock-adjustment confirmation flow.
     """
     if not assistant_service.api_key_configured():
-        raise HTTPException(status_code=503, detail="Gemini is not configured. Add GEMINI_API_KEY to Railway Variables.")
+        raise HTTPException(status_code=503, detail="No AI key is configured. Add OPENAI_API_KEY (recommended) or GEMINI_API_KEY to the Railway app service Variables, then redeploy.")
     client_ip = request.client.host if request.client else "unknown"
     if not _assistant_rate_limit(client_ip):
         raise HTTPException(status_code=429, detail="Assistant request limit reached. Please wait a minute and try again.")
@@ -422,6 +422,17 @@ async def inventory_assistant_chat(payload: schemas.AssistantChatRequest, reques
         else:
             query = _apply_smart_search(query, (models.Product.sku, models.Product.name, models.Product.category), intent.get("product_query"))
         products = query.order_by(models.Product.name.asc()).limit(8).all()
+        if not products and intent.get("product_query"):
+            candidates = db.query(models.Product).options(selectinload(models.Product.variants)).filter(
+                models.Product.is_deleted == False  # noqa: E712
+            ).all()
+            ranked = [
+                (_fuzzy_product_score(intent["product_query"], product), product)
+                for product in candidates
+            ]
+            ranked = [(score, product) for score, product in ranked if score > 0]
+            ranked.sort(key=lambda item: (item[0], item[1].name.casefold(), item[1].sku), reverse=True)
+            products = [product for _, product in ranked[:8]]
         if not products:
             return {"status": "not_found", "reply": f"{intent.get('product_query') or 'Is search'} ke matching designs nahi mile. SKU, colour, ya naam ka koi aur hissa boliye."}
         details = []

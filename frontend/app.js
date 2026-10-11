@@ -3,6 +3,7 @@ const STANDARD_SIZES = ["S", "M", "L", "XL", "XXL"];
 const PAGE_SIZE = 100;
 
 const $ = (id) => document.getElementById(id);
+const DISHA_WAKE_PHRASE = /\b(?:hi|hey|hello)[\s,]+disha\b|(?:हाय|हेलो|नमस्ते)[\s,]*दिशा/iu;
 
 // A small, non-blocking sweep tells staff when any app API request is taking
 // longer than a quick response. Keep it local to /api so static assets do not
@@ -1364,11 +1365,12 @@ $("assistant-photo-viewport")?.addEventListener("wheel", (event) => {
   event.preventDefault();
   setAssistantPhotoZoom(assistantPhotoZoom + (event.deltaY < 0 ? 0.2 : -0.2));
 }, { passive: false });
-$("assistant-photo-viewport")?.addEventListener("keydown", (event) => {
+document.addEventListener("keydown", (event) => {
+  if ($("assistant-photo-lightbox").hidden) return;
   if (event.key === "+" || event.key === "=") { event.preventDefault(); setAssistantPhotoZoom(assistantPhotoZoom + 0.25); }
   else if (event.key === "-") { event.preventDefault(); setAssistantPhotoZoom(assistantPhotoZoom - 0.25); }
   else if (event.key === "0") { event.preventDefault(); setAssistantPhotoZoom(1); }
-  else if (event.key === "Escape") $("assistant-photo-lightbox").hidden = true;
+  else if (event.key === "Escape") { event.preventDefault(); $("assistant-photo-lightbox").hidden = true; }
 });
 $("assistant-photo-lightbox-close")?.addEventListener("click", () => { $("assistant-photo-lightbox").hidden = true; });
 $("assistant-photo-lightbox")?.addEventListener("click", (event) => {
@@ -1584,7 +1586,10 @@ async function sendAssistantMessage(message, selectedSku = null, { fromVoice = f
     assistantHistory.push({ role: "assistant", content: reply });
     saveAssistantHistory();
     addAssistantMessage("assistant", reply, { action: ["confirm_stock", "confirm_action"].includes(result.status) ? { type: result.status === "confirm_stock" ? "stock_update" : result.action.type, ...result.action } : null, choices: result.status === "choose_product" ? result.choices : null, products: result.status === "product_search" ? result.products : null });
-    speakAssistantMessage(reply);
+    const spokenReply = result.status === "product_search" && result.products?.length
+      ? result.products.map((product) => product.name).filter(Boolean).join(". ")
+      : reply;
+    speakAssistantMessage(spokenReply);
   } catch (error) {
     if (requestSequence !== assistantRequestSequence || requestSessionId !== assistantSessionId) return;
     const reply = `Assistant abhi connect nahi ho paayi: ${error.message || error}. Manual stock entry abhi use kar sakte hain.`;
@@ -1605,10 +1610,15 @@ $("assistant-launcher")?.addEventListener("click", () => {
   if ($("assistant-panel").hidden) {
     openAssistant();
   }
-  else { $("assistant-panel").hidden = true; $("assistant-launcher").setAttribute("aria-expanded", "false"); }
+  else {
+    $("assistant-panel").hidden = true;
+    $("assistant-photo-preview").hidden = true;
+    $("assistant-launcher").setAttribute("aria-expanded", "false");
+  }
 });
 $("assistant-close")?.addEventListener("click", () => {
   $("assistant-panel").hidden = true;
+  $("assistant-photo-preview").hidden = true;
   $("assistant-launcher").setAttribute("aria-expanded", "false");
 });
 $("assistant-new-chat")?.addEventListener("click", () => startNewAssistantConversation());
@@ -1629,7 +1639,7 @@ function updateDishaListeningUI(message = "") {
   const button = $("assistant-pause");
   const isListening = assistantWakeEnabled && !assistantPaused && !assistantMicBlocked;
   indicator?.classList.toggle("is-listening", isListening);
-  if (state) state.textContent = message || (assistantPaused ? "Paused · voice and listening off" : assistantMicBlocked ? "Allow microphone access in browser settings" : isListening ? "Listening for ‘Disha’" : "Starting voice assistant…");
+  if (state) state.textContent = message || (assistantPaused ? "Paused · voice and listening off" : assistantMicBlocked ? "Allow microphone access in browser settings" : isListening ? "Listening for ‘Hi Disha’" : "Starting voice assistant…");
   dot?.classList.toggle("is-listening", isListening);
   if (button) {
     button.classList.toggle("is-paused", assistantPaused);
@@ -1688,15 +1698,14 @@ function startDishaWake(isAutomaticResume = false) {
       try { recognition.stop(); } catch {}
       return;
     }
-    updateDishaListeningUI("Listening for ‘Disha’");
+    updateDishaListeningUI("Listening for ‘Hi Disha’");
   };
   recognition.onresult = (event) => {
     if (assistantSpeaking || assistantBusy || Date.now() < assistantIgnoreTranscriptUntil) return;
     for (let index = event.resultIndex; index < event.results.length; index += 1) {
       if (event.results[index].isFinal) {
         const alternatives = Array.from(event.results[index]).map((alternative) => alternative.transcript);
-        const wakeWord = /\bd[iy]s?ha\b|दिशा|दीशा/iu;
-        handleDishaUtterance(alternatives.find((transcript) => wakeWord.test(transcript)) || alternatives[0]);
+        handleDishaUtterance(alternatives.find((transcript) => DISHA_WAKE_PHRASE.test(transcript)) || alternatives[0]);
       }
     }
   };
@@ -1776,10 +1785,9 @@ function isNegative(text) { return /^(?:(?:nahi|nahin|no|nope|cancel)(?:\b|$)|(?
 function handleDishaUtterance(transcript) {
   if (assistantPaused || assistantSpeaking || assistantBusy) return;
   let message = String(transcript || "").trim();
-  const wakeWord = /\bd[iy]s?ha\b|दिशा|दीशा/iu;
-  const woke = wakeWord.test(message);
+  const woke = DISHA_WAKE_PHRASE.test(message);
   if (woke) {
-    message = message.replace(wakeWord, "").replace(/^[\s,.:;!?।-]+|[\s,.:;!?।-]+$/g, "").trim();
+    message = message.replace(DISHA_WAKE_PHRASE, "").replace(/^[\s,.:;!?।-]+|[\s,.:;!?।-]+$/g, "").trim();
     assistantWakeActiveUntil = Date.now() + 45000;
     if ($("assistant-panel").hidden) openAssistant({ speakGreeting: false, focusInput: false });
     updateDishaListeningUI("Disha is listening to you");
