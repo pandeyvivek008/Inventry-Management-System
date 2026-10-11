@@ -4,7 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Inventory Management System</title>
-<link rel="stylesheet" href="style.css?v=disha-app-wide-mobile-20261010">
+<script>try{if(localStorage.getItem("inventoryTheme")==="dark")document.documentElement.dataset.theme="dark"}catch{}</script>
+<link rel="stylesheet" href="style.css?v=disha-dark-voice-20261012">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
 </head>
 <body>
@@ -17,6 +18,7 @@
     <button id="topbar-alerts" class="icon-btn" aria-label="Alerts">
       <i class="fa-solid fa-bell"></i><span id="alert-count-mobile" class="badge" hidden>0</span>
     </button>
+    <button class="icon-btn theme-toggle" type="button" data-theme-toggle aria-label="Switch to dark mode" title="Switch to dark mode" aria-pressed="false"><i class="fa-solid fa-moon" aria-hidden="true"></i></button>
   </header>
 
   <div id="nav-backdrop" class="nav-backdrop" hidden></div>
@@ -38,6 +40,7 @@
       <button data-view="history" class="rail-link"><i class="fa-solid fa-clock-rotate-left"></i><span class="rail-label">History</span></button>
       <button data-view="labels" class="rail-link"><i class="fa-solid fa-tags"></i><span class="rail-label">Print Labels</span></button>
       <button data-view="trash" class="rail-link"><i class="fa-solid fa-trash-can"></i><span class="rail-label">Trash</span></button>
+      <button class="rail-link theme-toggle" type="button" data-theme-toggle aria-label="Switch to dark mode" title="Switch to dark mode" aria-pressed="false"><i class="fa-solid fa-moon" aria-hidden="true"></i><span class="rail-label">Dark mode</span></button>
     </nav>
     <div class="rail-foot">Stock is tracked size-wise: every design has its own count per size.</div>
   </aside>
@@ -119,19 +122,19 @@
       <div class="two-col">
         <div class="panel">
           <h2>Camera Scan</h2>
-          <p class="hint">Works with Code128 barcodes, QR codes, phone cameras and scanner guns.</p>
+          <p class="hint">Scan the one-per-design QR to open every size, or a legacy size code. Phone camera and scanner guns are supported.</p>
           <div id="scan-reader" class="scan-frame"></div>
           <button id="scan-toggle" type="button" class="btn-secondary">Start Camera</button>
           <div id="scan-msg" class="msg"></div>
         </div>
         <form id="manual-lookup-form" class="panel">
           <h2>Type Instead</h2>
-          <p class="hint">No camera or scanner handy? Type the SKU and size.</p>
-          <div class="field-row">
-            <label class="field">SKU<input name="sku" required placeholder="e.g. STYLE_001" class="input"></label>
-            <label class="field field-sm">Size<input name="size" required placeholder="M" class="input"></label>
-          </div>
-          <button type="submit" class="btn-secondary">Find</button>
+          <p class="hint">Search by design or product name, choose the size, then open the design.</p>
+          <label class="field">Product name / design<input id="manual-product-search" name="product" required placeholder="Type a product name or colour…" class="input" autocomplete="off"></label>
+          <div id="manual-product-results" class="manual-product-results" role="listbox" hidden></div>
+          <input id="manual-product-sku" name="sku" type="hidden">
+          <label class="field manual-size-field" id="manual-size-field" hidden>Size<select id="manual-size" name="size" class="input" required disabled><option value="">Choose a product first</option></select></label>
+          <button id="manual-lookup-submit" type="submit" class="btn-secondary" disabled>Choose a product and size</button>
         </form>
       </div>
 
@@ -194,9 +197,6 @@
     <!-- ================= ALERTS ================= -->
     <section id="view-alerts" class="view">
       <header class="view-head"><div><h1>Alerts</h1><p class="sub">Design aur size wise alerts. Stock ko Disha se voice ya chat mein update karein.</p></div>
-        <div class="alert-tools">
-          <button id="alert-speech-toggle" class="btn-ghost" type="button" aria-pressed="false"><i class="fa-solid fa-volume-high"></i> Spoken alerts: Off</button>
-        </div>
       </header>
       <input id="alerts-search" type="search" placeholder="Search by design, SKU, size or alert type…" class="input alerts-search" aria-label="Search alerts">
       <p id="alerts-note" class="hint"></p>
@@ -219,13 +219,14 @@
 
     <!-- ================= PRINT LABELS ================= -->
     <section id="view-labels" class="view">
-      <header class="view-head"><div><h1>Print Labels</h1><p class="sub">Find a design, print a QR label for each size and stick it on its shelf or bin.</p></div></header>
+      <header class="view-head"><div><h1>Print Labels</h1><p class="sub">Download one design QR to open every size, or size-specific labels for individual bins.</p></div></header>
       <div class="panel" style="max-width:520px;">
         <label class="field">Find a design<input id="label-search" type="text" placeholder="Type a SKU or product name…" class="input"></label>
         <div id="label-results" class="stack-list" style="margin-top:8px;"></div>
         <div id="labels-pager" class="pager" hidden><button id="labels-prev" class="link-btn" type="button">← Previous</button><span id="labels-page-info"></span><button id="labels-next" class="link-btn" type="button">Next →</button></div>
         <div id="label-selected" hidden style="margin-top:12px; padding-top:12px; border-top:1px solid var(--line);">
           <div id="label-selected-name" class="bold"></div>
+          <a id="product-qr-download" href="#" target="_blank" rel="noopener" class="btn-secondary product-qr-download"><i class="fa-solid fa-qrcode"></i> Download one QR · all sizes</a>
           <div id="label-variant-checks" class="stack-list" style="margin:10px 0;"></div>
           <a id="label-download" href="#" target="_blank" class="btn-primary"><i class="fa-solid fa-download"></i> Download Barcode Label Sheet</a>
         </div>
@@ -334,6 +335,6 @@
 <div id="toast" class="toast" hidden></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
-<script src="app.js?v=disha-app-wide-mobile-20261010"></script>
+<script src="app.js?v=disha-dark-voice-20261012"></script>
 </body>
 </html>

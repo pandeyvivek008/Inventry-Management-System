@@ -387,7 +387,10 @@ async def inventory_assistant_chat(payload: schemas.AssistantChatRequest, reques
         return {"status": "app_status", "reply": reply, "summary": {**dashboard, "total_stock": int(total_stock or 0), "pending_order_lines": int(pending_line_count or 0), "pending_order_units": int(pending_units or 0), "today_dispatched_units": sales["dispatched_units"]}}
     if action == "product_search":
         query = db.query(models.Product).options(selectinload(models.Product.variants)).filter(models.Product.is_deleted == False)  # noqa: E712
-        query = _apply_smart_search(query, (models.Product.sku, models.Product.name, models.Product.category), intent.get("product_query"))
+        if payload.selected_sku:
+            query = query.filter(models.Product.sku == payload.selected_sku.strip().upper())
+        else:
+            query = _apply_smart_search(query, (models.Product.sku, models.Product.name, models.Product.category), intent.get("product_query"))
         products = query.order_by(models.Product.name.asc()).limit(8).all()
         if not products:
             return {"status": "not_found", "reply": f"{intent.get('product_query') or 'Is search'} ke matching designs nahi mile. SKU, colour, ya naam ka koi aur hissa boliye."}
@@ -395,8 +398,8 @@ async def inventory_assistant_chat(payload: schemas.AssistantChatRequest, reques
         for product in products:
             variants = [v for v in product.variants if not v.is_deleted]
             size_rows = [{"size": v.size, "stock": v.current_stock, "counted": v.last_counted_at is not None} for v in variants]
-            details.append({"sku": product.sku, "name": product.name, "category": product.category, "sizes": size_rows})
-        reply = "\n".join(
+            details.append({"sku": product.sku, "name": product.name, "category": product.category, "image_path": product.image_path, "sizes": size_rows})
+        reply = ("Mujhe milte-julte designs mile. Agar rang alag hai, sahi colour wala design choose karein.\n" if len(details) > 1 else "") + "\n".join(
             f"{product['name']} ({product['sku']}): " + ", ".join(
                 f"{size['size']} {size['stock'] if size['counted'] else 'not counted'}" for size in product["sizes"]
             ) for product in details
@@ -435,7 +438,10 @@ async def inventory_assistant_chat(payload: schemas.AssistantChatRequest, reques
     if action == "product_create":
         sku = intent["sku"].strip().upper()
         name = intent["product_name"].strip()
-        sizes = [_assistant_size(value) for value in re.split(r"[,/]+", intent["sizes"]) if value.strip()]
+        # Accept natural voice lists such as "S M L", comma-separated lists,
+        # and multi-word size labels without splitting FREE SIZE into two.
+        raw_sizes = re.findall(r"FREE\s+SIZE|ONE\s+SIZE|[A-Za-z0-9-]+", intent["sizes"], flags=re.IGNORECASE)
+        sizes = [_assistant_size(value) for value in raw_sizes if value.strip()]
         sizes = list(dict.fromkeys(size for size in sizes if size))
         if not sku or not name or not sizes:
             return {"status": "clarify", "reply": "Product banane ke liye SKU, product name aur sizes batayein. Example: 'SKU DRESS-21, name Blue Dress, sizes S M L ke saath product banao.'"}
@@ -1161,6 +1167,17 @@ def variant_label(variant_code: str, db: Session = Depends(get_db)):
     variant = _get_variant_by_code(db, variant_code)
     png_bytes = barcode_service.generate_variant_label(variant.variant_code, variant.product.name, variant.size)
     return StreamingResponse(BytesIO(png_bytes), media_type="image/png")
+
+
+@app.get("/api/products/{sku}/qr")
+def product_qr_label(sku: str, db: Session = Depends(get_db)):
+    """One scannable design QR; scanning opens the product with every size."""
+    product = _get_product_by_sku(db, sku)
+    png_bytes = barcode_service.generate_product_qr_label(product.sku, product.name)
+    return StreamingResponse(
+        BytesIO(png_bytes), media_type="image/png",
+        headers={"Content-Disposition": f'inline; filename="{product.sku}_product_qr.png"'},
+    )
 
 
 @app.get("/api/labels/sheet")

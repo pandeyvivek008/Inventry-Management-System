@@ -121,6 +121,15 @@ img { max-width: 100%; display: block; }
 .field { display: flex; flex-direction: column; gap: 5px; font-size: 12px; font-weight: 600; color: var(--ink-soft); flex: 1; }
 .field-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
 .field-sm { max-width: 110px; flex: 0 0 110px; }
+.manual-product-results { display:grid; gap:6px; max-height:260px; overflow:auto; margin:8px 0 12px; padding:4px; border:1px solid var(--line); border-radius:10px; background:#f8fafc; }
+.manual-product-results[hidden] { display:none; }
+.manual-product-option { display:grid; gap:2px; width:100%; padding:10px 12px; border:1px solid transparent; border-radius:8px; color:var(--ink); background:#fff; text-align:left; cursor:pointer; }
+.manual-product-option:hover,.manual-product-option:focus-visible { border-color:#8bd5b5; background:#effaf4; outline:none; }
+.manual-product-option strong { font-size:13px; }
+.manual-product-option small,.manual-product-empty { color:var(--ink-soft); font-size:11px; }
+.manual-product-empty { padding:12px; }
+.manual-size-field { margin:0 0 12px; }
+.manual-size-field[hidden] { display:none; }
 .check-row { display: flex; align-items: center; gap: 8px; font-size: 13px; margin: 10px 0; }
 .check-row input { width: 17px; height: 17px; accent-color: var(--rose); }
 
@@ -295,6 +304,8 @@ img { max-width: 100%; display: block; }
 .detail-info .input { margin-bottom: 8px; }
 .detail-info-row { display: flex; gap: 8px; }
 .detail-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.product-qr-link,.product-qr-download { display:inline-flex; align-items:center; gap:7px; }
+.product-qr-download { margin:10px 0 4px; }
 
 .seat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
 .seat { background: var(--panel); border: 1.5px solid var(--line); border-radius: 12px; padding: 12px; }
@@ -653,6 +664,14 @@ img { max-width: 100%; display: block; }
 .assistant-choice { padding:8px 10px; border:1px solid #dfe8e5; border-radius:10px; background:#fff; text-align:left; color:var(--ink); cursor:pointer; }
 .assistant-choice strong,.assistant-choice small { display:block; }
 .assistant-choice small { margin-top:2px; color:var(--ink-soft); font-size:10px; }
+.assistant-product-results { display:grid; gap:8px; width:100%; margin-top:8px; }
+.assistant-product-card { display:grid; grid-template-columns:88px minmax(0,1fr); gap:10px; padding:8px; border:1px solid #dce8e2; border-radius:12px; background:#fff; }
+.assistant-product-card > img,.assistant-product-no-image { width:88px; height:104px; border-radius:8px; object-fit:cover; background:#edf2f5; }
+.assistant-product-no-image { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; color:var(--ink-faint); font-size:10px; }
+.assistant-product-copy { display:flex; min-width:0; flex-direction:column; align-items:flex-start; gap:4px; }
+.assistant-product-copy strong { font-size:12px; }
+.assistant-product-copy small { color:var(--ink-soft); font-size:10px; overflow-wrap:anywhere; }
+.assistant-product-pick { min-height:34px; margin-top:3px; padding:5px 9px; border:1px solid #cae5d8; border-radius:8px; background:#f1faf5; color:#176d50; font:inherit; font-size:10px; font-weight:700; cursor:pointer; }
 .assistant-typing { color:var(--ink-soft); font-size:11px; font-style:italic; }
 .assistant-chat-form { display:flex; align-items:center; gap:7px; padding:10px; border-top:1px solid #e2e9e6; background:#fff; }
 .assistant-chat-form input { flex:1; min-width:0; height:40px; padding:0 11px; border:1px solid #dfe7e5; border-radius:11px; outline:none; font:inherit; font-size:12px; }
@@ -759,3 +778,79 @@ img { max-width: 100%; display: block; }
   .assistant-chat-form button, .assistant-mic-status { width:44px; height:44px; flex-basis:44px; }
   .assistant-message { font-size:14px; }
 }
+
+/* Night theme: keep semantic status colors readable while darkening the
+   shared surfaces used throughout every page and modal. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ink:#E7EDF5;
+  --ink-soft:#AAB8C9;
+  --ink-faint:#8191A5;
+  --paper:#101925;
+  --panel:#182433;
+  --line:#2B3A4D;
+  --indigo:#101E31;
+  --indigo-2:#294765;
+  --ok:#55D6A3; --ok-bg:#173C33;
+  --low:#F0C36D; --low-bg:#40351F;
+  --out:#FF8E87; --out-bg:#422725;
+  --unc:#BDC3CC; --unc-bg:#303640;
+}
+:root[data-theme="dark"] body { background:var(--paper); color:var(--ink); }
+:root[data-theme="dark"] .input,
+:root[data-theme="dark"] select,
+:root[data-theme="dark"] textarea { background-color:var(--panel); color:var(--ink); border-color:var(--line); }
+:root[data-theme="dark"] .manual-product-results,
+:root[data-theme="dark"] .alert-design,
+:root[data-theme="dark"] .assistant-history-list,
+:root[data-theme="dark"] .assistant-message,
+:root[data-theme="dark"] .assistant-choice,
+:root[data-theme="dark"] .assistant-product-card,
+:root[data-theme="dark"] .assistant-chat-form,
+:root[data-theme="dark"] .assistant-footnote,
+:root[data-theme="dark"] .assistant-quick-actions { background:var(--panel); border-color:var(--line); }
+:root[data-theme="dark"] .manual-product-option,
+:root[data-theme="dark"] .assistant-action-card,
+:root[data-theme="dark"] .assistant-product-pick,
+:root[data-theme="dark"] .assistant-quick-actions button { background:#20372F; color:#B8F0D4; border-color:#315847; }
+:root[data-theme="dark"] .manual-product-option:hover,
+:root[data-theme="dark"] .manual-product-option:focus-visible,
+:root[data-theme="dark"] .assistant-history-item:hover { background:#22382F; }
+:root[data-theme="dark"] .grid thead th,
+:root[data-theme="dark"] .grid tbody tr:hover,
+:root[data-theme="dark"] .alert-design-head { background:#202D3D; }
+:root[data-theme="dark"] .thumb,
+:root[data-theme="dark"] .pcard-photo,
+:root[data-theme="dark"] .pcard-photo-ph,
+:root[data-theme="dark"] .photo-pick-box,
+:root[data-theme="dark"] .photo-pick-box img,
+:root[data-theme="dark"] .detail-photo-box img,
+:root[data-theme="dark"] .tcard-photo-wrap,
+:root[data-theme="dark"] .tcard .trash-photo,
+:root[data-theme="dark"] .trash-photo,
+:root[data-theme="dark"] .assistant-product-card > img,
+:root[data-theme="dark"] .assistant-product-no-image { background-color:#202D3D; }
+:root[data-theme="dark"] .size-chip { background:#303746; color:#D3DCE7; }
+:root[data-theme="dark"] .btn-ghost,
+:root[data-theme="dark"] .add-mode-tabs { background:#202D3D; color:var(--ink-soft); }
+:root[data-theme="dark"] .add-mode-tab.is-active { background:#30455D; color:#F0F5FC; }
+:root[data-theme="dark"] .template-download,
+:root[data-theme="dark"] .bulk-product-dropzone,
+:root[data-theme="dark"] .bulk-import-result,
+:root[data-theme="dark"] .bulk-import-result.has-errors { background:#1B2B3A; color:var(--ink); border-color:var(--line); }
+:root[data-theme="dark"] .template-icon,
+:root[data-theme="dark"] .bulk-upload-icon { background:#1D493B; color:#7FE0B4; }
+:root[data-theme="dark"] .bulk-row-errors { background:#3C3222; color:#F0D89D; }
+:root[data-theme="dark"] .picklist-new-row { background:#342F23; }
+:root[data-theme="dark"] .picklist-new-badge { color:#F0D89D; background:#514327; }
+:root[data-theme="dark"] .alert-row.ORDER_SHORTAGE { background:#352C21; }
+:root[data-theme="dark"] .tcard-actions .btn-danger { background:#422725; border-color:#653632; }
+:root[data-theme="dark"] .assistant-panel { background:#152231; border-color:#2D4154; }
+:root[data-theme="dark"] .assistant-panel-head { background:linear-gradient(110deg,#101E31,#174B3A); }
+:root[data-theme="dark"] .assistant-chat-form { border-top-color:var(--line); }
+:root[data-theme="dark"] .assistant-chat-form input { background:#101925; color:var(--ink); border-color:#34475A; }
+:root[data-theme="dark"] .assistant-mic-status { background:#27394B; color:#D5E4F1; }
+:root[data-theme="dark"] .assistant-message.user { background:#1C3A30; border-color:#315847; }
+:root[data-theme="dark"] .assistant-message.system { background:transparent; }
+:root[data-theme="dark"] .theme-toggle[aria-pressed="true"] { color:#F6D46B; }
+:root[data-theme="dark"] .icon-btn:hover { background:rgba(255,255,255,.08); }

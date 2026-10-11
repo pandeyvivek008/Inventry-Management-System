@@ -4,6 +4,7 @@ from io import BytesIO
 import barcode
 from barcode.writer import ImageWriter
 from PIL import Image, ImageDraw, ImageFont
+import qrcode
 
 
 def _font(size=18):
@@ -53,6 +54,27 @@ def generate_variant_label(variant_code: str, product_name: str, size: str) -> b
     bbox = draw.textbbox((0, 0), variant_code, font=code_font)
     draw.text(((width - (bbox[2] - bbox[0])) / 2, code_img.height + 65), variant_code, fill="black", font=code_font)
 
+    out = BytesIO()
+    canvas.save(out, format="PNG", optimize=True)
+    return out.getvalue()
+
+
+def generate_product_qr_label(sku: str, product_name: str) -> bytes:
+    """Create one design-level QR that opens every size in the inventory UI."""
+    qr = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=12, border=3)
+    qr.add_data(f"PRODUCT:{sku.strip().upper()}")
+    qr.make(fit=True)
+    qr_image = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+    width = max(520, qr_image.width + 80)
+    height = qr_image.height + 150
+    canvas = Image.new("RGB", (width, height), "white")
+    canvas.paste(qr_image, ((width - qr_image.width) // 2, 12))
+    draw = ImageDraw.Draw(canvas)
+    title_font, code_font = _font(22), _font(20)
+    title = product_name[:48]
+    for text, font, y in ((title, title_font, qr_image.height + 32), (sku.upper(), code_font, qr_image.height + 76)):
+        bbox = draw.textbbox((0, 0), text, font=font)
+        draw.text(((width - (bbox[2] - bbox[0])) / 2, y), text, fill="black", font=font)
     out = BytesIO()
     canvas.save(out, format="PNG", optimize=True)
     return out.getvalue()

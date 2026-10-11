@@ -4,6 +4,31 @@ const PAGE_SIZE = 100;
 
 const $ = (id) => document.getElementById(id);
 
+// Theme choice is local to this browser and is restored before the page paints.
+function setTheme(theme) {
+  const isDark = theme === "dark";
+  document.documentElement.dataset.theme = isDark ? "dark" : "light";
+  try { localStorage.setItem("inventoryTheme", isDark ? "dark" : "light"); } catch (e) {}
+  document.querySelectorAll("[data-theme-toggle]").forEach((button) => {
+    const label = isDark ? "Switch to light mode" : "Switch to dark mode";
+    button.setAttribute("aria-label", label);
+    button.setAttribute("title", label);
+    button.setAttribute("aria-pressed", String(isDark));
+    button.innerHTML = `<i class="fa-solid ${isDark ? "fa-sun" : "fa-moon"}" aria-hidden="true"></i>${button.classList.contains("rail-link") ? `<span class="rail-label">${isDark ? "Light mode" : "Dark mode"}</span>` : ""}`;
+  });
+}
+setTheme(document.documentElement.dataset.theme === "dark" ? "dark" : "light");
+document.querySelectorAll("[data-theme-toggle]").forEach((button) => button.addEventListener("click", () => {
+  setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+}));
+
+function makeSpeechFriendly(message) {
+  // Say an SKU as its meaningful chunks ("nk, 100, mustard, etc"), not as
+  // punctuation or a character-by-character code. Keep the visible text intact.
+  return String(message).replace(/(^|[^a-z0-9])([a-z0-9]+(?:[-_][a-z0-9]+)+)(?![a-z0-9])/gi,
+    (match, prefix, code) => /[a-z]/i.test(code) && /\d/.test(code) ? `${prefix}${code.toLowerCase().replace(/[-_]+/g, ", ")}` : match);
+}
+
 // Keep the page behind dialogs still; touch scrolling stays inside the modal.
 const modalScrollObserver = new MutationObserver(() => {
   document.body.classList.toggle("modal-open", Boolean(document.querySelector(".modal-backdrop:not([hidden])")));
@@ -41,27 +66,8 @@ function showToast(message, type = "success", duration = 1400) {
   toastTimer = setTimeout(() => { el.hidden = true; }, duration);
 }
 
-// ---------------- Sound + vibration for alerts ----------------
+// ---------------- Success sound ----------------
 let audioCtx = null;
-function playAlertSound() {
-  try {
-    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
-    if (audioCtx.state === "suspended") audioCtx.resume();
-    const now = audioCtx.currentTime;
-    [0, 0.18, 0.36].forEach((offset, i) => {
-      const o = audioCtx.createOscillator();
-      const g = audioCtx.createGain();
-      o.type = "sine";
-      o.frequency.value = i === 1 ? 1046 : 880;
-      o.connect(g); g.connect(audioCtx.destination);
-      g.gain.setValueAtTime(0.0001, now + offset);
-      g.gain.exponentialRampToValueAtTime(0.12, now + offset + 0.02);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + offset + 0.14);
-      o.start(now + offset); o.stop(now + offset + 0.15);
-    });
-  } catch (e) { /* browser audio may be unavailable */ }
-  if (navigator.vibrate) navigator.vibrate([180, 90, 180, 90, 260]);
-}
 function playSuccessSound() {
   try {
     audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
@@ -81,39 +87,28 @@ function playSuccessSound() {
   } catch (e) { /* sound is optional when the browser blocks audio */ }
 }
 let lastAlertCount = null;
-let pendingAlertAnnouncement = false;
 function noteAlertCount(n) {
   if (lastAlertCount !== null && n > lastAlertCount) {
-    pendingAlertAnnouncement = true;
-    playAlertSound();
     showToast("New inventory alert — check Alerts", "alert", 2200);
   }
   lastAlertCount = n;
   setAlertBadge(n);
 }
 
-let spokenAlertsEnabled = localStorage.getItem("spokenAlertsEnabled") === "true";
 let assistantSpeaking = false;
 let assistantSpeechId = 0;
 let assistantSpeechGuardTimer = null;
-function updateSpeechToggle() {
-  const button = $("alert-speech-toggle");
-  if (!button) return;
-  button.setAttribute("aria-pressed", String(spokenAlertsEnabled));
-  button.innerHTML = `<i class="fa-solid fa-volume-high"></i> Spoken alerts: ${spokenAlertsEnabled ? "On" : "Off"}`;
-}
-function speakInventoryMessage(message) {
-  if (!spokenAlertsEnabled) return;
-  speakAssistantMessage(message);
-}
 function speakAssistantMessage(message) {
   if (assistantPaused) return;
   if (!window.speechSynthesis || !window.SpeechSynthesisUtterance) return;
   const speechId = ++assistantSpeechId;
+  clearTimeout(assistantWakeRestartTimer);
+  assistantRecognition?.stop();
   window.speechSynthesis.cancel();
   clearTimeout(assistantSpeechGuardTimer);
   assistantSpeaking = true;
-  const utterance = new SpeechSynthesisUtterance(message);
+  const speechText = makeSpeechFriendly(message);
+  const utterance = new SpeechSynthesisUtterance(speechText);
   utterance.lang = "hi-IN";
   utterance.rate = 0.94;
   utterance.pitch = 1.12;
@@ -121,23 +116,20 @@ function speakAssistantMessage(message) {
   const hindiVoices = voices.filter((voice) => /^hi(-|_)?in$/i.test(voice.lang));
   const preferredVoice = hindiVoices.find((voice) => /female|swara|kalpana|heera|priya/i.test(voice.name)) || hindiVoices[0];
   if (preferredVoice) utterance.voice = preferredVoice;
-  const finishSpeech = () => { if (speechId === assistantSpeechId) assistantSpeaking = false; };
+  const finishSpeech = () => {
+    if (speechId !== assistantSpeechId) return;
+    assistantSpeaking = false;
+    clearTimeout(assistantSpeechGuardTimer);
+    if (assistantWakeEnabled && !assistantPaused && !assistantRecognition && document.visibilityState === "visible") {
+      clearTimeout(assistantWakeRestartTimer);
+      assistantWakeRestartTimer = setTimeout(() => startDishaWake(true), 700);
+    }
+  };
   utterance.onend = finishSpeech;
   utterance.onerror = finishSpeech;
   window.speechSynthesis.speak(utterance);
-  assistantSpeechGuardTimer = setTimeout(finishSpeech, Math.max(4000, String(message).length * 85));
+  assistantSpeechGuardTimer = setTimeout(finishSpeech, Math.max(10000, speechText.length * 150));
 }
-updateSpeechToggle();
-$("alert-speech-toggle")?.addEventListener("click", () => {
-  spokenAlertsEnabled = !spokenAlertsEnabled;
-  localStorage.setItem("spokenAlertsEnabled", String(spokenAlertsEnabled));
-  updateSpeechToggle();
-  if (spokenAlertsEnabled) {
-    speakInventoryMessage("Inventory assistant ready. New low stock alerts will be spoken.");
-    pendingAlertAnnouncement = true;
-    loadAlerts();
-  } else if (window.speechSynthesis) window.speechSynthesis.cancel();
-});
 function setAlertBadge(n) {
   [$("alert-count"), $("alert-count-mobile")].forEach((el) => { if (el) { el.textContent = n; el.hidden = !(n > 0); } });
 }
@@ -398,8 +390,9 @@ function renderDetail(product, container, opts = {}) {
           <input class="input" id="detail-sku" value="${esc(product.sku)}" placeholder="Canonical SKU">
           <input class="input" id="detail-category" placeholder="Category" value="${esc(product.category || "")}">
         </div>
-        <div class="detail-actions">
+      <div class="detail-actions">
           <button class="btn-secondary" id="detail-save" type="button"><i class="fa-solid fa-floppy-disk"></i> Save Changes</button>
+        <a class="btn-ghost product-qr-link" href="${API}/products/${encodeURIComponent(product.sku)}/qr" target="_blank" rel="noopener"><i class="fa-solid fa-qrcode"></i> Product QR (all sizes)</a>
           <span class="sku-tag" style="align-self:center;">${esc(product.sku)}</span>
           ${opts.showDelete ? `<button class="btn-danger" id="detail-delete" type="button" style="margin-left:auto;"><i class="fa-solid fa-trash-can"></i> Delete Product</button>` : ""}
         </div>
@@ -712,7 +705,6 @@ $("bulk-product-submit").addEventListener("click", async () => {
     }
   } catch (error) {
     box.innerHTML = `<div class="msg error">${esc(error.message || "Import failed. Check the file and try again.")}</div>`;
-    playAlertSound();
   } finally {
     button.innerHTML = original;
     button.disabled = !bulkProductFile;
@@ -797,7 +789,7 @@ async function startCamera() {
             if (!code || (code === lastCameraCode && now - lastCameraScanAt < 1200)) return;
             lastCameraCode = code;
             lastCameraScanAt = now;
-            lookupVariant(code);
+            handleScannedCode(code);
             showToast(`Scanned: ${code}`, "success", 900);
           },
           () => {}
@@ -823,7 +815,7 @@ async function startCamera() {
           if (!code || (code === lastCameraCode && now - lastCameraScanAt < 1200)) return;
           lastCameraCode = code;
           lastCameraScanAt = now;
-          lookupVariant(code);
+          handleScannedCode(code);
           showToast(`Scanned: ${code}`, "success", 900);
         }, () => {});
         scanning = true;
@@ -866,7 +858,7 @@ document.addEventListener("keydown", (e) => {
     const elapsed = gunStartedAt ? now - gunStartedAt : Infinity;
     if (value && value.length >= 4 && elapsed < 1000) {
       e.preventDefault();
-      lookupVariant(value.toUpperCase());
+      handleScannedCode(value.toUpperCase());
       showToast(`Scanned: ${value}`, "success", 1000);
     }
     gunBuffer = ""; gunStartedAt = 0;
@@ -880,9 +872,70 @@ document.addEventListener("keydown", (e) => {
     gunTimer = setTimeout(() => { gunBuffer = ""; gunStartedAt = 0; }, 1300);
   }
 });
-$("manual-lookup-form").addEventListener("submit", (e) => {
-  e.preventDefault();
-  lookupVariant(`${e.target.sku.value.trim().toUpperCase()}-${e.target.size.value.trim().toUpperCase()}`);
+let manualSelectedProduct = null;
+const manualProductSearch = $("manual-product-search");
+const manualProductResults = $("manual-product-results");
+const manualSizeSelect = $("manual-size");
+const manualLookupButton = $("manual-lookup-submit");
+function clearManualProductSelection() {
+  manualSelectedProduct = null;
+  $("manual-product-sku").value = "";
+  $("manual-size-field").hidden = true;
+  manualSizeSelect.disabled = true;
+  manualSizeSelect.innerHTML = '<option value="">Choose a product first</option>';
+  manualLookupButton.disabled = true;
+  manualLookupButton.textContent = "Choose a product and size";
+}
+async function searchManualProducts() {
+  const query = manualProductSearch.value.trim();
+  clearManualProductSelection();
+  manualProductResults.hidden = true;
+  if (query.length < 2) return;
+  manualProductResults.hidden = false;
+  manualProductResults.innerHTML = '<div class="manual-product-empty">Searching designs…</div>';
+  try {
+    const params = new URLSearchParams({ q: query, limit: "12", paged: "true" });
+    const page = await getJSON(`${API}/products?${params}`);
+    // Ignore a response for an older input value if the user has kept typing.
+    if (manualProductSearch.value.trim() !== query) return;
+    if (!page.items.length) {
+      manualProductResults.innerHTML = '<div class="manual-product-empty">No matching design. Try another name or colour.</div>';
+      return;
+    }
+    manualProductResults.innerHTML = page.items.map((product, index) => {
+      const stock = product.variants.map((variant) => `${esc(variant.size)}: ${variant.current_stock}`).join(" · ") || "No sizes";
+      return `<button class="manual-product-option" type="button" role="option" data-index="${index}"><strong>${esc(product.name)}</strong><small>${esc(product.sku)} · ${esc(product.category || "Uncategorised")}</small><small>${stock}</small></button>`;
+    }).join("");
+    manualProductResults.querySelectorAll(".manual-product-option").forEach((button) => button.addEventListener("click", () => {
+      manualSelectedProduct = page.items[Number(button.dataset.index)];
+      $("manual-product-sku").value = manualSelectedProduct.sku;
+      manualProductSearch.value = `${manualSelectedProduct.name} (${manualSelectedProduct.sku})`;
+      manualProductResults.hidden = true;
+      $("manual-size-field").hidden = false;
+      const variants = manualSelectedProduct.variants || [];
+      manualSizeSelect.innerHTML = '<option value="">Choose size…</option>' + variants.map((variant) => `<option value="${esc(variant.variant_code)}">${esc(variant.size)} · Stock ${Number(variant.current_stock)}</option>`).join("");
+      manualSizeSelect.disabled = variants.length === 0;
+      manualLookupButton.disabled = true;
+      manualLookupButton.textContent = variants.length ? "Choose a size" : "No sizes available";
+      if (variants.length) manualSizeSelect.focus();
+    }));
+  } catch (error) {
+    if (manualProductSearch.value.trim() === query) manualProductResults.innerHTML = '<div class="manual-product-empty">Could not search products. Try again.</div>';
+  }
+}
+manualProductSearch.addEventListener("input", debounce(searchManualProducts, 220));
+manualProductSearch.addEventListener("focus", () => { if (manualProductSearch.value.trim().length >= 2 && !manualSelectedProduct) searchManualProducts(); });
+manualSizeSelect.addEventListener("change", () => {
+  manualLookupButton.disabled = !manualSizeSelect.value;
+  manualLookupButton.textContent = manualSizeSelect.value ? "Open product sizes" : "Choose a size";
+});
+$("manual-lookup-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (!manualSelectedProduct || !manualSizeSelect.value) return;
+  lookupVariant(manualSizeSelect.value);
+});
+document.addEventListener("click", (event) => {
+  if (!event.target.closest("#manual-lookup-form")) manualProductResults.hidden = true;
 });
 
 async function lookupVariant(variantCode) {
@@ -896,6 +949,29 @@ async function lookupVariant(variantCode) {
   } catch (e) {
     box.hidden = true;
     msg.textContent = `"${variantCode}" not found — check the SKU and size, or add it from Products first.`;
+    msg.className = "msg error";
+  }
+}
+
+function handleScannedCode(scannedValue) {
+  const code = String(scannedValue || "").trim().toUpperCase();
+  const productQr = code.match(/^(?:PRODUCT|DESIGN):(.+)$/);
+  if (productQr) return lookupProduct(productQr[1]);
+  return lookupVariant(code);
+}
+
+async function lookupProduct(sku) {
+  const msg = $("scan-msg"), box = $("scan-result");
+  try {
+    const product = await getJSON(`${API}/products/${encodeURIComponent(sku)}`);
+    msg.textContent = `Design QR scanned: ${product.name} · ${product.variants.length} sizes`;
+    msg.className = "msg success";
+    box.hidden = false;
+    renderDetail(product, box, { showDelete: false });
+    box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  } catch (error) {
+    box.hidden = true;
+    msg.textContent = `Design QR “${sku}” not found. Check that the design is active.`;
     msg.className = "msg error";
   }
 }
@@ -1281,6 +1357,20 @@ function addAssistantMessage(role, content, options = {}) {
     });
     bubble.appendChild(list);
   }
+  if (options.products?.length) {
+    const list = document.createElement("div");
+    list.className = "assistant-product-results";
+    const originalRequest = [...assistantHistory].reverse().find((item) => item.role === "user")?.content || "Show this product";
+    options.products.forEach((product) => {
+      const card = document.createElement("article");
+      card.className = "assistant-product-card";
+      const sizes = (product.sizes || []).map((item) => `${esc(item.size)}: ${item.counted ? Number(item.stock) : "not counted"}`).join(" · ") || "No active sizes";
+      card.innerHTML = `${product.image_path ? `<img src="${esc(product.image_path)}" alt="${esc(product.name)}" loading="lazy">` : '<div class="assistant-product-no-image"><i class="fa-solid fa-image"></i><span>Photo not added</span></div>'}<div class="assistant-product-copy"><strong>${esc(product.name)}</strong><small>${esc(product.sku)}${product.category ? ` · ${esc(product.category)}` : ""}</small><small>${sizes}</small><button class="assistant-product-pick" type="button">${options.products.length > 1 ? "Choose this colour/design" : "Open all sizes"}</button></div>`;
+      card.querySelector(".assistant-product-pick").addEventListener("click", () => sendAssistantMessage(originalRequest, product.sku));
+      list.appendChild(card);
+    });
+    bubble.appendChild(list);
+  }
   messages.scrollTop = messages.scrollHeight;
   return bubble;
 }
@@ -1355,7 +1445,7 @@ async function sendAssistantMessage(message, selectedSku = null, { fromVoice = f
     const reply = String(result.reply || "Is request ko samajhne mein dikkat hui. Product aur size dobara batayein.");
     assistantHistory.push({ role: "assistant", content: reply });
     saveAssistantHistory();
-    addAssistantMessage("assistant", reply, { action: ["confirm_stock", "confirm_action"].includes(result.status) ? { type: result.status === "confirm_stock" ? "stock_update" : result.action.type, ...result.action } : null, choices: result.status === "choose_product" ? result.choices : null });
+    addAssistantMessage("assistant", reply, { action: ["confirm_stock", "confirm_action"].includes(result.status) ? { type: result.status === "confirm_stock" ? "stock_update" : result.action.type, ...result.action } : null, choices: result.status === "choose_product" ? result.choices : null, products: result.status === "product_search" ? result.products : null });
     speakAssistantMessage(reply);
   } catch (error) {
     if (requestSequence !== assistantRequestSequence || requestSessionId !== assistantSessionId) return;
@@ -1440,7 +1530,7 @@ function startDishaWake(isAutomaticResume = false) {
     if (!isAutomaticResume) addAssistantMessage("system", "Is browser mein wake-word voice input supported nahi hai. Chrome/Edge ya chat typing use karein.");
     return;
   }
-  if (assistantPaused || assistantRecognition || document.visibilityState === "hidden" || assistantMicBlocked) return;
+  if (assistantPaused || assistantSpeaking || assistantRecognition || document.visibilityState === "hidden" || assistantMicBlocked) return;
   assistantWakeEnabled = true;
   updateDishaListeningUI();
   const recognition = new Recognition();
@@ -1470,7 +1560,7 @@ function startDishaWake(isAutomaticResume = false) {
   };
   recognition.onend = () => {
     if (assistantRecognition === recognition) assistantRecognition = null;
-    if (!assistantWakeEnabled || assistantMicBlocked) updateDishaListeningUI();
+    if (!assistantWakeEnabled || assistantMicBlocked || assistantSpeaking) updateDishaListeningUI();
     else if (document.visibilityState === "visible") {
       clearTimeout(assistantWakeRestartTimer);
       assistantWakeRestartTimer = setTimeout(() => startDishaWake(true), 900);
@@ -1581,12 +1671,6 @@ async function loadAlerts() {
     if (q) params.set("q", q);
     const page = await getJSON(`${API}/alerts/groups?${params}`);
     if (requestId !== alertPage.requestId) return;
-    if (pendingAlertAnnouncement && spokenAlertsEnabled && page.items.length) {
-      const group = page.items[0], alert = group.items[0];
-      const details = alert.alert_type === "ORDER_SHORTAGE" ? `pending order ${alert.ordered_qty}, restock ${alert.required_qty}` : `stock ${alert.stock_at_alert}`;
-      speakInventoryMessage(`${group.product_name}, size ${alert.size}, ${details}. Please check the alert.`);
-      pendingAlertAnnouncement = false;
-    }
     $("alerts-note").textContent = page.total ? `${page.total.toLocaleString()} designs with alerts · grouped by design and sorted by severity` : (q ? `No alerts match “${q}”.` : "No open alerts.");
     $("alerts-page-info").textContent = page.total ? `${page.offset + 1}–${Math.min(page.offset + page.items.length, page.total)} of ${page.total} designs` : "";
     $("alerts-prev").disabled = page.offset === 0;
@@ -1686,6 +1770,7 @@ function selectLabelProduct(product) {
   $("label-results").innerHTML = "";
   $("label-selected").hidden = false;
   $("label-selected-name").textContent = `${product.sku} — ${product.name}`;
+  $("product-qr-download").href = `${API}/products/${encodeURIComponent(product.sku)}/qr`;
   $("label-variant-checks").innerHTML = product.variants.map((v) => `<label class="check-row"><input type="checkbox" value="${esc(v.variant_code)}" checked> ${esc(v.variant_code)}</label>`).join("");
   $("label-variant-checks").querySelectorAll("input").forEach((cb) => cb.addEventListener("change", updateLabelDownloadLink));
   updateLabelDownloadLink();
