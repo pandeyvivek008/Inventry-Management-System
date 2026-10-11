@@ -235,6 +235,9 @@ app does not currently store sales prices or revenue. Spoken replies use the Hin
 voice available in the browser or operating system, so voice gender and style depend
 on the device's installed voices. Mobile browser support depends on its Web Speech API.
 
+Hindi/Hinglish examples, confirmation steps, photo controls, microphone and
+earbud setup, and troubleshooting are in the [Disha user manual](DISHA_USER_MANUAL_HI.md).
+
 The full design, a **working and tested** nearest-neighbor matching algorithm, and
 exact activation steps are in `backend/services/ai_inventory_service.py`. Short
 version, confirmed against real photos of your rack during development:

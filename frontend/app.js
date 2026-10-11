@@ -1450,6 +1450,7 @@ function addAssistantMessage(role, content, options = {}) {
     assistantConfirmationButton = button;
     button.addEventListener("click", async () => {
       if (button.disabled) return;
+      if (assistantConfirmationButton === button) assistantConfirmationButton = null;
       button.disabled = true;
       button.textContent = "Updating…";
       try {
@@ -1575,6 +1576,7 @@ async function sendAssistantMessage(message, selectedSku = null, { fromVoice = f
   if (!clean) return;
   if (isNewConversationRequest(clean)) { startNewAssistantConversation({ fromVoice }); return; }
   if (assistantBusy) return;
+  if (handlePendingAssistantConfirmation(clean)) return;
   assistantBusy = true;
   const requestSequence = ++assistantRequestSequence;
   const requestSessionId = assistantSessionId;
@@ -1810,6 +1812,33 @@ function stopDishaWake() {
 function isAffirmative(text) { return /^(?:(?:haan|han|ha|yes|yeah|yep|ji|jee|bilkul|confirm)(?:\b|$)|(?:हाँ|हां|जी)(?:\s|$)|कर\s+दो)/iu.test(text.trim().replace(/[.!?,।]+$/g, "")); }
 function isNegative(text) { return /^(?:(?:nahi|nahin|no|nope|cancel)(?:\b|$)|(?:नहीं|ना|रद्द)(?:\s|$)|मत\s+करो)/iu.test(text.trim().replace(/[.!?,।]+$/g, "")); }
 
+function handlePendingAssistantConfirmation(message) {
+  const button = assistantConfirmationButton;
+  if (!button || button.disabled) return false;
+  if (isAffirmative(message)) {
+    assistantConfirmationButton = null;
+    assistantHistory.push({ role: "user", content: message });
+    saveAssistantHistory();
+    addAssistantMessage("user", message);
+    button.click();
+    assistantWakeActiveUntil = Date.now() + 45000;
+    return true;
+  }
+  if (isNegative(message)) {
+    assistantConfirmationButton = null;
+    button.disabled = true;
+    button.textContent = "Cancelled";
+    const response = "Theek hai, action cancel kar diya. Inventory change nahi hui.";
+    assistantHistory.push({ role: "user", content: message }, { role: "assistant", content: response });
+    saveAssistantHistory();
+    addAssistantMessage("user", message);
+    addAssistantMessage("assistant", response);
+    speakAssistantMessage(response);
+    return true;
+  }
+  return false;
+}
+
 function handleDishaUtterance(transcript) {
   if (assistantPaused || assistantSpeaking || assistantBusy) return;
   let message = String(transcript || "").trim();
@@ -1829,27 +1858,9 @@ function handleDishaUtterance(transcript) {
     }
   } else if (Date.now() > assistantWakeActiveUntil) return;
 
-  if (assistantConfirmationButton && isAffirmative(message)) {
+  if (assistantConfirmationButton && (isAffirmative(message) || isNegative(message))) {
     if ($("assistant-panel").hidden) openAssistant({ speakGreeting: false, focusInput: false });
-    assistantHistory.push({ role: "user", content: message });
-    saveAssistantHistory();
-    addAssistantMessage("user", message);
-    assistantConfirmationButton.click();
-    assistantWakeActiveUntil = Date.now() + 45000;
-    return;
-  }
-  if (assistantConfirmationButton && isNegative(message)) {
-    if ($("assistant-panel").hidden) openAssistant();
-    const button = assistantConfirmationButton;
-    assistantConfirmationButton = null;
-    button.disabled = true;
-    button.textContent = "Cancelled";
-    const response = "Theek hai, stock update cancel kar diya. Inventory change nahi hui.";
-    assistantHistory.push({ role: "user", content: message }, { role: "assistant", content: response });
-    saveAssistantHistory();
-    addAssistantMessage("user", message);
-    addAssistantMessage("assistant", response);
-    speakAssistantMessage(response);
+    sendAssistantMessage(message, null, { fromVoice: true });
     return;
   }
   if (message) {

@@ -213,6 +213,9 @@ s = client.get("/api/summary").json()
 expect(s["uncounted"] == 5 and s["variants"] == 9 and s["products"] == 5, f"summary: 5 uncounted of 9 variants, 5 products, got {s}")
 
 print("14. Filtering, search and pagination")
+product_page = client.get("/api/products", params={"limit": 12, "offset": 0, "paged": "true"}).json()
+expect(product_page["total"] == len(client.get("/api/products").json()) and product_page["items"],
+       "unfiltered Products page returns an exact total for pagination")
 page = client.get("/api/variants", params={"status": "UNCOUNTED", "limit": 2, "offset": 1}).json()
 expect(page["total"] == 5 and len(page["items"]) == 2 and page["offset"] == 1, "UNCOUNTED page: total 5, 2 items from offset 1")
 expect(client.get("/api/variants", params={"q": "twins_test"}).json()["total"] == 2, "search by SKU text")

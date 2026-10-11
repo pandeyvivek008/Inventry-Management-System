@@ -276,7 +276,10 @@ def list_products(q: str | None = None, limit: int | None = Query(None, ge=1, le
     base = db.query(models.Product).options(selectinload(models.Product.variants), joinedload(models.Product.vendor)) \
         .filter(models.Product.is_deleted == False)  # noqa: E712
     query = _apply_smart_search(base, (models.Product.sku, models.Product.name, models.Product.category), q)
-    exact_total = query.count() if q and q.strip() else None
+    # Paged clients need an exact count even when the search box is empty.
+    # Without this, Products renders "null designs" and "1–0 of null" while
+    # the first page itself contains valid products.
+    exact_total = query.count() if paged or (q and q.strip()) else None
     total = exact_total if paged else None
     if q and q.strip() and exact_total == 0:
         fuzzy = [(score, product) for product in base.all() if (score := _fuzzy_product_score(q, product)) > 0]
