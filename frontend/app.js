@@ -48,11 +48,36 @@ document.querySelectorAll("[data-theme-toggle]").forEach((button) => button.addE
   setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
 }));
 
+const assistantProductNameBySku = new Map();
+function registerAssistantProducts(items = []) {
+  items.forEach((product) => {
+    if (product?.sku && product?.name) assistantProductNameBySku.set(String(product.sku).toUpperCase(), String(product.name));
+  });
+}
 function makeSpeechFriendly(message) {
-  // Say an SKU as its meaningful chunks ("nk, 100, mustard, etc"), not as
-  // punctuation or a character-by-character code. Keep the visible text intact.
-  return String(message).replace(/(^|[^a-z0-9])([a-z0-9]+(?:[-_][a-z0-9]+)+)(?![a-z0-9])/gi,
-    (match, prefix, code) => /[a-z]/i.test(code) && /\d/.test(code) ? `${prefix}${code.toLowerCase().replace(/[-_]+/g, ", ")}` : match);
+  let speech = String(message);
+  // Replace known codes with the design name, then make catalog-style names
+  // readable for speech (for example KIDS_NK_101 -> KIDS NK 101).
+  [...assistantProductNameBySku.entries()]
+    .sort((a, b) => b[0].length - a[0].length)
+    .forEach(([sku, name]) => {
+      const escapedSku = sku.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const spokenName = name.replace(/[_-]+/g, " ");
+      speech = speech.replace(new RegExp(`(^|[^a-z0-9])${escapedSku}(?![a-z0-9])`, "gi"), (_match, prefix) => `${prefix}${spokenName}`);
+    });
+  [...new Set(assistantProductNameBySku.values())]
+    .sort((a, b) => b.length - a.length)
+    .forEach((name) => {
+      const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      speech = speech.replace(new RegExp(`(^|[^a-z0-9])${escapedName}(?![a-z0-9])`, "gi"), (_match, prefix) => `${prefix}${name.replace(/[_-]+/g, " ")}`);
+    });
+  // Do not read any remaining SKU-like code aloud; keep product names spoken
+  // as words instead of announcing underscores or hyphens.
+  return speech
+    .replace(/\b[A-Z0-9]+(?:[_-][A-Z0-9]+)+\b/gi, "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
 }
 
 // Keep the page behind dialogs still; touch scrolling stays inside the modal.
@@ -1331,7 +1356,7 @@ function setAssistantPhotoZoom(value) {
 function openAssistantPhotoLightbox(product = assistantCurrentPhotoProduct) {
   if (!product?.image_path) return;
   assistantCurrentPhotoProduct = product;
-  $("assistant-photo-lightbox-title").textContent = `${product.name} · ${product.sku}`;
+  $("assistant-photo-lightbox-title").textContent = product.name;
   const image = $("assistant-photo-zoom-image");
   image.src = `${product.image_path}${product.image_path.includes("?") ? "&" : "?"}v=${Date.now()}`;
   image.alt = `${product.name} product photo`;
@@ -1582,6 +1607,9 @@ async function sendAssistantMessage(message, selectedSku = null, { fromVoice = f
     const result = await response.json().catch(() => ({}));
     if (requestSequence !== assistantRequestSequence || requestSessionId !== assistantSessionId) return;
     if (!response.ok) throw new Error(result.detail || `Assistant request failed (${response.status})`);
+    registerAssistantProducts(result.products || result.choices || []);
+    if (result.action?.sku && result.action?.name) registerAssistantProducts([{ sku: result.action.sku, name: result.action.name }]);
+    if (result.stock?.sku && result.stock?.name) registerAssistantProducts([result.stock]);
     const reply = String(result.reply || "Is request ko samajhne mein dikkat hui. Product aur size dobara batayein.");
     assistantHistory.push({ role: "assistant", content: reply });
     saveAssistantHistory();

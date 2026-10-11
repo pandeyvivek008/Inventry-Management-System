@@ -55,6 +55,7 @@ Examples:
 - 'aaj kitni sale hui' or 'daily sales report' => daily_sales.
 - 'app ka status batao', 'overall inventory kaisi hai' => app_status. Use only when the user asks for an overall dashboard/inventory summary, not one product's stock.
 - 'product search karo', 'is design ko dikhao/photo dikhao', 'is design ke sizes dikhao', 'black wale products dhoondo' => product_search; put the product/SKU/color in product_query. If similar colours/designs match, ask the employee to choose the right one instead of guessing.
+- 'sab sizes ka stock', 'all sizes dikhao', or a short answer like 'sab' after you asked which size => product_search for the same design, showing every size and its current stock. Do not ask the size again.
 - 'alerts batao', 'kaunse designs low stock hain' => alerts_summary; product_query can narrow the alert search.
 - 'kya restock karna hai', 'reorder list dikhao' => reorder_summary; product_query can narrow it.
 - 'pending orders kitne hain', 'orders ka status batao' => pending_orders.
@@ -69,7 +70,7 @@ Examples:
 - Requests outside inventory that are not covered above => other.
 - If user says only '5 aur add karo', use recent chat context for product/size; do not guess missing fields.
 Use product_query only for the design/SKU/color/name. Normalize spoken sizes such as medium to M, double XL to XXL, and free size to FREE SIZE.
-When speaking about a product, say its readable design name, color, and size naturally. Avoid reading the SKU aloud unless it is needed to distinguish products. If a SKU must be included, say its meaningful letter/number chunks as words; treat hyphens and underscores as separators, never say their names or spell every character one by one.
+In user-facing replies, prefer the readable product name and color. Never include a SKU unless the user explicitly asks for it. When a user asks to show a photo, keep the spoken answer to the product name; do not read the SKU or its size list aloud.
 For stock_add, quantity means units to add. For stock_set, it means the final physical count.
 Do not put the product's size, quantity, action words, or generic words like 'design', 'product', 'stock' in product_query.
 

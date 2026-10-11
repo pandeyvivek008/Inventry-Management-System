@@ -389,6 +389,23 @@ async def inventory_assistant_chat(payload: schemas.AssistantChatRequest, reques
         raise HTTPException(status_code=503, detail=detail) from exc
 
     action = intent["intent"]
+    last_assistant_message = next(
+        (str(item.content) for item in reversed(payload.history) if item.role == "assistant"),
+        "",
+    )
+    all_sizes_phrase = bool(re.search(r"\b(?:sab(?:hi)?|saare?|sare|all|every|har(?:\s+ek)?)\b.{0,24}\b(?:size|sizes|stock)\b", payload.message, flags=re.IGNORECASE))
+    answered_size_question = bool(re.search(r"kaunsa\s+size|which\s+size|what\s+size", last_assistant_message, flags=re.IGNORECASE))
+    wants_all_sizes = all_sizes_phrase or (answered_size_question and bool(re.fullmatch(r"\s*(?:sab|sabhi|saare|sare|all)\s*[.!?]*\s*", payload.message, flags=re.IGNORECASE)))
+    if wants_all_sizes:
+        if not intent.get("product_query") and not payload.selected_sku:
+            prior_design = re.search(r"^\s*(.+?)\s+mil\s+gaya\b", last_assistant_message, flags=re.IGNORECASE)
+            if prior_design:
+                intent["product_query"] = prior_design.group(1).strip(" .:-")[:160]
+        # Treat this follow-up as a complete size summary, even if the intent
+        # model repeats its previous "which size?" clarification. Never turn
+        # an unqualified request into a search that could return random items.
+        if intent.get("product_query") or payload.selected_sku:
+            action = "product_search"
     if action == "daily_sales":
         sales_summary = _daily_sales_summary(db)
         if not sales_summary["dispatched_units"]:
@@ -441,8 +458,8 @@ async def inventory_assistant_chat(payload: schemas.AssistantChatRequest, reques
             size_rows = [{"size": v.size, "stock": v.current_stock, "counted": v.last_counted_at is not None} for v in variants]
             details.append({"sku": product.sku, "name": product.name, "category": product.category, "image_path": product.image_path, "sizes": size_rows})
         reply = ("Mujhe milte-julte designs mile. Agar rang alag hai, sahi colour wala design choose karein.\n" if len(details) > 1 else "") + "\n".join(
-            f"{product['name']} ({product['sku']}): " + ", ".join(
-                f"{size['size']} {size['stock'] if size['counted'] else 'not counted'}" for size in product["sizes"]
+            f"{product['name']}: " + ", ".join(
+                f"size {size['size']}, {size['stock'] if size['counted'] else 'stock not counted'} pieces" for size in product["sizes"]
             ) for product in details
         )
         return {"status": "product_search", "reply": reply, "products": details}
@@ -566,8 +583,17 @@ async def inventory_assistant_chat(payload: schemas.AssistantChatRequest, reques
             live_products.append((product, live_variants))
     if not requested_size:
         if len(live_products) == 1:
-            sizes = ", ".join(variant.size for variant in live_products[0][1])
-            return {"status": "clarify", "reply": f"{live_products[0][0].name} mil gaya. Is design ke sizes {sizes} hain. Kaunsa size?"}
+            product, variants = live_products[0]
+            if wants_all_sizes:
+                size_rows = [{"size": variant.size, "stock": variant.current_stock, "counted": variant.last_counted_at is not None} for variant in variants]
+                size_summary = ", ".join(f"{row['size']} size mein {row['stock'] if row['counted'] else 'stock count nahi hua'} pieces" for row in size_rows)
+                return {
+                    "status": "product_search",
+                    "reply": f"{product.name} ke sabhi sizes ka stock: {size_summary}.",
+                    "products": [{"sku": product.sku, "name": product.name, "category": product.category, "image_path": product.image_path, "sizes": size_rows}],
+                }
+            sizes = ", ".join(variant.size for variant in variants)
+            return {"status": "clarify", "reply": f"{product.name} mein ye sizes available hain: {sizes}. Aap chahein to 'sabhi sizes ka stock' bol sakte hain, ya ek size batayein."}
         choices = [{"sku": product.sku, "name": product.name} for product, _ in live_products[:8]]
         return {"status": "choose_product", "reply": "Kaunsa size aur kaunsa design? Sahi product chunein:", "choices": choices}
 
