@@ -2,6 +2,7 @@ import shutil
 import uuid
 import re
 import time
+from difflib import SequenceMatcher
 from collections import defaultdict, deque
 from threading import Lock
 from datetime import datetime, timezone, timedelta
@@ -251,12 +252,40 @@ def _apply_smart_search(query, columns, value: str | None):
     return query
 
 
+def _fuzzy_product_score(value: str, product) -> float:
+    """Score typo-tolerant product-name/SKU matches after exact SQL search misses."""
+    wanted = _smart_search_tokens(value)
+    candidates = _smart_search_tokens(" ".join((product.sku or "", product.name or "", product.category or "")))
+    if not wanted or not candidates:
+        return 0.0
+    scores = []
+    for token in wanted:
+        best = 1.0 if any(token in candidate for candidate in candidates) else max(
+            (SequenceMatcher(None, token, candidate).ratio() for candidate in candidates),
+            default=0.0,
+        )
+        minimum = 1.0 if len(token) <= 2 else (0.82 if len(token) <= 4 else 0.70)
+        if best < minimum:
+            return 0.0
+        scores.append(best)
+    return sum(scores) / len(scores)
+
+
 @app.get("/api/products")
 def list_products(q: str | None = None, limit: int | None = Query(None, ge=1, le=500), offset: int = Query(0, ge=0), paged: bool = False, db: Session = Depends(get_db)):
-    query = db.query(models.Product).options(selectinload(models.Product.variants), joinedload(models.Product.vendor)) \
+    base = db.query(models.Product).options(selectinload(models.Product.variants), joinedload(models.Product.vendor)) \
         .filter(models.Product.is_deleted == False)  # noqa: E712
-    query = _apply_smart_search(query, (models.Product.sku, models.Product.name, models.Product.category), q)
-    total = query.count() if paged else None
+    query = _apply_smart_search(base, (models.Product.sku, models.Product.name, models.Product.category), q)
+    exact_total = query.count() if q and q.strip() else None
+    total = exact_total if paged else None
+    if q and q.strip() and exact_total == 0:
+        fuzzy = [(score, product) for product in base.all() if (score := _fuzzy_product_score(q, product)) > 0]
+        fuzzy.sort(key=lambda item: (item[0], item[1].created_at.isoformat() if item[1].created_at else "", item[1].id), reverse=True)
+        total = len(fuzzy)
+        if limit:
+            fuzzy = fuzzy[offset:offset + limit]
+        items = [_product_out(product) for _, product in fuzzy]
+        return {"items": items, "total": total, "offset": offset, "limit": limit} if paged else items
     query = query.order_by(models.Product.created_at.desc(), models.Product.id.desc())
     if limit:
         query = query.offset(offset).limit(limit)
@@ -356,7 +385,8 @@ async def inventory_assistant_chat(payload: schemas.AssistantChatRequest, reques
             [item.model_dump() for item in payload.history],
         )
     except assistant_service.AssistantProviderError as exc:
-        raise HTTPException(status_code=503, detail="AI assistant is temporarily unavailable. Please use manual stock entry and try again later.") from exc
+        detail = exc.user_message or "Gemini assistant temporarily unavailable; try again later."
+        raise HTTPException(status_code=503, detail=detail) from exc
 
     action = intent["intent"]
     if action == "daily_sales":
@@ -868,8 +898,8 @@ def lookup_variant(variant_code: str, db: Session = Depends(get_db)):
 
 @app.get("/api/variants/{variant_code}/product", response_model=schemas.ProductOut)
 def product_for_variant(variant_code: str, db: Session = Depends(get_db)):
-    """Scanning or looking up one size resolves the WHOLE design, so every
-    size can be seen and updated together, not just the one that was scanned."""
+    """Resolve a scanned size to its parent design; the client limits barcode
+    editing to that size while product QR/manual search show the full design."""
     variant = _get_variant_by_code(db, variant_code)
     return _product_out(_get_product_by_sku(db, variant.product.sku))
 

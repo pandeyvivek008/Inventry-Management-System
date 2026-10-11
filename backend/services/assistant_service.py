@@ -82,6 +82,11 @@ Also return `reply`:
 class AssistantProviderError(Exception):
     """The configured inference provider could not safely parse a request."""
 
+    def __init__(self, message: str, *, upstream_status: int | None = None, user_message: str | None = None):
+        super().__init__(message)
+        self.upstream_status = upstream_status
+        self.user_message = user_message or message
+
 
 def api_key_configured() -> bool:
     return bool(os.getenv("GEMINI_API_KEY", "").strip())
@@ -142,7 +147,21 @@ async def parse_inventory_request(message: str, history: list[dict]) -> dict:
         if response.status_code >= 400:
             # Keep the API key and prompt private: log only Google's short error body and status.
             logger.warning("Gemini generateContent returned HTTP %s: %s", response.status_code, response.text[:500])
-            raise AssistantProviderError(f"Gemini API returned HTTP {response.status_code}.")
+            status = response.status_code
+            if status in (401, 403):
+                advice = "Gemini ne API key reject ki. Railway Variables mein GEMINI_API_KEY check karein aur key ke project par Generative Language API access verify karein."
+            elif status == 404:
+                advice = "Gemini model nahi mila. GEMINI_MODEL ko gemini-3.5-flash-lite set karke redeploy karein."
+            elif status == 429:
+                advice = "Gemini quota ya rate limit poori hui. Google AI Studio ke isi API-key project ka quota/billing check karein, phir kuch der baad retry karein."
+            elif status == 400:
+                advice = "Gemini request reject hui. Railway ka GEMINI_MODEL aur structured-output request config check karna hoga."
+            else:
+                advice = "Gemini provider abhi request serve nahi kar raha. Thodi der baad retry karein."
+            raise AssistantProviderError(
+                f"Gemini API returned HTTP {status}.", upstream_status=status,
+                user_message=f"{advice} (Gemini HTTP {status})",
+            )
         body = response.json()
         content = "".join(
             str(part.get("text", ""))

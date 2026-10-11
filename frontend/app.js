@@ -4,6 +4,31 @@ const PAGE_SIZE = 100;
 
 const $ = (id) => document.getElementById(id);
 
+// A small, non-blocking sweep tells staff when any app API request is taking
+// longer than a quick response. Keep it local to /api so static assets do not
+// flash the indicator while rendering a page.
+const appLoadingIndicator = $("app-loading-indicator");
+const nativeFetch = window.fetch.bind(window);
+let appApiRequests = 0;
+let appLoadingTimer = null;
+window.fetch = (input, init) => {
+  let isAppApi = false;
+  try {
+    const url = new URL(typeof input === "string" ? input : input.url, window.location.href);
+    isAppApi = url.origin === window.location.origin && url.pathname.startsWith("/api/");
+  } catch {}
+  if (!isAppApi) return nativeFetch(input, init);
+  appApiRequests += 1;
+  if (appApiRequests === 1) appLoadingTimer = setTimeout(() => appLoadingIndicator?.classList.add("is-visible"), 320);
+  return nativeFetch(input, init).finally(() => {
+    appApiRequests = Math.max(0, appApiRequests - 1);
+    if (!appApiRequests) {
+      clearTimeout(appLoadingTimer);
+      appLoadingIndicator?.classList.remove("is-visible");
+    }
+  });
+};
+
 // Theme choice is local to this browser and is restored before the page paints.
 function setTheme(theme) {
   const isDark = theme === "dark";
@@ -98,31 +123,47 @@ function noteAlertCount(n) {
 let assistantSpeaking = false;
 let assistantSpeechId = 0;
 let assistantSpeechGuardTimer = null;
+let assistantSpeechVoice = null;
+let assistantIgnoreTranscriptUntil = 0;
+let assistantCurrentPhotoProduct = null;
+let assistantPhotoZoom = 1;
+function chooseDishaVoice() {
+  if (!window.speechSynthesis) return;
+  const voices = window.speechSynthesis.getVoices();
+  const indianVoices = voices.filter((voice) => /^(hi|en)(-|_)?in$/i.test(voice.lang));
+  const hindiVoices = indianVoices.filter((voice) => /^hi(-|_)?in$/i.test(voice.lang));
+  const femaleVoiceName = /female|swara|kalpana|heera|priya|neerja|google hindi|google हिन्दी/i;
+  assistantSpeechVoice = hindiVoices.find((voice) => femaleVoiceName.test(voice.name))
+    || indianVoices.find((voice) => femaleVoiceName.test(voice.name))
+    || hindiVoices[0]
+    || voices.find((voice) => /female|swara|kalpana|heera|priya|neerja/i.test(voice.name))
+    || null;
+}
+if (window.speechSynthesis) {
+  chooseDishaVoice();
+  window.speechSynthesis.addEventListener?.("voiceschanged", chooseDishaVoice);
+}
 function speakAssistantMessage(message) {
   if (assistantPaused) return;
   if (!window.speechSynthesis || !window.SpeechSynthesisUtterance) return;
   const speechId = ++assistantSpeechId;
-  clearTimeout(assistantWakeRestartTimer);
-  assistantRecognition?.stop();
+  clearDishaWakeRestart();
   window.speechSynthesis.cancel();
   clearTimeout(assistantSpeechGuardTimer);
   assistantSpeaking = true;
   const speechText = makeSpeechFriendly(message);
   const utterance = new SpeechSynthesisUtterance(speechText);
   utterance.lang = "hi-IN";
-  utterance.rate = 0.94;
-  utterance.pitch = 1.12;
-  const voices = window.speechSynthesis.getVoices();
-  const hindiVoices = voices.filter((voice) => /^hi(-|_)?in$/i.test(voice.lang));
-  const preferredVoice = hindiVoices.find((voice) => /female|swara|kalpana|heera|priya/i.test(voice.name)) || hindiVoices[0];
-  if (preferredVoice) utterance.voice = preferredVoice;
+  utterance.rate = 0.95;
+  utterance.pitch = 1.18;
+  if (assistantSpeechVoice) utterance.voice = assistantSpeechVoice;
   const finishSpeech = () => {
     if (speechId !== assistantSpeechId) return;
     assistantSpeaking = false;
+    assistantIgnoreTranscriptUntil = Date.now() + 1400;
     clearTimeout(assistantSpeechGuardTimer);
     if (assistantWakeEnabled && !assistantPaused && !assistantRecognition && document.visibilityState === "visible") {
-      clearTimeout(assistantWakeRestartTimer);
-      assistantWakeRestartTimer = setTimeout(() => startDishaWake(true), 700);
+      scheduleDishaWakeRestart(700);
     }
   };
   utterance.onend = finishSpeech;
@@ -872,23 +913,52 @@ document.addEventListener("keydown", (e) => {
     gunTimer = setTimeout(() => { gunBuffer = ""; gunStartedAt = 0; }, 1300);
   }
 });
-let manualSelectedProduct = null;
 const manualProductSearch = $("manual-product-search");
 const manualProductResults = $("manual-product-results");
-const manualSizeSelect = $("manual-size");
-const manualLookupButton = $("manual-lookup-submit");
-function clearManualProductSelection() {
-  manualSelectedProduct = null;
-  $("manual-product-sku").value = "";
-  $("manual-size-field").hidden = true;
-  manualSizeSelect.disabled = true;
-  manualSizeSelect.innerHTML = '<option value="">Choose a product first</option>';
-  manualLookupButton.disabled = true;
-  manualLookupButton.textContent = "Choose a product and size";
+
+function scanStockCard(product, onlyVariantCode = null, includeHeader = true) {
+  const variants = (product.variants || []).filter((variant) => !onlyVariantCode || variant.variant_code.toUpperCase() === onlyVariantCode.toUpperCase());
+  return `<section class="scan-product-card">
+    ${includeHeader ? `<header><strong>${esc(product.name)}</strong><span class="sku-tag">${esc(product.sku)}</span></header>` : ""}
+    ${product.category ? `<small class="scan-product-category">${esc(product.category)}</small>` : ""}
+    <div class="scan-size-list">${variants.map((variant) => `<form class="scan-stock-form" data-code="${esc(variant.variant_code)}" data-current="${Number(variant.current_stock)}">
+      <span class="size-chip">${esc(variant.size)}</span>
+      <span class="scan-current-stock">Current: <b>${Number(variant.current_stock)}</b></span>
+      <input class="input scan-new-count" type="number" min="0" step="1" inputmode="numeric" required placeholder="New count" aria-label="New stock count for ${esc(product.name)} size ${esc(variant.size)}">
+      <button class="btn-primary scan-stock-save" type="submit">Update</button>
+      <small class="scan-stock-feedback" aria-live="polite"></small>
+    </form>`).join("") || '<p class="hint">No active sizes are available.</p>'}</div>
+  </section>`;
 }
+
+function attachScanStockForms(container) {
+  container.querySelectorAll(".scan-stock-form").forEach((form) => form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const input = form.querySelector(".scan-new-count"), button = form.querySelector(".scan-stock-save"), feedback = form.querySelector(".scan-stock-feedback");
+    const newCount = Number(input.value);
+    if (!Number.isInteger(newCount) || newCount < 0) { feedback.textContent = "Enter a whole count of zero or more."; return; }
+    const oldCount = Number(form.dataset.current);
+    button.disabled = true;
+    feedback.textContent = "Saving…";
+    try {
+      const updated = await apiPost(`${API}/inventory/adjust`, {
+        variant_code: form.dataset.code, new_count: newCount,
+        expected_current_stock: oldCount, note: "scan and recount"
+      });
+      form.dataset.current = String(updated.current_stock);
+      form.querySelector(".scan-current-stock b").textContent = updated.current_stock;
+      input.value = "";
+      feedback.textContent = "Stock updated.";
+      showToast(`${form.dataset.code}: stock updated to ${updated.current_stock}`, "success", 2200);
+      await loadSummary();
+    } catch (error) {
+      feedback.textContent = error.message || "Update failed. Refresh and try again.";
+    } finally { button.disabled = false; }
+  }));
+}
+
 async function searchManualProducts() {
   const query = manualProductSearch.value.trim();
-  clearManualProductSelection();
   manualProductResults.hidden = true;
   if (query.length < 2) return;
   manualProductResults.hidden = false;
@@ -902,41 +972,14 @@ async function searchManualProducts() {
       manualProductResults.innerHTML = '<div class="manual-product-empty">No matching design. Try another name or colour.</div>';
       return;
     }
-    manualProductResults.innerHTML = page.items.map((product, index) => {
-      const stock = product.variants.map((variant) => `${esc(variant.size)}: ${variant.current_stock}`).join(" · ") || "No sizes";
-      return `<button class="manual-product-option" type="button" role="option" data-index="${index}"><strong>${esc(product.name)}</strong><small>${esc(product.sku)} · ${esc(product.category || "Uncategorised")}</small><small>${stock}</small></button>`;
-    }).join("");
-    manualProductResults.querySelectorAll(".manual-product-option").forEach((button) => button.addEventListener("click", () => {
-      manualSelectedProduct = page.items[Number(button.dataset.index)];
-      $("manual-product-sku").value = manualSelectedProduct.sku;
-      manualProductSearch.value = `${manualSelectedProduct.name} (${manualSelectedProduct.sku})`;
-      manualProductResults.hidden = true;
-      $("manual-size-field").hidden = false;
-      const variants = manualSelectedProduct.variants || [];
-      manualSizeSelect.innerHTML = '<option value="">Choose size…</option>' + variants.map((variant) => `<option value="${esc(variant.variant_code)}">${esc(variant.size)} · Stock ${Number(variant.current_stock)}</option>`).join("");
-      manualSizeSelect.disabled = variants.length === 0;
-      manualLookupButton.disabled = true;
-      manualLookupButton.textContent = variants.length ? "Choose a size" : "No sizes available";
-      if (variants.length) manualSizeSelect.focus();
-    }));
+    manualProductResults.innerHTML = page.items.map((product) => scanStockCard(product)).join("");
+    attachScanStockForms(manualProductResults);
   } catch (error) {
     if (manualProductSearch.value.trim() === query) manualProductResults.innerHTML = '<div class="manual-product-empty">Could not search products. Try again.</div>';
   }
 }
 manualProductSearch.addEventListener("input", debounce(searchManualProducts, 220));
-manualProductSearch.addEventListener("focus", () => { if (manualProductSearch.value.trim().length >= 2 && !manualSelectedProduct) searchManualProducts(); });
-manualSizeSelect.addEventListener("change", () => {
-  manualLookupButton.disabled = !manualSizeSelect.value;
-  manualLookupButton.textContent = manualSizeSelect.value ? "Open product sizes" : "Choose a size";
-});
-$("manual-lookup-form").addEventListener("submit", (event) => {
-  event.preventDefault();
-  if (!manualSelectedProduct || !manualSizeSelect.value) return;
-  lookupVariant(manualSizeSelect.value);
-});
-document.addEventListener("click", (event) => {
-  if (!event.target.closest("#manual-lookup-form")) manualProductResults.hidden = true;
-});
+manualProductSearch.addEventListener("focus", () => { if (manualProductSearch.value.trim().length >= 2) searchManualProducts(); });
 
 async function lookupVariant(variantCode) {
   const msg = $("scan-msg"), box = $("scan-result");
@@ -944,8 +987,7 @@ async function lookupVariant(variantCode) {
     const product = await getJSON(`${API}/variants/${encodeURIComponent(variantCode)}/product`);
     msg.textContent = "";
     box.hidden = false;
-    renderDetail(product, box, { showDelete: false });
-    box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    renderScanProduct(product, variantCode);
   } catch (e) {
     box.hidden = true;
     msg.textContent = `"${variantCode}" not found — check the SKU and size, or add it from Products first.`;
@@ -966,14 +1008,22 @@ async function lookupProduct(sku) {
     const product = await getJSON(`${API}/products/${encodeURIComponent(sku)}`);
     msg.textContent = `Design QR scanned: ${product.name} · ${product.variants.length} sizes`;
     msg.className = "msg success";
-    box.hidden = false;
-    renderDetail(product, box, { showDelete: false });
-    box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    renderScanProduct(product);
   } catch (error) {
     box.hidden = true;
     msg.textContent = `Design QR “${sku}” not found. Check that the design is active.`;
     msg.className = "msg error";
   }
+}
+
+function renderScanProduct(product, onlyVariantCode = null) {
+  const box = $("scan-result");
+  const normalizedVariantCode = String(onlyVariantCode || "").toUpperCase();
+  const variants = (product.variants || []).filter((variant) => !normalizedVariantCode || String(variant.variant_code || "").toUpperCase() === normalizedVariantCode);
+  box.hidden = false;
+  box.innerHTML = `<div class="scan-result-head"><div><h2>${esc(product.name)}</h2><span class="sku-tag">${esc(product.sku)}</span></div><span class="hint">${onlyVariantCode ? "Barcode · one size" : "Product QR · all sizes"}</span></div>${scanStockCard({ ...product, variants }, null, false)}`;
+  attachScanStockForms(box);
+  box.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
 // ================================================================ //
@@ -1169,6 +1219,8 @@ let assistantSessionId = localStorage.getItem(assistantSessionIdKey) || `${Date.
 let assistantBusy = false;
 let assistantRequestSequence = 0;
 let assistantRecognition = null;
+let assistantRecognitionStarting = false;
+let assistantRecognitionRestartDelay = 750;
 let assistantPaused = localStorage.getItem("dishaPaused") === "true";
 // Wake word starts automatically when the page opens. The browser may ask once
 // for microphone permission; after permission is granted, no in-app mic button is needed.
@@ -1267,6 +1319,82 @@ function isNewConversationRequest(message) {
 }
 if (assistantHistory.length) saveAssistantHistory();
 
+function setAssistantPhotoZoom(value) {
+  assistantPhotoZoom = Math.min(4, Math.max(1, value));
+  const image = $("assistant-photo-zoom-image");
+  if (image) image.style.transform = `scale(${assistantPhotoZoom})`;
+  const reset = document.querySelector('[data-photo-zoom="reset"]');
+  if (reset) reset.textContent = `${Math.round(assistantPhotoZoom * 100)}%`;
+}
+
+function openAssistantPhotoLightbox(product = assistantCurrentPhotoProduct) {
+  if (!product?.image_path) return;
+  assistantCurrentPhotoProduct = product;
+  $("assistant-photo-lightbox-title").textContent = `${product.name} · ${product.sku}`;
+  const image = $("assistant-photo-zoom-image");
+  image.src = `${product.image_path}${product.image_path.includes("?") ? "&" : "?"}v=${Date.now()}`;
+  image.alt = `${product.name} product photo`;
+  $("assistant-photo-lightbox").hidden = false;
+  setAssistantPhotoZoom(1);
+  $("assistant-photo-viewport").focus({ preventScroll: true });
+}
+
+function setAssistantPhotoPreview(product) {
+  if (!product) return;
+  assistantCurrentPhotoProduct = product;
+  const preview = $("assistant-photo-preview");
+  preview.hidden = false;
+  preview.innerHTML = `<header class="assistant-photo-preview-head"><strong title="${esc(product.name)}">${esc(product.name)}</strong><button type="button" data-photo-close aria-label="Close product photo"><i class="fa-solid fa-xmark"></i></button></header>${product.image_path ? `<div class="assistant-photo-preview-image"><button type="button" data-photo-open aria-label="Zoom ${esc(product.name)} photo"><img src="${esc(product.image_path)}?v=${Date.now()}" alt="${esc(product.name)} product photo"></button></div>` : '<div class="assistant-photo-preview-empty"><i class="fa-solid fa-image"></i>&nbsp; No photo added</div>'}<div class="assistant-photo-preview-actions"><button type="button" data-photo-change><i class="fa-solid fa-camera"></i> ${product.image_path ? "Change photo" : "Add photo"}</button><button type="button" data-photo-details>Open product & sizes</button></div>`;
+  preview.querySelector("[data-photo-close]").addEventListener("click", () => { preview.hidden = true; });
+  preview.querySelector("[data-photo-open]")?.addEventListener("click", () => openAssistantPhotoLightbox(product));
+  preview.querySelector("[data-photo-change]").addEventListener("click", () => $("assistant-photo-input").click());
+  preview.querySelector("[data-photo-details]").addEventListener("click", () => {
+    preview.hidden = true;
+    $("assistant-panel").hidden = true;
+    $("assistant-launcher").setAttribute("aria-expanded", "false");
+    openProductDetail(product.sku);
+  });
+}
+
+document.querySelectorAll("[data-photo-zoom]").forEach((button) => button.addEventListener("click", () => {
+  const action = button.dataset.photoZoom;
+  setAssistantPhotoZoom(action === "reset" ? 1 : assistantPhotoZoom + (action === "in" ? 0.25 : -0.25));
+}));
+$("assistant-photo-viewport")?.addEventListener("wheel", (event) => {
+  event.preventDefault();
+  setAssistantPhotoZoom(assistantPhotoZoom + (event.deltaY < 0 ? 0.2 : -0.2));
+}, { passive: false });
+$("assistant-photo-viewport")?.addEventListener("keydown", (event) => {
+  if (event.key === "+" || event.key === "=") { event.preventDefault(); setAssistantPhotoZoom(assistantPhotoZoom + 0.25); }
+  else if (event.key === "-") { event.preventDefault(); setAssistantPhotoZoom(assistantPhotoZoom - 0.25); }
+  else if (event.key === "0") { event.preventDefault(); setAssistantPhotoZoom(1); }
+  else if (event.key === "Escape") $("assistant-photo-lightbox").hidden = true;
+});
+$("assistant-photo-lightbox-close")?.addEventListener("click", () => { $("assistant-photo-lightbox").hidden = true; });
+$("assistant-photo-lightbox")?.addEventListener("click", (event) => {
+  if (event.target.id === "assistant-photo-lightbox") event.currentTarget.hidden = true;
+});
+$("assistant-photo-change")?.addEventListener("click", () => $("assistant-photo-input").click());
+$("assistant-photo-input")?.addEventListener("change", async (event) => {
+  const file = event.target.files?.[0], product = assistantCurrentPhotoProduct;
+  if (!file || !product) return;
+  const form = new FormData(); form.append("file", file);
+  try {
+    const response = await fetch(`${API}/products/${encodeURIComponent(product.sku)}/image`, { method: "POST", body: form });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || `Upload failed (${response.status})`);
+    product.image_path = data.image_path;
+    setAssistantPhotoPreview(product);
+    if (!$("assistant-photo-lightbox").hidden) openAssistantPhotoLightbox(product);
+    const card = document.querySelector(`.assistant-product-card[data-sku="${CSS.escape(product.sku)}"]`);
+    const thumb = card?.querySelector(".assistant-product-photo-button img");
+    if (thumb) thumb.src = `${product.image_path}?v=${Date.now()}`;
+    showToast(`${product.name} photo updated`, "success", 2200);
+  } catch (error) {
+    showToast(error.message || "Photo upload failed", "error", 3000);
+  } finally { event.target.value = ""; }
+});
+
 function addAssistantMessage(role, content, options = {}) {
   const messages = $("assistant-messages");
   if (!messages) return null;
@@ -1360,16 +1488,26 @@ function addAssistantMessage(role, content, options = {}) {
   if (options.products?.length) {
     const list = document.createElement("div");
     list.className = "assistant-product-results";
-    const originalRequest = [...assistantHistory].reverse().find((item) => item.role === "user")?.content || "Show this product";
     options.products.forEach((product) => {
       const card = document.createElement("article");
       card.className = "assistant-product-card";
+      card.dataset.sku = product.sku;
       const sizes = (product.sizes || []).map((item) => `${esc(item.size)}: ${item.counted ? Number(item.stock) : "not counted"}`).join(" · ") || "No active sizes";
-      card.innerHTML = `${product.image_path ? `<img src="${esc(product.image_path)}" alt="${esc(product.name)}" loading="lazy">` : '<div class="assistant-product-no-image"><i class="fa-solid fa-image"></i><span>Photo not added</span></div>'}<div class="assistant-product-copy"><strong>${esc(product.name)}</strong><small>${esc(product.sku)}${product.category ? ` · ${esc(product.category)}` : ""}</small><small>${sizes}</small><button class="assistant-product-pick" type="button">${options.products.length > 1 ? "Choose this colour/design" : "Open all sizes"}</button></div>`;
-      card.querySelector(".assistant-product-pick").addEventListener("click", () => sendAssistantMessage(originalRequest, product.sku));
+      card.innerHTML = `${product.image_path ? `<button class="assistant-product-photo-button" type="button" aria-label="Show ${esc(product.name)} photo"><img src="${esc(product.image_path)}?v=${Date.now()}" alt="${esc(product.name)}" loading="lazy"></button>` : '<div class="assistant-product-no-image"><i class="fa-solid fa-image"></i><span>Photo not added</span></div>'}<div class="assistant-product-copy"><strong>${esc(product.name)}</strong><small>${esc(product.sku)}${product.category ? ` · ${esc(product.category)}` : ""}</small><small>${sizes}</small><button class="assistant-product-pick" type="button">Open all sizes</button></div>`;
+      card.querySelector(".assistant-product-photo-button")?.addEventListener("click", () => {
+        setAssistantPhotoPreview(product);
+        if (product.image_path) openAssistantPhotoLightbox(product);
+      });
+      card.querySelector(".assistant-product-pick").addEventListener("click", () => {
+        $("assistant-photo-preview").hidden = true;
+        $("assistant-panel").hidden = true;
+        $("assistant-launcher").setAttribute("aria-expanded", "false");
+        openProductDetail(product.sku);
+      });
       list.appendChild(card);
     });
     bubble.appendChild(list);
+    setAssistantPhotoPreview(options.products[0]);
   }
   messages.scrollTop = messages.scrollHeight;
   return bubble;
@@ -1511,8 +1649,8 @@ function setDishaPaused(paused) {
     clearTimeout(assistantSpeechGuardTimer);
     assistantSpeaking = false;
     window.speechSynthesis?.cancel();
-    clearTimeout(assistantWakeRestartTimer);
-    assistantRecognition?.stop();
+    clearDishaWakeRestart();
+    stopAssistantRecognition(false);
   } else {
     assistantWakeEnabled = true;
     assistantMicBlocked = false;
@@ -1530,16 +1668,30 @@ function startDishaWake(isAutomaticResume = false) {
     if (!isAutomaticResume) addAssistantMessage("system", "Is browser mein wake-word voice input supported nahi hai. Chrome/Edge ya chat typing use karein.");
     return;
   }
-  if (assistantPaused || assistantSpeaking || assistantRecognition || document.visibilityState === "hidden" || assistantMicBlocked) return;
+  if (assistantPaused || assistantSpeaking || assistantRecognition || assistantRecognitionStarting || document.visibilityState === "hidden" || assistantMicBlocked) return;
   assistantWakeEnabled = true;
-  updateDishaListeningUI();
+  updateDishaListeningUI("Connecting to microphone…");
   const recognition = new Recognition();
   assistantRecognition = recognition;
+  assistantRecognitionStarting = true;
+  recognition.dishaRestartAllowed = true;
+  recognition.dishaStartedAt = Date.now();
   recognition.lang = "hi-IN";
   recognition.continuous = true;
-  recognition.interimResults = true;
+  recognition.interimResults = false;
   recognition.maxAlternatives = 3;
+  recognition.onstart = () => {
+    assistantRecognitionStarting = false;
+    assistantRecognitionRestartDelay = 750;
+    if (assistantRecognition !== recognition || !recognition.dishaRestartAllowed || assistantPaused || !assistantWakeEnabled) {
+      recognition.dishaRestartAllowed = false;
+      try { recognition.stop(); } catch {}
+      return;
+    }
+    updateDishaListeningUI("Listening for ‘Disha’");
+  };
   recognition.onresult = (event) => {
+    if (assistantSpeaking || assistantBusy || Date.now() < assistantIgnoreTranscriptUntil) return;
     for (let index = event.resultIndex; index < event.results.length; index += 1) {
       if (event.results[index].isFinal) {
         const alternatives = Array.from(event.results[index]).map((alternative) => alternative.transcript);
@@ -1551,6 +1703,7 @@ function startDishaWake(isAutomaticResume = false) {
   recognition.onerror = (event) => {
     if (["not-allowed", "service-not-allowed", "audio-capture"].includes(event.error)) {
       assistantMicBlocked = true;
+      recognition.dishaRestartAllowed = false;
       updateDishaListeningUI("Microphone permission needed · allow it in browser settings");
       if (!assistantPermissionNoticeShown) {
         assistantPermissionNoticeShown = true;
@@ -1559,27 +1712,61 @@ function startDishaWake(isAutomaticResume = false) {
     }
   };
   recognition.onend = () => {
+    assistantRecognitionStarting = false;
     if (assistantRecognition === recognition) assistantRecognition = null;
-    if (!assistantWakeEnabled || assistantMicBlocked || assistantSpeaking) updateDishaListeningUI();
-    else if (document.visibilityState === "visible") {
-      clearTimeout(assistantWakeRestartTimer);
-      assistantWakeRestartTimer = setTimeout(() => startDishaWake(true), 900);
+    if (!recognition.dishaRestartAllowed || !assistantWakeEnabled || assistantMicBlocked || assistantPaused || document.visibilityState !== "visible") {
+      updateDishaListeningUI();
+      return;
     }
+    const uptime = Date.now() - recognition.dishaStartedAt;
+    assistantRecognitionRestartDelay = uptime >= 5000 ? 750 : Math.min(Math.max(assistantRecognitionRestartDelay * 1.6, 1000), 3500);
+    scheduleDishaWakeRestart(assistantRecognitionRestartDelay);
   };
   try { recognition.start(); }
   catch (error) {
+    assistantRecognitionStarting = false;
     assistantRecognition = null;
-    assistantMicBlocked = true;
-    updateDishaListeningUI("Microphone did not start · check browser permissions");
-    if (!isAutomaticResume) addAssistantMessage("system", "Mic start nahi hua. Browser site settings mein microphone Allow karke page reload karein, ya type karein.");
+    const blocked = ["NotAllowedError", "SecurityError", "NotFoundError"].includes(error?.name);
+    assistantMicBlocked = blocked;
+    if (blocked) {
+      updateDishaListeningUI("Microphone unavailable · check browser permission");
+      if (!isAutomaticResume && !assistantPermissionNoticeShown) {
+        assistantPermissionNoticeShown = true;
+        addAssistantMessage("system", "Microphone allow nahi hua. Browser ke address bar site controls mein Microphone ko Allow karein; phir Disha ke Pause/Resume control se dobara shuru karein. Tab tak type karke baat kar sakte hain.");
+      }
+    } else {
+      updateDishaListeningUI("Voice reconnecting…");
+      assistantRecognitionRestartDelay = Math.min(Math.max(assistantRecognitionRestartDelay * 1.6, 1200), 5000);
+      scheduleDishaWakeRestart(assistantRecognitionRestartDelay);
+    }
   }
+}
+
+function scheduleDishaWakeRestart(delay = assistantRecognitionRestartDelay) {
+  if (assistantWakeRestartTimer || !assistantWakeEnabled || assistantPaused || assistantMicBlocked || assistantSpeaking || assistantRecognition || assistantRecognitionStarting || document.visibilityState !== "visible") return;
+  assistantWakeRestartTimer = setTimeout(() => {
+    assistantWakeRestartTimer = null;
+    startDishaWake(true);
+  }, delay);
+}
+
+function clearDishaWakeRestart() {
+  clearTimeout(assistantWakeRestartTimer);
+  assistantWakeRestartTimer = null;
+}
+
+function stopAssistantRecognition(allowRestart) {
+  const recognition = assistantRecognition;
+  if (!recognition) return;
+  recognition.dishaRestartAllowed = Boolean(allowRestart);
+  try { recognition.stop(); } catch (error) { /* it may already be stopping */ }
 }
 
 function stopDishaWake() {
   assistantWakeEnabled = false;
   assistantWakeActiveUntil = 0;
-  clearTimeout(assistantWakeRestartTimer);
-  assistantRecognition?.stop();
+  clearDishaWakeRestart();
+  stopAssistantRecognition(false);
   updateDishaListeningUI("Disha listening off");
 }
 
@@ -1587,7 +1774,7 @@ function isAffirmative(text) { return /^(?:(?:haan|han|ha|yes|yeah|yep|ji|jee|bi
 function isNegative(text) { return /^(?:(?:nahi|nahin|no|nope|cancel)(?:\b|$)|(?:नहीं|ना|रद्द)(?:\s|$)|मत\s+करो)/iu.test(text.trim().replace(/[.!?,।]+$/g, "")); }
 
 function handleDishaUtterance(transcript) {
-  if (assistantPaused || assistantSpeaking) return;
+  if (assistantPaused || assistantSpeaking || assistantBusy) return;
   let message = String(transcript || "").trim();
   const wakeWord = /\bd[iy]s?ha\b|दिशा|दीशा/iu;
   const woke = wakeWord.test(message);
@@ -1650,17 +1837,11 @@ function formatDailySalesSummary(summary) {
 
 $("assistant-sales-summary")?.addEventListener("click", () => sendAssistantMessage("Aaj ki dispatched sales ka short summary batao."));
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") assistantRecognition?.stop();
-  else if (assistantWakeEnabled && !assistantPaused && !assistantRecognition) { assistantMicBlocked = false; startDishaWake(true); }
-});
-window.addEventListener("focus", () => {
-  if (assistantWakeEnabled && !assistantPaused && !assistantRecognition && assistantMicBlocked) {
-    assistantMicBlocked = false;
-    startDishaWake(true);
-  }
+  if (document.visibilityState === "hidden") stopAssistantRecognition(true);
+  else if (assistantWakeEnabled && !assistantPaused && !assistantMicBlocked) scheduleDishaWakeRestart(0);
 });
 updateDishaListeningUI();
-if (!assistantPaused) setTimeout(() => startDishaWake(true), 900);
+if (!assistantPaused) scheduleDishaWakeRestart(900);
 
 async function loadAlerts() {
   const list = $("alerts-list");

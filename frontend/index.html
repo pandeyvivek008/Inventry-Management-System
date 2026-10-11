@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Inventory Management System</title>
 <script>try{if(localStorage.getItem("inventoryTheme")==="dark")document.documentElement.dataset.theme="dark"}catch{}</script>
-<link rel="stylesheet" href="style.css?v=disha-dark-voice-20261012">
+<link rel="stylesheet" href="style.css?v=disha-photo-loading-20261012">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
 </head>
 <body>
@@ -117,25 +117,22 @@
 
     <!-- ================= SCAN & RECOUNT ================= -->
     <section id="view-scan" class="view">
-      <header class="view-head"><div><h1>Scan &amp; Recount</h1><p class="sub">Scan a Code128 barcode/QR with the camera or use a USB/Bluetooth scanner gun — the whole design opens so you can update every size at once.</p></div></header>
+      <header class="view-head"><div><h1>Scan &amp; Recount</h1><p class="sub">A product QR opens every size. A barcode opens only its size. Search a design to update its size-wise stock.</p></div></header>
 
       <div class="two-col">
         <div class="panel">
           <h2>Camera Scan</h2>
-          <p class="hint">Scan the one-per-design QR to open every size, or a legacy size code. Phone camera and scanner guns are supported.</p>
+          <p class="hint">Product QR: open and update every size. Barcode: open and update only that size. Phone camera and scanner guns are supported.</p>
           <div id="scan-reader" class="scan-frame"></div>
           <button id="scan-toggle" type="button" class="btn-secondary">Start Camera</button>
           <div id="scan-msg" class="msg"></div>
         </div>
-        <form id="manual-lookup-form" class="panel">
+        <div id="manual-lookup-form" class="panel">
           <h2>Type Instead</h2>
-          <p class="hint">Search by design or product name, choose the size, then open the design.</p>
-          <label class="field">Product name / design<input id="manual-product-search" name="product" required placeholder="Type a product name or colour…" class="input" autocomplete="off"></label>
-          <div id="manual-product-results" class="manual-product-results" role="listbox" hidden></div>
-          <input id="manual-product-sku" name="sku" type="hidden">
-          <label class="field manual-size-field" id="manual-size-field" hidden>Size<select id="manual-size" name="size" class="input" required disabled><option value="">Choose a product first</option></select></label>
-          <button id="manual-lookup-submit" type="submit" class="btn-secondary" disabled>Choose a product and size</button>
-        </form>
+          <p class="hint">Search by product name, colour, or SKU. All sizes appear below with stock update fields.</p>
+          <label class="field">Product name / design<input id="manual-product-search" name="product" placeholder="Type a product name, colour, or SKU…" class="input" autocomplete="off"></label>
+          <div id="manual-product-results" class="manual-product-results" role="region" aria-label="Matching products and size stock" hidden></div>
+        </div>
       </div>
 
       <div id="scan-result" class="panel" hidden style="margin-top:16px;"></div>
@@ -308,6 +305,7 @@
 </div>
 
 <div id="assistant-widget" class="assistant-widget">
+  <aside id="assistant-photo-preview" class="assistant-photo-preview" aria-label="Disha product photo preview" hidden></aside>
   <section id="assistant-panel" class="assistant-panel" aria-label="Disha Inventory Assistant" hidden>
     <header class="assistant-panel-head">
       <span class="assistant-avatar"><i class="fa-solid fa-robot"></i></span>
@@ -332,9 +330,18 @@
   </button>
 </div>
 
+<input id="assistant-photo-input" type="file" accept="image/*" hidden>
+<div id="assistant-photo-lightbox" class="assistant-photo-lightbox" role="dialog" aria-modal="true" aria-label="Product photo viewer" hidden>
+  <div class="assistant-photo-lightbox-head"><strong id="assistant-photo-lightbox-title">Product photo</strong><button id="assistant-photo-lightbox-close" type="button" aria-label="Close photo viewer"><i class="fa-solid fa-xmark"></i></button></div>
+  <div id="assistant-photo-viewport" class="assistant-photo-viewport" tabindex="0" aria-label="Use mouse wheel or plus and minus keys to zoom the photo"><img id="assistant-photo-zoom-image" alt="Product photo"></div>
+  <div class="assistant-photo-controls"><button type="button" data-photo-zoom="out" aria-label="Zoom out">−</button><button type="button" data-photo-zoom="reset">100%</button><button type="button" data-photo-zoom="in" aria-label="Zoom in">+</button><button id="assistant-photo-change" type="button"><i class="fa-solid fa-camera"></i> Change photo</button></div>
+</div>
+
+<div id="app-loading-indicator" class="app-loading-indicator" role="status" aria-live="polite" aria-label="Loading app data"><span></span></div>
+
 <div id="toast" class="toast" hidden></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
-<script src="app.js?v=disha-dark-voice-20261012"></script>
+<script src="app.js?v=disha-photo-loading-20261012"></script>
 </body>
 </html>
