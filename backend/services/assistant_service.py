@@ -120,8 +120,8 @@ def _openai_json_schema(schema: dict) -> dict:
     return result
 
 
-async def parse_inventory_request(message: str, history: list[dict]) -> dict:
-    provider = active_provider()
+async def parse_inventory_request(message: str, history: list[dict], *, _provider_override: str | None = None) -> dict:
+    provider = _provider_override or active_provider()
     if not provider:
         raise AssistantProviderError("No AI provider key is configured. Set OPENAI_API_KEY or GEMINI_API_KEY in Railway Variables.")
 
@@ -133,9 +133,11 @@ async def parse_inventory_request(message: str, history: list[dict]) -> dict:
             conversation.append({"role": "user" if role == "user" else "assistant", "content": content})
     conversation.append({"role": "user", "content": message[:500]})
 
+    # Build the Gemini body without provider-specific conversation data here;
+    # Gemini contents are assembled below. Keeping this provider-neutral also
+    # prevents a NameError before the request's error handling can run.
     payload = {
         "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
-        "contents": contents,
         "generationConfig": {
             "temperature": 0.35,
             "maxOutputTokens": 320,
@@ -269,14 +271,39 @@ async def parse_inventory_request(message: str, history: list[dict]) -> dict:
             "order_id": order_id,
             "reply": str(parsed.get("reply") or "").strip()[:1000],
         }
-    except AssistantProviderError:
-        raise
+    except AssistantProviderError as exc:
+        return await _fallback_or_raise(message, history, provider, _provider_override, exc)
     except httpx.TimeoutException as exc:
         logger.warning("%s request timed out (%s).", provider, type(exc).__name__)
-        raise AssistantProviderError(f"{provider.title()} request timed out. Please retry.") from exc
+        error = AssistantProviderError(f"{provider.title()} request timed out. Please retry.", user_message=f"{provider.title()} se response aane mein timeout hua.")
+        return await _fallback_or_raise(message, history, provider, _provider_override, error)
     except httpx.HTTPError as exc:
         logger.warning("%s network request failed (%s).", provider, type(exc).__name__)
-        raise AssistantProviderError(f"{provider.title()} network request failed. Check provider access and retry.") from exc
+        error = AssistantProviderError(f"{provider.title()} network request failed.", user_message=f"{provider.title()} se connection nahi ho paaya.")
+        return await _fallback_or_raise(message, history, provider, _provider_override, error)
     except (ValueError, KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
         logger.warning("%s assistant response was invalid (%s).", provider, type(exc).__name__)
-        raise AssistantProviderError("Inference provider unavailable or returned invalid JSON.") from exc
+        error = AssistantProviderError("Inference provider returned invalid JSON.", user_message=f"{provider.title()} ka response samajh nahi aaya.")
+        return await _fallback_or_raise(message, history, provider, _provider_override, error)
+
+
+async def _fallback_or_raise(message: str, history: list[dict], provider: str, override: str | None, error: AssistantProviderError) -> dict:
+    """Use the secondary configured API in auto mode, then report both failures."""
+    if not override and os.getenv("AI_PROVIDER", "auto").strip().lower() == "auto":
+        fallback = "gemini" if provider == "openai" else "openai"
+        fallback_key = "GEMINI_API_KEY" if fallback == "gemini" else "OPENAI_API_KEY"
+        if os.getenv(fallback_key, "").strip():
+            logger.warning("%s assistant failed; retrying with configured %s provider.", provider, fallback)
+            try:
+                return await parse_inventory_request(message, history, _provider_override=fallback)
+            except AssistantProviderError as fallback_exc:
+                logger.warning("Both configured assistant providers failed (%s, %s).", provider, fallback)
+                raise AssistantProviderError(
+                    f"Both configured AI providers failed ({provider} and {fallback}).",
+                    upstream_status=fallback_exc.upstream_status,
+                    user_message=(
+                        f"OpenAI aur Gemini dono se abhi response nahi mila. "
+                        f"{error.user_message} Doosri API bhi fail hui: {fallback_exc.user_message}"
+                    ),
+                ) from fallback_exc
+    raise error

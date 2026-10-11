@@ -208,8 +208,9 @@ dispatched, use **Mark This Batch as Dispatched**; only then is physical stock d
 
 ### Conversational stock assistant
 
-The floating Disha assistant uses OpenAI when `OPENAI_API_KEY` is configured,
-otherwise it can use Gemini. It interprets Hindi, Hinglish, English, and casual
+The floating Disha assistant uses OpenAI first when both keys are configured,
+and automatically retries Gemini if OpenAI fails. If only one key is configured,
+it uses that provider. It interprets Hindi, Hinglish, English, and casual
 conversation, then the app resolves inventory requests against its own catalog
 and stock ledger. Inventory and product changes are validated by the app and
 shown for confirmation; the model does not write directly to the database.
@@ -217,8 +218,8 @@ shown for confirmation; the model does not write directly to the database.
 Configure `OPENAI_API_KEY` as a **Railway app-service variable** to use OpenAI.
 `OPENAI_MODEL` defaults to `gpt-5-mini` and can be overridden. Optional
 `AI_PROVIDER=openai` forces OpenAI; `AI_PROVIDER=gemini` forces Gemini; the
-default `auto` uses OpenAI when its key is present and otherwise falls back to
-Gemini. Never place API keys in HTML, JavaScript, Git, or screenshots. Provider
+default `auto` prefers OpenAI and falls back to Gemini when both keys are set.
+Never place API keys in HTML, JavaScript, Git, or screenshots. Provider
 errors show a safe HTTP status and the relevant next step; manual inventory
 tools continue to work when an AI provider is unavailable.
 
