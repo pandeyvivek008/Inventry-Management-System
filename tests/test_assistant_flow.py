@@ -1,9 +1,12 @@
 """Disha service-flow checks using an isolated SQLite database."""
 import os
 import sys
+import tempfile
+import uuid
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
-os.environ.setdefault("DATABASE_URL", "sqlite:///./disha_flow_test.db")
+_test_db = os.path.join(tempfile.gettempdir(), f"disha_flow_{uuid.uuid4().hex}.db")
+os.environ["DATABASE_URL"] = f"sqlite:///{_test_db.replace(os.sep, '/')}"
 
 from fastapi.testclient import TestClient  # noqa: E402
 import main  # noqa: E402
@@ -23,8 +26,21 @@ async def fake_parser(_message, _history):
     return {**defaults, **state}
 
 
+async def fake_transcribe(audio, filename, content_type):
+    check(audio == b"test audio" and filename == "voice.webm" and content_type == "audio/webm",
+          "transcription endpoint forwards bounded browser audio")
+    return "Blue kurta size M mein 3 add karo"
+
+
+async def fake_speech(text):
+    check("Disha" in text, "speech endpoint receives assistant text")
+    return b"fake-mp3"
+
+
 main.assistant_service.api_key_configured = lambda: True
 main.assistant_service.parse_inventory_request = fake_parser
+main.assistant_service.transcribe_audio = fake_transcribe
+main.assistant_service.synthesize_speech = fake_speech
 
 
 def check(ok, description):
@@ -42,6 +58,14 @@ def ask(message="test", **intent):
 
 
 print("Disha read-only and conversational intents")
+transcribed = client.post("/api/assistant/transcribe", files={
+    "file": ("voice.webm", b"test audio", "audio/webm")
+})
+check(transcribed.status_code == 200 and transcribed.json()["text"] == "Blue kurta size M mein 3 add karo",
+      "Hindi/English voice transcript endpoint")
+spoken = client.post("/api/assistant/speech", json={"text": "Hello, main Disha hoon"})
+check(spoken.status_code == 200 and spoken.content == b"fake-mp3" and spoken.headers["content-type"].startswith("audio/mpeg"),
+      "spoken response endpoint returns audio without exposing provider keys")
 created = client.post("/api/products", json={
     "sku": "DISHA-TEST-01", "name": "Blue Kurta", "category": "Kurta Set",
     "variants": [{"size": "S", "initial_stock": 12}, {"size": "M", "initial_stock": 4}],

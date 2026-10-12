@@ -12,7 +12,7 @@ from pathlib import Path
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import StreamingResponse, RedirectResponse
+from fastapi.responses import StreamingResponse, RedirectResponse, Response
 from sqlalchemy import case, func, or_, delete as sa_delete, inspect as sa_inspect, text
 from sqlalchemy.orm import Session, joinedload, selectinload, contains_eager
 
@@ -642,6 +642,41 @@ async def inventory_assistant_chat(payload: schemas.AssistantChatRequest, reques
     }
 
 
+@app.post("/api/assistant/transcribe")
+async def assistant_transcribe(request: Request, file: UploadFile = File(...)):
+    """Transcribe one short Hindi/English utterance without restarting the mic."""
+    client_ip = request.client.host if request.client else "unknown"
+    if not _assistant_rate_limit(client_ip):
+        raise HTTPException(status_code=429, detail="Voice request limit reached. Please wait a minute.")
+    audio = await file.read(8 * 1024 * 1024 + 1)
+    if len(audio) > 8 * 1024 * 1024:
+        raise HTTPException(413, "Audio clip is too large. Please speak in a shorter sentence.")
+    if not audio:
+        raise HTTPException(400, "No speech audio was captured.")
+    try:
+        transcript = await assistant_service.transcribe_audio(
+            audio, file.filename or "disha-utterance.webm", file.content_type or "audio/webm"
+        )
+    except assistant_service.AssistantProviderError as exc:
+        raise HTTPException(503, detail=exc.user_message) from exc
+    if not transcript:
+        raise HTTPException(422, "Speech was not clear. Please say it again.")
+    return {"text": transcript}
+
+
+@app.post("/api/assistant/speech")
+async def assistant_speech(payload: schemas.AssistantSpeechRequest, request: Request):
+    """Generate a warm built-in Disha voice; provider key never leaves the server."""
+    client_ip = request.client.host if request.client else "unknown"
+    if not _assistant_rate_limit(client_ip):
+        raise HTTPException(status_code=429, detail="Voice request limit reached. Please wait a minute.")
+    try:
+        audio = await assistant_service.synthesize_speech(payload.text)
+    except assistant_service.AssistantProviderError as exc:
+        raise HTTPException(503, detail=exc.user_message) from exc
+    return Response(content=audio, media_type="audio/mpeg", headers={"Cache-Control": "no-store"})
+
+
 @app.get("/api/products/bulk-template")
 def bulk_product_template():
     content = bulk_product_service.build_bulk_product_template()
@@ -1247,6 +1282,17 @@ def product_qr_label(sku: str, db: Session = Depends(get_db)):
     return StreamingResponse(
         BytesIO(png_bytes), media_type="image/png",
         headers={"Content-Disposition": f'inline; filename="{product.sku}_product_qr.png"'},
+    )
+
+
+@app.get("/api/products/{sku}/barcode")
+def product_barcode_label(sku: str, db: Session = Depends(get_db)):
+    """One design-level barcode; the PRODUCT: prefix routes scanners to all sizes."""
+    product = _get_product_by_sku(db, sku)
+    png_bytes = barcode_service.generate_product_barcode_label(product.sku, product.name)
+    return StreamingResponse(
+        BytesIO(png_bytes), media_type="image/png",
+        headers={"Content-Disposition": f'inline; filename="{product.sku}_product_barcode.png"'},
     )
 
 

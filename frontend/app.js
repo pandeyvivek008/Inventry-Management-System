@@ -3,7 +3,6 @@ const STANDARD_SIZES = ["S", "M", "L", "XL", "XXL"];
 const PAGE_SIZE = 100;
 
 const $ = (id) => document.getElementById(id);
-const DISHA_WAKE_PHRASE = /\b(?:hi|hey|hello)[\s,]+disha\b|(?:हाय|हेलो|नमस्ते)[\s,]*दिशा/iu;
 
 // A small, non-blocking sweep tells staff when any app API request is taking
 // longer than a quick response. Keep it local to /api so static assets do not
@@ -153,6 +152,8 @@ let assistantSpeechVoice = null;
 let assistantIgnoreTranscriptUntil = 0;
 let assistantCurrentPhotoProduct = null;
 let assistantPhotoZoom = 1;
+let assistantAudioPlayer = null;
+let assistantAudioObjectUrl = null;
 function chooseDishaVoice() {
   if (!window.speechSynthesis) return;
   const voices = window.speechSynthesis.getVoices();
@@ -169,33 +170,63 @@ if (window.speechSynthesis) {
   chooseDishaVoice();
   window.speechSynthesis.addEventListener?.("voiceschanged", chooseDishaVoice);
 }
-function speakAssistantMessage(message) {
-  if (assistantPaused) return;
-  if (!window.speechSynthesis || !window.SpeechSynthesisUtterance) return;
-  const speechId = ++assistantSpeechId;
-  clearDishaWakeRestart();
-  window.speechSynthesis.cancel();
+function finishAssistantSpeech(speechId) {
+  if (speechId !== assistantSpeechId) return;
+  assistantSpeaking = false;
+  assistantIgnoreTranscriptUntil = Date.now() + 900;
   clearTimeout(assistantSpeechGuardTimer);
-  assistantSpeaking = true;
+  assistantAudioPlayer = null;
+  if (assistantAudioObjectUrl) URL.revokeObjectURL(assistantAudioObjectUrl);
+  assistantAudioObjectUrl = null;
+}
+function speakWithBrowserVoice(speechId, message) {
+  if (speechId !== assistantSpeechId || assistantPaused || !window.speechSynthesis || !window.SpeechSynthesisUtterance) {
+    finishAssistantSpeech(speechId);
+    return;
+  }
   const speechText = makeSpeechFriendly(message);
   const utterance = new SpeechSynthesisUtterance(speechText);
-  utterance.lang = "hi-IN";
-  utterance.rate = 0.95;
-  utterance.pitch = 1.18;
-  if (assistantSpeechVoice) utterance.voice = assistantSpeechVoice;
-  const finishSpeech = () => {
-    if (speechId !== assistantSpeechId) return;
-    assistantSpeaking = false;
-    assistantIgnoreTranscriptUntil = Date.now() + 1400;
-    clearTimeout(assistantSpeechGuardTimer);
-    if (assistantWakeEnabled && !assistantPaused && !assistantRecognition && document.visibilityState === "visible") {
-      scheduleDishaWakeRestart(700);
-    }
-  };
-  utterance.onend = finishSpeech;
-  utterance.onerror = finishSpeech;
+  const hasHindi = /[\u0900-\u097F]/.test(speechText);
+  utterance.lang = hasHindi ? "hi-IN" : "en-IN";
+  utterance.rate = 0.94;
+  utterance.pitch = 1.16;
+  const available = window.speechSynthesis.getVoices();
+  const matching = available.filter((voice) => hasHindi ? /^hi(-|_)?in/i.test(voice.lang) : /^en(-|_)?in/i.test(voice.lang));
+  const friendlyVoice = matching.find((voice) => /female|coral|shimmer|google हिन्दी|google hindi|swara|kalpana|heera|priya|neerja/i.test(voice.name));
+  if (friendlyVoice || assistantSpeechVoice) utterance.voice = friendlyVoice || assistantSpeechVoice;
+  utterance.onend = () => finishAssistantSpeech(speechId);
+  utterance.onerror = () => finishAssistantSpeech(speechId);
+  window.speechSynthesis.cancel();
   window.speechSynthesis.speak(utterance);
-  assistantSpeechGuardTimer = setTimeout(finishSpeech, Math.max(10000, speechText.length * 150));
+  assistantSpeechGuardTimer = setTimeout(() => finishAssistantSpeech(speechId), Math.max(10000, speechText.length * 180));
+}
+async function speakAssistantMessage(message) {
+  if (assistantPaused) return;
+  const speechId = ++assistantSpeechId;
+  window.speechSynthesis?.cancel();
+  assistantAudioPlayer?.pause();
+  if (assistantAudioObjectUrl) URL.revokeObjectURL(assistantAudioObjectUrl);
+  assistantAudioObjectUrl = null;
+  clearTimeout(assistantSpeechGuardTimer);
+  assistantSpeaking = true;
+  try {
+    const response = await fetch(`${API}/assistant/speech`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: makeSpeechFriendly(message).slice(0, 1200) }),
+    });
+    if (!response.ok) throw new Error(`Speech API ${response.status}`);
+    if (speechId !== assistantSpeechId || assistantPaused) return;
+    const audioBlob = await response.blob();
+    assistantAudioObjectUrl = URL.createObjectURL(audioBlob);
+    const player = new Audio(assistantAudioObjectUrl);
+    assistantAudioPlayer = player;
+    player.onended = () => finishAssistantSpeech(speechId);
+    player.onerror = () => finishAssistantSpeech(speechId);
+    await player.play();
+    assistantSpeechGuardTimer = setTimeout(() => finishAssistantSpeech(speechId), Math.max(15000, String(message).length * 240));
+  } catch (_) {
+    speakWithBrowserVoice(speechId, message);
+  }
 }
 function setAlertBadge(n) {
   [$("alert-count"), $("alert-count-mobile")].forEach((el) => { if (el) { el.textContent = n; el.hidden = !(n > 0); } });
@@ -459,7 +490,7 @@ function renderDetail(product, container, opts = {}) {
         </div>
       <div class="detail-actions">
           <button class="btn-secondary" id="detail-save" type="button"><i class="fa-solid fa-floppy-disk"></i> Save Changes</button>
-        <a class="btn-ghost product-qr-link" href="${API}/products/${encodeURIComponent(product.sku)}/qr" target="_blank" rel="noopener"><i class="fa-solid fa-qrcode"></i> Product QR (all sizes)</a>
+        <a class="btn-ghost product-qr-link" href="${API}/products/${encodeURIComponent(product.sku)}/barcode" target="_blank" rel="noopener"><i class="fa-solid fa-barcode"></i> Product barcode (all sizes)</a>
           <span class="sku-tag" style="align-self:center;">${esc(product.sku)}</span>
           ${opts.showDelete ? `<button class="btn-danger" id="detail-delete" type="button" style="margin-left:auto;"><i class="fa-solid fa-trash-can"></i> Delete Product</button>` : ""}
         </div>
@@ -680,15 +711,29 @@ $("add-product-form").addEventListener("submit", async (e) => {
   submitButton.dataset.originalText = submitButton.textContent;
   submitButton.textContent = "Saving...";
   try {
-    const data = await apiPost(`${API}/products`, { sku: form.sku.value, name: form.name.value, category: form.category.value, variants });
+    const data = await apiPost(`${API}/products`, {
+      sku: form.elements.namedItem("sku").value,
+      name: form.elements.namedItem("name").value,
+      category: form.elements.namedItem("category").value,
+      variants,
+    });
+    let photoWarning = "";
     if (addPhotoFile) {
       const fd = new FormData(); fd.append("file", addPhotoFile);
-      await fetch(`${API}/products/${encodeURIComponent(data.sku)}/image`, { method: "POST", body: fd }).catch(() => {});
+      try {
+        const imageResponse = await fetch(`${API}/products/${encodeURIComponent(data.sku)}/image`, { method: "POST", body: fd });
+        if (!imageResponse.ok) {
+          const imageError = await imageResponse.json().catch(() => ({}));
+          throw new Error(imageError.detail || `Photo upload failed (${imageResponse.status})`);
+        }
+      } catch (error) {
+        photoWarning = ` Product was added, but its photo was not uploaded: ${error.message || "try again from Edit"}.`;
+      }
     }
     const newSku = data.sku;
     form.reset(); resetAddForm(); msg.textContent = "";
     $("add-product-modal").hidden = true;
-    showToast(`Product added successfully — ${newSku}`, "success", 1500);
+    showToast(photoWarning ? `Product added — ${newSku}.${photoWarning}` : `Product added successfully — ${newSku}`, photoWarning ? "info" : "success", photoWarning ? 4200 : 1500);
     await refreshInventoryViews();
     window.__keepProductSearch = true;
     switchView("products");
@@ -1244,18 +1289,24 @@ let assistantSessions = [];
 let assistantSessionId = localStorage.getItem(assistantSessionIdKey) || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 let assistantBusy = false;
 let assistantRequestSequence = 0;
-let assistantRecognition = null;
-let assistantRecognitionStarting = false;
-let assistantRecognitionRestartDelay = 750;
-let assistantPaused = localStorage.getItem("dishaPaused") === "true";
-// Wake word starts automatically when the page opens. The browser may ask once
-// for microphone permission; after permission is granted, no in-app mic button is needed.
-let assistantWakeEnabled = !assistantPaused;
+let assistantMicStream = null;
+let assistantMicContext = null;
+let assistantMicAnalyser = null;
+let assistantMicFrame = 0;
+let assistantMicRecorder = null;
+let assistantMicChunks = [];
+let assistantMicStarting = false;
+let assistantMicSpeakingSince = 0;
+let assistantMicLastVoiceAt = 0;
+let assistantMicRecordingStartedAt = 0;
+let assistantVoiceProcessing = false;
+// Privacy by default: opening the app never turns on the microphone.
+// The user must tap the Disha launcher (or Start voice) for each session.
+let assistantPaused = true;
+let assistantWakeEnabled = false;
 let assistantMicBlocked = false;
 let assistantPermissionNoticeShown = false;
-let assistantWakeActiveUntil = 0;
 let assistantConfirmationButton = null;
-let assistantWakeRestartTimer = null;
 try {
   const saved = JSON.parse(localStorage.getItem(assistantHistoryKey) || "[]");
   if (Array.isArray(saved)) assistantHistory = saved.filter((item) => item && ["user", "assistant"].includes(item.role) && typeof item.content === "string").slice(-assistantHistoryLimit);
@@ -1376,6 +1427,7 @@ function setAssistantPhotoPreview(product) {
   preview.querySelector("[data-photo-change]").addEventListener("click", () => $("assistant-photo-input").click());
   preview.querySelector("[data-photo-details]").addEventListener("click", () => {
     preview.hidden = true;
+    setDishaPaused(true);
     $("assistant-panel").hidden = true;
     $("assistant-launcher").setAttribute("aria-expanded", "false");
     openProductDetail(product.sku);
@@ -1626,6 +1678,7 @@ async function sendAssistantMessage(message, selectedSku = null, { fromVoice = f
     assistantHistory.push({ role: "assistant", content: reply });
     saveAssistantHistory();
     addAssistantMessage("assistant", reply);
+    speakAssistantMessage(reply);
   } finally {
     typing.remove();
     if (requestSequence === assistantRequestSequence && requestSessionId === assistantSessionId) {
@@ -1638,15 +1691,18 @@ async function sendAssistantMessage(message, selectedSku = null, { fromVoice = f
 
 $("assistant-launcher")?.addEventListener("click", () => {
   if ($("assistant-panel").hidden) {
+    setDishaPaused(false);
     openAssistant();
   }
   else {
+    setDishaPaused(true);
     $("assistant-panel").hidden = true;
     $("assistant-photo-preview").hidden = true;
     $("assistant-launcher").setAttribute("aria-expanded", "false");
   }
 });
 $("assistant-close")?.addEventListener("click", () => {
+  setDishaPaused(true);
   $("assistant-panel").hidden = true;
   $("assistant-photo-preview").hidden = true;
   $("assistant-launcher").setAttribute("aria-expanded", "false");
@@ -1667,15 +1723,15 @@ $("assistant-chat-form")?.addEventListener("submit", (event) => {
 function updateDishaListeningUI(message = "") {
   const indicator = $("assistant-mic-status"), state = $("assistant-state"), dot = document.querySelector(".assistant-online-dot");
   const button = $("assistant-pause");
-  const isListening = assistantWakeEnabled && !assistantPaused && !assistantMicBlocked;
+  const isListening = assistantWakeEnabled && !assistantPaused && !assistantMicBlocked && Boolean(assistantMicStream);
   indicator?.classList.toggle("is-listening", isListening);
-  if (state) state.textContent = message || (assistantPaused ? "Paused · voice and listening off" : assistantMicBlocked ? "Allow microphone access in browser settings" : isListening ? "Listening for ‘Hi Disha’" : "Starting voice assistant…");
+  if (state) state.textContent = message || (assistantPaused ? "Tap Disha to start voice" : assistantMicBlocked ? "Allow microphone access in browser settings" : isListening ? "Listening · Hindi and English" : assistantMicStarting ? "Connecting microphone…" : "Starting voice chat…");
   dot?.classList.toggle("is-listening", isListening);
   if (button) {
     button.classList.toggle("is-paused", assistantPaused);
-    button.setAttribute("aria-label", assistantPaused ? "Resume Disha voice and listening" : "Pause Disha voice and listening");
-    button.title = assistantPaused ? "Resume Disha voice and listening" : "Pause Disha voice and listening";
-    button.innerHTML = `<i class="fa-solid ${assistantPaused ? "fa-play" : "fa-pause"}"></i>`;
+    button.setAttribute("aria-label", assistantPaused ? "Start Disha microphone" : "Pause Disha microphone and voice");
+    button.title = assistantPaused ? "Start voice" : "Pause voice";
+    button.innerHTML = `<i class="fa-solid ${assistantPaused ? "fa-microphone" : "fa-pause"}"></i>`;
   }
 }
 
@@ -1684,129 +1740,158 @@ function setDishaPaused(paused) {
   localStorage.setItem("dishaPaused", String(paused));
   if (paused) {
     assistantWakeEnabled = false;
-    assistantWakeActiveUntil = 0;
     assistantSpeechId += 1;
     clearTimeout(assistantSpeechGuardTimer);
     assistantSpeaking = false;
     window.speechSynthesis?.cancel();
-    clearDishaWakeRestart();
-    stopAssistantRecognition(false);
+    assistantAudioPlayer?.pause();
+    assistantAudioPlayer = null;
+    if (assistantAudioObjectUrl) URL.revokeObjectURL(assistantAudioObjectUrl);
+    assistantAudioObjectUrl = null;
+    stopDishaMic();
   } else {
     assistantWakeEnabled = true;
     assistantMicBlocked = false;
-    startDishaWake();
+    startDishaMic();
   }
   updateDishaListeningUI();
 }
 $("assistant-pause")?.addEventListener("click", () => setDishaPaused(!assistantPaused));
 
-function startDishaWake(isAutomaticResume = false) {
-  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!Recognition) {
+async function startDishaMic() {
+  if (assistantPaused || assistantMicStarting || assistantMicStream || document.visibilityState === "hidden") return;
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+    assistantMicBlocked = true;
+    assistantPaused = true;
     assistantWakeEnabled = false;
-    updateDishaListeningUI("Voice unavailable · type to chat");
-    if (!isAutomaticResume) addAssistantMessage("system", "Is browser mein wake-word voice input supported nahi hai. Chrome/Edge ya chat typing use karein.");
+    updateDishaListeningUI("Mic recording is not supported · type to chat");
+    addAssistantMessage("system", "Is browser mein continuous mic recording supported nahi hai. Chrome/Edge update karein ya type karke baat karein.");
     return;
   }
-  if (assistantPaused || assistantSpeaking || assistantRecognition || assistantRecognitionStarting || document.visibilityState === "hidden" || assistantMicBlocked) return;
+  assistantMicStarting = true;
   assistantWakeEnabled = true;
-  updateDishaListeningUI("Connecting to microphone…");
-  const recognition = new Recognition();
-  assistantRecognition = recognition;
-  assistantRecognitionStarting = true;
-  recognition.dishaRestartAllowed = true;
-  recognition.dishaStartedAt = Date.now();
-  recognition.lang = "hi-IN";
-  recognition.continuous = true;
-  recognition.interimResults = false;
-  recognition.maxAlternatives = 3;
-  recognition.onstart = () => {
-    assistantRecognitionStarting = false;
-    assistantRecognitionRestartDelay = 750;
-    if (assistantRecognition !== recognition || !recognition.dishaRestartAllowed || assistantPaused || !assistantWakeEnabled) {
-      recognition.dishaRestartAllowed = false;
-      try { recognition.stop(); } catch {}
+  updateDishaListeningUI("Connecting microphone…");
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    if (assistantPaused || document.visibilityState === "hidden") {
+      stream.getTracks().forEach((track) => track.stop());
       return;
     }
-    updateDishaListeningUI("Listening for ‘Hi Disha’");
-  };
-  recognition.onresult = (event) => {
-    if (assistantSpeaking || assistantBusy || Date.now() < assistantIgnoreTranscriptUntil) return;
-    for (let index = event.resultIndex; index < event.results.length; index += 1) {
-      if (event.results[index].isFinal) {
-        const alternatives = Array.from(event.results[index]).map((alternative) => alternative.transcript);
-        handleDishaUtterance(alternatives.find((transcript) => DISHA_WAKE_PHRASE.test(transcript)) || alternatives[0]);
-      }
-    }
-  };
-  recognition.onerror = (event) => {
-    if (["not-allowed", "service-not-allowed", "audio-capture"].includes(event.error)) {
-      assistantMicBlocked = true;
-      recognition.dishaRestartAllowed = false;
-      updateDishaListeningUI("Microphone permission needed · allow it in browser settings");
-      if (!assistantPermissionNoticeShown) {
-        assistantPermissionNoticeShown = true;
-        addAssistantMessage("system", "Disha ko microphone permission chahiye. Address bar ke lock/site controls mein Microphone ko Allow karein, phir page reload karein. Tab tak message type kar sakte hain.");
-      }
-    }
-  };
-  recognition.onend = () => {
-    assistantRecognitionStarting = false;
-    if (assistantRecognition === recognition) assistantRecognition = null;
-    if (!recognition.dishaRestartAllowed || !assistantWakeEnabled || assistantMicBlocked || assistantPaused || document.visibilityState !== "visible") {
-      updateDishaListeningUI();
-      return;
-    }
-    const uptime = Date.now() - recognition.dishaStartedAt;
-    assistantRecognitionRestartDelay = uptime >= 5000 ? 750 : Math.min(Math.max(assistantRecognitionRestartDelay * 1.6, 1000), 3500);
-    scheduleDishaWakeRestart(assistantRecognitionRestartDelay);
-  };
-  try { recognition.start(); }
-  catch (error) {
-    assistantRecognitionStarting = false;
-    assistantRecognition = null;
-    const blocked = ["NotAllowedError", "SecurityError", "NotFoundError"].includes(error?.name);
-    assistantMicBlocked = blocked;
-    if (blocked) {
-      updateDishaListeningUI("Microphone unavailable · check browser permission");
-      if (!isAutomaticResume && !assistantPermissionNoticeShown) {
-        assistantPermissionNoticeShown = true;
-        addAssistantMessage("system", "Microphone allow nahi hua. Browser ke address bar site controls mein Microphone ko Allow karein; phir Disha ke Pause/Resume control se dobara shuru karein. Tab tak type karke baat kar sakte hain.");
-      }
-    } else {
-      updateDishaListeningUI("Voice reconnecting…");
-      assistantRecognitionRestartDelay = Math.min(Math.max(assistantRecognitionRestartDelay * 1.6, 1200), 5000);
-      scheduleDishaWakeRestart(assistantRecognitionRestartDelay);
+    assistantMicStream = stream;
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    assistantMicContext = new AudioContextClass();
+    if (assistantMicContext.state === "suspended") await assistantMicContext.resume();
+    const source = assistantMicContext.createMediaStreamSource(stream);
+    assistantMicAnalyser = assistantMicContext.createAnalyser();
+    assistantMicAnalyser.fftSize = 1024;
+    source.connect(assistantMicAnalyser);
+    assistantMicBlocked = false;
+    assistantMicStarting = false;
+    updateDishaListeningUI("Listening · speak Hindi or English");
+    monitorDishaMic();
+  } catch (error) {
+    assistantMicStarting = false;
+    assistantMicBlocked = true;
+    assistantPaused = true;
+    assistantWakeEnabled = false;
+    updateDishaListeningUI("Microphone permission needed · allow it in browser settings");
+    if (!assistantPermissionNoticeShown) {
+      assistantPermissionNoticeShown = true;
+      addAssistantMessage("system", "Disha ko microphone permission chahiye. Browser ke address-bar site controls mein Microphone ko Allow karein, phir Disha ko dobara tap karein. Earbuds connected hon to unka mic system ke input device mein select karein.");
     }
   }
 }
 
-function scheduleDishaWakeRestart(delay = assistantRecognitionRestartDelay) {
-  if (assistantWakeRestartTimer || !assistantWakeEnabled || assistantPaused || assistantMicBlocked || assistantSpeaking || assistantRecognition || assistantRecognitionStarting || document.visibilityState !== "visible") return;
-  assistantWakeRestartTimer = setTimeout(() => {
-    assistantWakeRestartTimer = null;
-    startDishaWake(true);
-  }, delay);
+function monitorDishaMic() {
+  if (!assistantMicAnalyser || assistantPaused) return;
+  const samples = new Float32Array(assistantMicAnalyser.fftSize);
+  const step = (time) => {
+    if (!assistantMicAnalyser || assistantPaused) return;
+    assistantMicAnalyser.getFloatTimeDomainData(samples);
+    let sum = 0;
+    for (let i = 0; i < samples.length; i += 1) sum += samples[i] * samples[i];
+    const level = Math.sqrt(sum / samples.length);
+    const now = Date.now();
+    if (assistantSpeaking || assistantBusy || assistantVoiceProcessing || now < assistantIgnoreTranscriptUntil) {
+      assistantMicSpeakingSince = 0;
+      assistantMicLastVoiceAt = now;
+      if (assistantMicRecorder?.state === "recording") assistantMicRecorder.stop();
+    } else if (level > 0.022) {
+      assistantMicSpeakingSince ||= now;
+      assistantMicLastVoiceAt = now;
+      if (!assistantMicRecorder && now - assistantMicSpeakingSince >= 110) startDishaUtteranceRecording();
+    } else {
+      assistantMicSpeakingSince = 0;
+      if (assistantMicRecorder?.state === "recording" && now - assistantMicLastVoiceAt >= 850) assistantMicRecorder.stop();
+    }
+    if (assistantMicRecorder?.state === "recording" && now - assistantMicRecordingStartedAt >= 15000) assistantMicRecorder.stop();
+    assistantMicFrame = requestAnimationFrame(step);
+  };
+  assistantMicFrame = requestAnimationFrame(step);
 }
 
-function clearDishaWakeRestart() {
-  clearTimeout(assistantWakeRestartTimer);
-  assistantWakeRestartTimer = null;
+function startDishaUtteranceRecording() {
+  if (!assistantMicStream || assistantPaused || assistantMicRecorder) return;
+  try {
+    const mimeType = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find((type) => MediaRecorder.isTypeSupported(type));
+    assistantMicChunks = [];
+    assistantMicRecorder = mimeType ? new MediaRecorder(assistantMicStream, { mimeType }) : new MediaRecorder(assistantMicStream);
+    assistantMicRecordingStartedAt = Date.now();
+    assistantMicRecorder.ondataavailable = (event) => { if (event.data?.size) assistantMicChunks.push(event.data); };
+    assistantMicRecorder.onstop = () => {
+      const recorder = assistantMicRecorder;
+      assistantMicRecorder = null;
+      const chunks = assistantMicChunks;
+      assistantMicChunks = [];
+      if (!assistantPaused && chunks.length) {
+        const type = recorder?.mimeType || "audio/webm";
+        transcribeDishaUtterance(new Blob(chunks, { type }), type.includes("mp4") ? "disha-utterance.mp4" : "disha-utterance.webm");
+      }
+    };
+    assistantMicRecorder.start(250);
+  } catch (_) {
+    updateDishaListeningUI("Could not record audio · type to chat");
+  }
 }
 
-function stopAssistantRecognition(allowRestart) {
-  const recognition = assistantRecognition;
-  if (!recognition) return;
-  recognition.dishaRestartAllowed = Boolean(allowRestart);
-  try { recognition.stop(); } catch (error) { /* it may already be stopping */ }
+async function transcribeDishaUtterance(blob, filename) {
+  if (!blob || blob.size < 900 || assistantPaused) return;
+  assistantVoiceProcessing = true;
+  updateDishaListeningUI("Understanding your Hindi/English…");
+  try {
+    const form = new FormData();
+    form.append("file", blob, filename);
+    const response = await fetch(`${API}/assistant/transcribe`, { method: "POST", body: form });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.detail || `Transcription failed (${response.status})`);
+    const message = String(result.text || "").trim();
+    if (message) handleDishaUtterance(message);
+  } catch (error) {
+    if (!assistantPaused) addAssistantMessage("system", `${error.message || "Voice transcription failed"} Aap type karke chat jaari rakh sakte hain.`);
+  } finally {
+    assistantVoiceProcessing = false;
+    if (!assistantPaused) updateDishaListeningUI("Listening · speak Hindi or English");
+  }
 }
 
-function stopDishaWake() {
-  assistantWakeEnabled = false;
-  assistantWakeActiveUntil = 0;
-  clearDishaWakeRestart();
-  stopAssistantRecognition(false);
-  updateDishaListeningUI("Disha listening off");
+function stopDishaMic() {
+  cancelAnimationFrame(assistantMicFrame);
+  assistantMicFrame = 0;
+  if (assistantMicRecorder?.state === "recording") {
+    assistantMicRecorder.onstop = null;
+    try { assistantMicRecorder.stop(); } catch (_) {}
+  }
+  assistantMicRecorder = null;
+  assistantMicChunks = [];
+  assistantMicAnalyser = null;
+  assistantMicContext?.close().catch(() => {});
+  assistantMicContext = null;
+  assistantMicStream?.getTracks().forEach((track) => track.stop());
+  assistantMicStream = null;
+  assistantMicStarting = false;
+  assistantVoiceProcessing = false;
+  assistantMicSpeakingSince = 0;
+  assistantMicLastVoiceAt = 0;
 }
 
 function isAffirmative(text) { return /^(?:(?:haan|han|ha|yes|yeah|yep|ji|jee|bilkul|confirm)(?:\b|$)|(?:हाँ|हां|जी)(?:\s|$)|कर\s+दो)/iu.test(text.trim().replace(/[.!?,।]+$/g, "")); }
@@ -1821,7 +1906,6 @@ function handlePendingAssistantConfirmation(message) {
     saveAssistantHistory();
     addAssistantMessage("user", message);
     button.click();
-    assistantWakeActiveUntil = Date.now() + 45000;
     return true;
   }
   if (isNegative(message)) {
@@ -1841,32 +1925,13 @@ function handlePendingAssistantConfirmation(message) {
 
 function handleDishaUtterance(transcript) {
   if (assistantPaused || assistantSpeaking || assistantBusy) return;
-  let message = String(transcript || "").trim();
-  const woke = DISHA_WAKE_PHRASE.test(message);
-  if (woke) {
-    message = message.replace(DISHA_WAKE_PHRASE, "").replace(/^[\s,.:;!?।-]+|[\s,.:;!?।-]+$/g, "").trim();
-    assistantWakeActiveUntil = Date.now() + 45000;
-    if ($("assistant-panel").hidden) openAssistant({ speakGreeting: false, focusInput: false });
-    updateDishaListeningUI("Disha is listening to you");
-    if (!message) {
-      const response = "Ji, main sun rahi hoon. Product, size aur kya karna hai batayein.";
-      assistantHistory.push({ role: "assistant", content: response });
-      saveAssistantHistory();
-      addAssistantMessage("assistant", response);
-      speakAssistantMessage(response);
-      return;
-    }
-  } else if (Date.now() > assistantWakeActiveUntil) return;
+  const message = String(transcript || "").trim();
 
   if (assistantConfirmationButton && (isAffirmative(message) || isNegative(message))) {
-    if ($("assistant-panel").hidden) openAssistant({ speakGreeting: false, focusInput: false });
     sendAssistantMessage(message, null, { fromVoice: true });
     return;
   }
-  if (message) {
-    assistantWakeActiveUntil = Date.now() + 45000;
-    sendAssistantMessage(message, null, { fromVoice: true });
-  }
+  if (message) sendAssistantMessage(message, null, { fromVoice: true });
 }
 
 function isDailySalesRequest(message) {
@@ -1884,11 +1949,9 @@ function formatDailySalesSummary(summary) {
 
 $("assistant-sales-summary")?.addEventListener("click", () => sendAssistantMessage("Aaj ki dispatched sales ka short summary batao."));
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") stopAssistantRecognition(true);
-  else if (assistantWakeEnabled && !assistantPaused && !assistantMicBlocked) scheduleDishaWakeRestart(0);
+  if (document.visibilityState === "hidden" && !assistantPaused) setDishaPaused(true);
 });
 updateDishaListeningUI();
-if (!assistantPaused) scheduleDishaWakeRestart(900);
 
 async function loadAlerts() {
   const list = $("alerts-list");
@@ -1998,14 +2061,8 @@ function selectLabelProduct(product) {
   $("label-results").innerHTML = "";
   $("label-selected").hidden = false;
   $("label-selected-name").textContent = `${product.sku} — ${product.name}`;
-  $("product-qr-download").href = `${API}/products/${encodeURIComponent(product.sku)}/qr`;
-  $("label-variant-checks").innerHTML = product.variants.map((v) => `<label class="check-row"><input type="checkbox" value="${esc(v.variant_code)}" checked> ${esc(v.variant_code)}</label>`).join("");
-  $("label-variant-checks").querySelectorAll("input").forEach((cb) => cb.addEventListener("change", updateLabelDownloadLink));
-  updateLabelDownloadLink();
-}
-function updateLabelDownloadLink() {
-  const codes = Array.from(document.querySelectorAll("#label-variant-checks input:checked")).map((cb) => cb.value);
-  $("label-download").href = codes.length ? `${API}/labels/sheet?variant_codes=${encodeURIComponent(codes.join(","))}` : "#";
+  $("label-size-summary").textContent = `${product.variants.length} size${product.variants.length === 1 ? "" : "s"} · one barcode opens the complete design`;
+  $("product-qr-download").href = `${API}/products/${encodeURIComponent(product.sku)}/barcode`;
 }
 
 // ================================================================ //

@@ -77,6 +77,10 @@ class AssistantChatRequest(BaseModel):
     selected_sku: Optional[str] = Field(default=None, max_length=160)
 
 
+class AssistantSpeechRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=1200)
+
+
 class AssistantIntent(BaseModel):
     intent: str
     product_query: str = ""

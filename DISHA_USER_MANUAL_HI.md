@@ -1,13 +1,14 @@
 # Disha ka user manual
 
-Disha Hindi, Hinglish aur English mein inventory ke sawaal samajhne aur app ke kaam guide karne ke liye hai. Aap **robot button** dabakar chat khol sakte hain, type karke bhej sakte hain, ya supported browser mein voice use kar sakte hain.
+Disha Hindi, Hinglish aur English mein inventory ke sawaal samajhne aur app ke kaam guide karne ke liye hai. **Robot button** dabane par chat aur voice session khulta hai; mic page load par apne aap start nahi hota.
 
 ## Chat se shuru karein
 
-1. App ko HTTPS link par kholen aur robot icon dabayen.
-2. Message box mein apni baat aam bol-chal ki bhasha mein type karein; `Enter` dabayen ya send button chunein.
-3. Disha jawab dega. Product ka naam, colour, size ya SKU yaad ho to batayein. SKU bolna zaroori nahi.
-4. Agar ek jaise kai designs milen, sahi design/color chunein. Disha bina aapse poochhe andaza laga kar stock nahi badalta.
+1. App ko HTTPS link par kholen aur robot icon dabayen. Isi click par mic session shuru hota hai.
+2. Hindi, Hinglish ya English mein seedha bolna shuru karein. Har sentence ke baad Disha transcript bhejti hai; “Hi Disha” bolne ya mic ko baar-baar dabane ki zaroorat nahi.
+3. Type karna ho to message box mein aam bol-chal ki bhasha likhein; `Enter` dabayen ya send button chunein.
+4. Disha jawab degi. Product ka naam, colour, size ya SKU yaad ho to batayein. SKU bolna zaroori nahi.
+5. Agar ek jaise kai designs milen, sahi design/color chunein. Disha bina aapse poochhe andaza laga kar stock nahi badalti.
 
 ## Roz ke kaam ke examples
 
@@ -39,13 +40,17 @@ Product banana/edit karna, Trash mein bhejna/restore karna, aur order batch disp
 
 ## Voice aur earbuds
 
-1. Chrome ya Edge mein app ka HTTPS address kholen. Browser site controls/lock icon se **Microphone: Allow** karein, phir page reload karke Disha kholen.
+1. Chrome ya Edge mein app ka HTTPS address kholen. Browser site controls/lock icon se **Microphone: Allow** karein, phir robot button dabayen.
 2. Earbuds istemal karte waqt unka microphone phone/PC ke Bluetooth ya sound input settings mein select karein. Browser wahi input device use karega jo system/browser ne select kiya hai.
-3. Disha panel khula rakhein. Supported browser mein status **Listening for ‘Hi Disha’** aaye to wake phrase bolkar request dein: “Hi Disha, blue kurta size M ka stock batao.”
+3. Robot button dabane ke baad status **Listening · Hindi and English** aayega. Seedha bolen: “Blue kurta size M ka stock batao.”
 4. Confirmation ke liye **haan** ya **nahi** saaf bol sakte hain. Jawab na sunna ho to pause button dabayen; dobara chalane ke liye resume button dabayen.
 5. Nayi alag baatcheet ke liye **+** dabayen. Pichhli conversation kholne ke liye history button use karein.
 
-Voice browser aur device par depend karta hai. Browser tab background mein ho, phone lock ho, microphone permission band ho, ya browser Speech Recognition support na kare to wake phrase available nahi ho sakta. Aise mein type karke chat chalti rahegi. Agar status mic permission maange to browser ke site settings mein Disha app ke liye mic allow karke page reload karein. Photo zoom ke liye phone par `+`/`−` controls aur computer par `+`, `−`, `0` keys ya mouse wheel use karein.
+Mic ek continuous stream mein chalta hai aur sentence recording alag hoti hai, isliye har sentence ke beech browser mic ko stop/start nahi karta. Disha bolte waqt echo se bachne ke liye listening thodi der rukti hai. Header ka pause button mic aur voice dono band karta hai. Panel band karne ya tab background mein jaane par mic off hota hai; phir robot button se dobara start karein.
+
+Voice ke liye HTTPS, microphone permission, OpenAI API key/credits aur internet connection chahiye. Audio server ke zariye OpenAI transcription API ko jaata hai. Spoken reply warm built-in voice se aata hai; API response unavailable ho to browser/device voice fallback hoti hai. Uploaded audio ko exact voice clone ke roop mein use nahi kiya gaya. Earbuds ka mic phone/PC ke active sound input device mein select hona chahiye. Photo zoom ke liye phone par `+`/`−` controls aur computer par `+`, `−`, `0` keys ya mouse wheel use karein.
+
+Print Labels mein har design ke liye ek Code128 product barcode hai. Barcode scanner/camera ise padhkar product ke sabhi sizes kholta hai; size-wise label list use karne ki zaroorat nahi.
 
 ## Product photo
 

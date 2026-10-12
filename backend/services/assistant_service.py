@@ -22,6 +22,8 @@ GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model
 OPENAI_API_URL = "https://api.openai.com/v1/responses"
 DEFAULT_MODEL = "gemini-3.5-flash-lite"
 DEFAULT_OPENAI_MODEL = "gpt-5-mini"
+OPENAI_TRANSCRIPTION_URL = "https://api.openai.com/v1/audio/transcriptions"
+OPENAI_SPEECH_URL = "https://api.openai.com/v1/audio/speech"
 
 INTENT_SCHEMA = {
     "type": "object",
@@ -89,6 +91,86 @@ class AssistantProviderError(Exception):
         super().__init__(message)
         self.upstream_status = upstream_status
         self.user_message = user_message or message
+
+
+def _audio_provider_error(status: int, feature: str) -> AssistantProviderError:
+    if status in (401, 403):
+        advice = "OpenAI key ya project permission check karein."
+    elif status == 429:
+        advice = "OpenAI API credits/quota check karein."
+    else:
+        advice = "OpenAI audio service abhi response nahi de paayi."
+    return AssistantProviderError(
+        f"OpenAI {feature} returned HTTP {status}.", upstream_status=status,
+        user_message=f"{advice} ({feature} HTTP {status})",
+    )
+
+
+async def transcribe_audio(audio: bytes, filename: str, content_type: str) -> str:
+    """Transcribe a short captured utterance; key remains backend-only."""
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        raise AssistantProviderError(
+            "OPENAI_API_KEY is required for microphone transcription.",
+            user_message="Voice transcription ke liye Railway/local environment mein OPENAI_API_KEY chahiye. Tab tak type karke baat karein.",
+        )
+    prompt = (
+        "Transcribe spoken Hindi, Hinglish, or English exactly in its original script and language. "
+        "Keep product names, colours, sizes, quantities, and SKU words as spoken. Do not translate or answer. "
+        "Inventory vocabulary: size S M L XL XXL, stock, pieces, add, set, delete, restore, dispatch."
+    )
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(35.0, connect=7.0)) as client:
+            response = await client.post(
+                OPENAI_TRANSCRIPTION_URL,
+                headers={"Authorization": f"Bearer {api_key}"},
+                data={"model": os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-transcribe"), "response_format": "json", "prompt": prompt},
+                files={"file": (filename, audio, content_type)},
+            )
+        if response.status_code >= 400:
+            logger.warning("OpenAI transcription returned HTTP %s: %s", response.status_code, response.text[:300])
+            raise _audio_provider_error(response.status_code, "transcription")
+        body = response.json()
+        return str(body.get("text") or "").strip()[:500]
+    except AssistantProviderError:
+        raise
+    except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+        logger.warning("OpenAI transcription failed (%s).", type(exc).__name__)
+        raise AssistantProviderError(
+            "OpenAI transcription request failed.", user_message="Voice ko samajhne mein connection error aaya. Dobara boliye ya type karein."
+        ) from exc
+
+
+async def synthesize_speech(text: str) -> bytes:
+    """Render Disha with a friendly built-in TTS voice (no voice cloning)."""
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        raise AssistantProviderError("OPENAI_API_KEY is required for generated speech.")
+    payload = {
+        "model": os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts"),
+        "voice": os.getenv("OPENAI_TTS_VOICE", "coral"),
+        "input": text[:1200],
+        "instructions": "Speak Hindi, Hinglish, or English in a warm, friendly, gently upbeat conversational voice. Use clear Indian pronunciation, natural pauses, and a pleasant expressive tone. Say product names as readable words; do not spell punctuation or SKU separators aloud.",
+        "response_format": "mp3",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(40.0, connect=7.0)) as client:
+            response = await client.post(
+                OPENAI_SPEECH_URL,
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=payload,
+            )
+        if response.status_code >= 400:
+            logger.warning("OpenAI speech returned HTTP %s: %s", response.status_code, response.text[:300])
+            raise _audio_provider_error(response.status_code, "speech")
+        return response.content
+    except AssistantProviderError:
+        raise
+    except httpx.HTTPError as exc:
+        logger.warning("OpenAI speech failed (%s).", type(exc).__name__)
+        raise AssistantProviderError(
+            "OpenAI speech generation failed.", user_message="Voice response abhi generate nahi hui. Browser voice par fallback karenge."
+        ) from exc
 
 
 def active_provider() -> str | None:

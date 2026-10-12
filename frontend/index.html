@@ -216,16 +216,15 @@
 
     <!-- ================= PRINT LABELS ================= -->
     <section id="view-labels" class="view">
-      <header class="view-head"><div><h1>Print Labels</h1><p class="sub">Download one design QR to open every size, or size-specific labels for individual bins.</p></div></header>
+      <header class="view-head"><div><h1>Print Labels</h1><p class="sub">Print one product barcode per design. Scanning it opens every size together.</p></div></header>
       <div class="panel" style="max-width:520px;">
         <label class="field">Find a design<input id="label-search" type="text" placeholder="Type a SKU or product name…" class="input"></label>
         <div id="label-results" class="stack-list" style="margin-top:8px;"></div>
         <div id="labels-pager" class="pager" hidden><button id="labels-prev" class="link-btn" type="button">← Previous</button><span id="labels-page-info"></span><button id="labels-next" class="link-btn" type="button">Next →</button></div>
         <div id="label-selected" hidden style="margin-top:12px; padding-top:12px; border-top:1px solid var(--line);">
           <div id="label-selected-name" class="bold"></div>
-          <a id="product-qr-download" href="#" target="_blank" rel="noopener" class="btn-secondary product-qr-download"><i class="fa-solid fa-qrcode"></i> Download one QR · all sizes</a>
-          <div id="label-variant-checks" class="stack-list" style="margin:10px 0;"></div>
-          <a id="label-download" href="#" target="_blank" class="btn-primary"><i class="fa-solid fa-download"></i> Download Barcode Label Sheet</a>
+          <p id="label-size-summary" class="hint"></p>
+          <a id="product-qr-download" href="#" target="_blank" rel="noopener" class="btn-primary product-qr-download"><i class="fa-solid fa-barcode"></i> Download product barcode · all sizes</a>
         </div>
       </div>
     </section>
@@ -342,6 +341,6 @@
 <div id="toast" class="toast" hidden></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
-<script src="app.js?v=disha-product-speech-all-sizes-20261012"></script>
+<script src="app.js?v=disha-click-mic-product-code-v2-20261012"></script>
 </body>
 </html>

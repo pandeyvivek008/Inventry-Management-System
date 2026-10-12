@@ -59,6 +59,24 @@ def generate_variant_label(variant_code: str, product_name: str, size: str) -> b
     return out.getvalue()
 
 
+def generate_product_barcode_label(sku: str, product_name: str) -> bytes:
+    """Create one design-level Code128 label; scanner lookup opens all sizes."""
+    value = f"PRODUCT:{sku.strip().upper()}"
+    code_img = _code128_image(value)
+    width = max(680, code_img.width + 60)
+    height = code_img.height + 132
+    canvas = Image.new("RGB", (width, height), "white")
+    canvas.paste(code_img, ((width - code_img.width) // 2, 10))
+    draw = ImageDraw.Draw(canvas)
+    title_font, code_font = _font(22), _font(19)
+    for text, font, y in ((product_name[:48], title_font, code_img.height + 25), (value, code_font, code_img.height + 66)):
+        bbox = draw.textbbox((0, 0), text, font=font)
+        draw.text(((width - (bbox[2] - bbox[0])) / 2, y), text, fill="black", font=font)
+    out = BytesIO()
+    canvas.save(out, format="PNG", optimize=True)
+    return out.getvalue()
+
+
 def generate_product_qr_label(sku: str, product_name: str) -> bytes:
     """Create one design-level QR that opens every size in the inventory UI."""
     qr = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=12, border=3)

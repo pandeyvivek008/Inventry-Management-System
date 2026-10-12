@@ -440,6 +440,12 @@ expect(r.status_code == 200 and r.headers["content-type"] == "image/png", "label
 decoded = zbar_decode(PILImage.open(BytesIO(r.content)))
 expect(len(decoded) == 1 and decoded[0].type == "CODE128" and decoded[0].data.decode() == "AS1_M",
        f"barcode decodes back to AS1_M, got {[(d.type, d.data) for d in decoded]}")
+r = client.get("/api/products/AS1/barcode")
+product_decoded = zbar_decode(PILImage.open(BytesIO(r.content)))
+expect(r.status_code == 200 and len(product_decoded) == 1
+       and product_decoded[0].type == "CODE128"
+       and product_decoded[0].data.decode() == "PRODUCT:AS1",
+       f"single product barcode decodes to design lookup, got {[(d.type, d.data) for d in product_decoded]}")
 
 print("30. Restock requirement is the shortfall between pending orders and physical stock")
 client.post("/api/products", json={"sku": "RS1", "name": "Restock Shortfall", "variants": [

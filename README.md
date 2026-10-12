@@ -33,8 +33,8 @@ SERVICE LAYER  backend/services/
   alert_service          opens/resolves low-stock alerts (skips sizes never
                        counted - see "not counted" below)
   reorder_service       pending marketplace orders -> a shortage picklist / vendor-ready reorder list
-  barcode_service        QR labels, one per size, to print and stick on a
-                       shelf or bin
+  barcode_service        one Code128 barcode per design; scan it to open all
+                       sizes together
   ai_inventory_service   Phase 2 - designed, not yet trained (see #6)
         |  SQLAlchemy ORM
 DATA LAYER  backend/models.py
@@ -225,18 +225,22 @@ tools continue to work when an AI provider is unavailable.
 
 Chat history currently stays in that browser's local storage. It is not shared
 between browsers or devices; user accounts and server-side chat history are not
-implemented yet. For hands-free use, allow microphone access; while the app is
-open and visible, the wake phrase is **Hi Disha**. The app ignores a bare “Disha”
-so casual mentions do not open the assistant. Say
-**haan/yes** to confirm a pending stock update or **nahi/no** to cancel. The wake
-listener pauses when the app is backgrounded and resumes when it is visible again.
-Daily sales summaries count dispatched inventory units (not pending orders); the
-app does not currently store sales prices or revenue. Spoken replies use the Hindi
-voice available in the browser or operating system, so voice gender and style depend
-on the device's installed voices. Mobile browser support depends on its Web Speech API.
+implemented yet. Disha's microphone starts only after the user taps the robot
+button; it does not listen on page load or use a wake word. Allow microphone
+access, then speak Hindi, Hinglish, or English in normal sentences. A persistent
+media stream avoids browser SpeechRecognition's repeated mic restarts. OpenAI
+transcription and built-in speech generation use the app-service key; replies
+fall back to the device voice if speech generation is unavailable. Say
+**haan/yes** to confirm a pending action or **nahi/no** to cancel. The mic pauses
+when Disha is closed or the tab goes to the background. Daily sales summaries
+count dispatched inventory units (not pending orders); the app does not currently
+store sales prices or revenue.
 
 Hindi/Hinglish examples, confirmation steps, photo controls, microphone and
 earbud setup, and troubleshooting are in the [Disha user manual](DISHA_USER_MANUAL_HI.md).
+The [Disha architecture guide](DISHA_AI_ARCHITECTURE_HI.md) explains the model,
+safe CRUD path, local-laptop setup, and why the linked NMT translation notebooks
+are not suitable conversational inventory models.
 
 The full design, a **working and tested** nearest-neighbor matching algorithm, and
 exact activation steps are in `backend/services/ai_inventory_service.py`. Short
