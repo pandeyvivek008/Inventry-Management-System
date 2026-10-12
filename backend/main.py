@@ -27,8 +27,12 @@ from services import (
 Base.metadata.create_all(bind=engine)
 
 
-def remove_legacy_brand_data(target_engine=engine):
-    """Migrate older databases after the catalog brand field was removed."""
+def migrate_legacy_brand_data_explicitly(target_engine=engine):
+    """Optional legacy cleanup; never invoke automatically during app startup.
+
+    This changes saved product names and drops a database column. Run it only
+    as a separately reviewed migration after taking a restorable backup.
+    """
     columns = {column["name"] for column in sa_inspect(target_engine).get_columns("products")}
     if "brand" not in columns:
         return
@@ -42,9 +46,6 @@ def remove_legacy_brand_data(target_engine=engine):
               AND LOWER(SUBSTR(name, 1, LENGTH(brand))) = LOWER(brand)
         """))
         connection.execute(text("ALTER TABLE products DROP COLUMN brand"))
-
-
-remove_legacy_brand_data()
 
 app = FastAPI(title="Inventory Management System", version="1.4")
 

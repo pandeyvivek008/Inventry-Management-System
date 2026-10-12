@@ -1958,14 +1958,23 @@ async function loadAlerts() {
   const requestId = ++alertPage.requestId;
   try {
     const q = $("alerts-search")?.value.trim() || "";
-    const params = new URLSearchParams({ limit: "30", offset: alertPage.offset });
+    const params = new URLSearchParams({ limit: String(alertPage.limit), offset: String(alertPage.offset) });
     if (q) params.set("q", q);
     const page = await getJSON(`${API}/alerts/groups?${params}`);
     if (requestId !== alertPage.requestId) return;
-    $("alerts-note").textContent = page.total ? `${page.total.toLocaleString()} designs with alerts · grouped by design and sorted by severity` : (q ? `No alerts match “${q}”.` : "No open alerts.");
-    $("alerts-page-info").textContent = page.total ? `${page.offset + 1}–${Math.min(page.offset + page.items.length, page.total)} of ${page.total} designs` : "";
-    $("alerts-prev").disabled = page.offset === 0;
-    $("alerts-next").disabled = page.offset + page.limit >= page.total;
+    const pageLimit = Math.max(1, Number(page.limit) || 30);
+    const lastOffset = Math.max(0, Math.ceil(page.total / pageLimit) * pageLimit - pageLimit);
+    if (alertPage.offset > lastOffset) {
+      alertPage.offset = lastOffset;
+      return loadAlerts();
+    }
+    $("alerts-note").textContent = page.total ? `${page.total.toLocaleString()} designs with alerts · grouped by design and sorted by severity` : "";
+    const pageCount = Math.max(1, Math.ceil(page.total / pageLimit));
+    const pageNumber = Math.floor(page.offset / pageLimit) + 1;
+    const range = page.total ? ` · ${page.offset + 1}–${Math.min(page.offset + page.items.length, page.total)} of ${page.total}` : " · 0 designs";
+    $("alerts-page-info").textContent = `Page ${pageNumber} of ${pageCount}${range}`;
+    $("alerts-prev").disabled = page.offset <= 0;
+    $("alerts-next").disabled = page.offset + page.items.length >= page.total || page.total === 0;
     if (!page.items.length) { list.innerHTML = `<p class="hint">${q ? "No matching alerts." : "No open alerts."}</p>`; return; }
     list.innerHTML = page.items.map((group) => `
       <section class="alert-design">
@@ -1993,10 +2002,10 @@ async function loadAlerts() {
     }));
   } catch (e) { if (requestId === alertPage.requestId) list.innerHTML = `<p class="hint">Could not load alerts.</p>`; }
 }
-const alertPage = { offset: 0, requestId: 0 };
+const alertPage = { offset: 0, limit: 30, requestId: 0 };
 $("alerts-search").addEventListener("input", debounce(() => { alertPage.offset = 0; loadAlerts(); }, 220));
-$("alerts-prev").addEventListener("click", () => { alertPage.offset = Math.max(0, alertPage.offset - 30); loadAlerts(); });
-$("alerts-next").addEventListener("click", () => { alertPage.offset += 30; loadAlerts(); });
+$("alerts-prev").addEventListener("click", () => { alertPage.offset = Math.max(0, alertPage.offset - alertPage.limit); loadAlerts(); });
+$("alerts-next").addEventListener("click", () => { alertPage.offset += alertPage.limit; loadAlerts(); });
 
 // ================================================================ //
 // HISTORY

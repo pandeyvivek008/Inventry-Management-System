@@ -83,12 +83,12 @@ expect(r.status_code == 400, "duplicate product SKU rejected")
 expect("brand" not in body, "product API does not expose a brand field")
 
 # ====================================================================== #
-print("1b. Existing database migration removes the legacy brand field and matching title prefix")
+print("1b. Optional legacy brand cleanup is an explicit migration, not an app-startup side effect")
 legacy_engine = create_engine("sqlite://")
 with legacy_engine.begin() as conn:
     conn.execute(text("CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, brand TEXT)"))
     conn.execute(text("INSERT INTO products (name, brand) VALUES ('Catalog Label Kurta Set', 'Catalog Label')"))
-main.remove_legacy_brand_data(legacy_engine)
+main.migrate_legacy_brand_data_explicitly(legacy_engine)
 legacy_columns = {column["name"] for column in inspect(legacy_engine).get_columns("products")}
 with legacy_engine.begin() as conn:
     migrated_name = conn.execute(text("SELECT name FROM products WHERE id = 1")).scalar_one()

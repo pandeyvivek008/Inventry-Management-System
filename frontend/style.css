@@ -186,6 +186,9 @@ img { max-width: 100%; display: block; }
 .size-chip { display: inline-block; font-size: 11px; font-weight: 700; background: #EFEBE0; color: var(--ink-soft); padding: 2px 8px; border-radius: 5px; }
 
 .pager { display: flex; align-items: center; justify-content: center; gap: 16px; padding: 14px 0 4px; font-size: 13px; color: var(--ink-soft); }
+.alerts-pager { flex-wrap: wrap; gap: 10px; }
+.alerts-pager .btn-ghost { min-width: 116px; }
+.alerts-pager .btn-ghost:disabled { opacity: .45; cursor: not-allowed; }
 
 /* Summary chips */
 .summary-row { display: flex; gap: 9px; flex-wrap: wrap; margin-bottom: 16px; }
@@ -403,6 +406,7 @@ img { max-width: 100%; display: block; }
   .tcard-actions { justify-content: stretch; }
   .tcard-actions > * { flex: 1; }
   .order-batch-head { align-items: stretch; flex-direction: column; }
+  .alerts-pager .btn-ghost { width: auto; min-width: 108px; }
 }
 
 /* Larger touch targets on touch devices */
