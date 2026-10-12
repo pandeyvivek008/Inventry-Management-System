@@ -1198,6 +1198,10 @@ def dispatch_order_upload(order_upload_id: int, db: Session = Depends(get_db)):
             models.OrderLine.status == models.OrderLineStatus.PENDING,
             models.OrderLine.variant_id.isnot(None),
         )
+        # Serialize concurrent attempts to dispatch the same batch on databases
+        # that support row locks (PostgreSQL). The guarded stock update below
+        # remains the final protection against a simultaneous recount/dispatch.
+        .with_for_update(of=models.OrderLine)
         .all()
     )
     if not lines:
@@ -1230,12 +1234,17 @@ def dispatch_order_upload(order_upload_id: int, db: Session = Depends(get_db)):
                 transaction_type=models.TransactionType.ORDER_DEDUCTION,
                 reference=f"order_upload:{order_upload_id}:dispatch",
                 created_by="dispatch",
-                allow_negative=True,
             )
             line.qty_fulfilled = line.qty_ordered
             line.status = models.OrderLineStatus.FULFILLED
             alert_service.check_variant_alert(db, variant)
         db.commit()
+    except inventory_service.InsufficientStockError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=f"{exc.variant_code}: stock changed during dispatch; requested {exc.requested}, only {exc.available} remain. The batch was not dispatched.",
+        ) from exc
     except Exception:
         db.rollback()
         raise

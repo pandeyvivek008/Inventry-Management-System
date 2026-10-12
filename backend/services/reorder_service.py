@@ -68,6 +68,10 @@ def generate_reorder_list(db: Session, save_batch: bool = True, part: str | None
         physical_stock = int(v.current_stock or 0)
         # Negative stock can exist in older databases after an over-dispatch.
         # Carry that deficit forward so the picklist does not hide missing units.
+        # A negative balance represents an older stock deficit, so replenishing
+        # only pending demand would leave the physical balance short. Include
+        # that deficit in the quantity needed to cover pending orders and bring
+        # stock back to zero.
         required = max(ordered_qty - physical_stock, 0)
         items.append({
             "sku": v.product.sku,

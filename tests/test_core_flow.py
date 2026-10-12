@@ -127,6 +127,8 @@ print("4. Dispatch deducts physical stock once; shipped lines remain visible wit
 upload_id = body["order_upload_id"]
 dispatch = client.post(f"/api/orders/{upload_id}/dispatch")
 expect(dispatch.status_code == 200 and dispatch.json()["dispatched_units"] == 13, "initial batch dispatch succeeds for 13 units")
+expect(client.post(f"/api/orders/{upload_id}/dispatch").status_code == 404,
+       "the same dispatched batch cannot be deducted twice")
 t1 = next(p for p in client.get("/api/products").json() if p["sku"] == "T1")
 expect(next(v for v in t1["variants"] if v["size"] == "S")["current_stock"] == 3, "T1-S stock deducted once: 10 - 7 = 3")
 reorder = {i["variant_code"]: i for i in client.get("/api/reorder-list").json()}
@@ -464,6 +466,74 @@ client.post("/api/inventory/adjust", json={"variant_code": "RS1-M", "new_count":
 expect(client.post(f"/api/orders/{shortfall_upload.json()['order_upload_id']}/dispatch").status_code == 200
        and client.get("/api/variants/RS1-M").json()["current_stock"] == 0,
        "dispatch succeeds after the requested physical stock is arranged")
+
+print("30a. Legacy negative stock is carried into the reorder quantity")
+client.post("/api/products", json={"sku": "NEGRESTOCK", "name": "Negative Balance Recovery", "variants": [
+    {"size": "S", "initial_stock": 4},
+]})
+negative_upload = post_orders(make_xlsx(["SKU", "Size", "Quantity"], [("NEGRESTOCK", "S", 4)]), "negative_restock.xlsx")
+expect(client.post(f"/api/orders/{negative_upload.json()['order_upload_id']}/dispatch").status_code == 200,
+       "dispatch baseline batch before simulating a legacy negative balance")
+db = SessionLocal()
+try:
+    negative_variant = db.query(main.models.Variant).filter_by(variant_code="NEGRESTOCK_S").one()
+    negative_variant.current_stock = -2  # reproduce a pre-fix/legacy over-dispatch cache
+    db.commit()
+finally:
+    db.close()
+negative_reorder = next(i for i in client.get("/api/reorder-list").json() if i["variant_code"] == "NEGRESTOCK_S")
+expect(negative_reorder["ordered_qty"] == 0 and negative_reorder["current_stock"] == -2
+       and negative_reorder["required_qty"] == 2,
+       "negative physical balance with no pending demand still requests enough restock to reach zero")
+
+print("30b. Daily sales counts dispatched units and excludes pending orders")
+client.post("/api/products", json={"sku": "SALESTODAY", "name": "Sales Summary Test", "variants": [
+    {"size": "M", "initial_stock": 100},
+]})
+sales_upload = post_orders(make_xlsx(["SKU", "Size", "Quantity"], [("SALESTODAY", "M", 50)]), "sales_today.xlsx")
+pending_sales_before = client.get("/api/analytics/daily-sales").json()
+expect(pending_sales_before["dispatched_units"] == 0 or all(p["sku"] != "SALESTODAY" for p in pending_sales_before["top_products"]),
+       "uploaded pending orders are not counted as today's sales")
+expect(client.post(f"/api/orders/{sales_upload.json()['order_upload_id']}/dispatch").status_code == 200,
+       "today's sales test batch dispatches")
+sales_today = client.get("/api/analytics/daily-sales").json()
+sales_product = next((p for p in sales_today["top_products"] if p["sku"] == "SALESTODAY"), None)
+expect(sales_today["timezone"] == "Asia/Kolkata" and sales_today["dispatched_units"] >= 50
+       and sales_today["dispatch_lines"] >= 1 and sales_today["designs_sold"] >= 1
+       and sales_product is not None and sales_product["units"] == 50,
+       "daily sales reports IST date, dispatched units, lines, designs and per-product units")
+today_history = next(i for i in client.get("/api/orders/history", params={"limit": 200}).json()
+                    if i["order_upload_id"] == sales_upload.json()["order_upload_id"])
+expect(today_history["status"] == "DISPATCHED" and today_history["fulfilled_count"] == 1
+       and today_history["pending_count"] == 0
+       and today_history["lines"][0]["qty_fulfilled"] == 50,
+       "order history records the dispatch and fulfilled quantity accurately")
+
+print("30c. Dispatch rechecks atomic stock and rolls back the whole batch on a shortage")
+client.post("/api/products", json={"sku": "RACE1", "name": "Concurrent Dispatch Guard", "variants": [
+    {"size": "S", "initial_stock": 5}, {"size": "M", "initial_stock": 2},
+]})
+race_upload = post_orders(make_xlsx(["SKU", "Size", "Quantity"], [("RACE1", "S", 2), ("RACE1", "M", 2)]), "dispatch_race.xlsx")
+original_apply_stock_change = main.inventory_service.apply_stock_change
+def simulate_stock_change_then_dispatch(db, variant, delta, **kwargs):
+    if variant.variant_code == "RACE1_M" and kwargs.get("created_by") == "dispatch":
+        variant.current_stock = 1
+        db.flush()
+    return original_apply_stock_change(db, variant, delta, **kwargs)
+main.inventory_service.apply_stock_change = simulate_stock_change_then_dispatch
+try:
+    guarded_dispatch = client.post(f"/api/orders/{race_upload.json()['order_upload_id']}/dispatch")
+finally:
+    main.inventory_service.apply_stock_change = original_apply_stock_change
+expect(guarded_dispatch.status_code == 409 and "batch was not dispatched" in guarded_dispatch.json()["detail"].lower(),
+       "stock shortage after preliminary validation returns a clear 409")
+expect(client.get("/api/variants/RACE1_S").json()["current_stock"] == 5
+       and client.get("/api/variants/RACE1_M").json()["current_stock"] == 2,
+       "a failed multi-size dispatch rolls back every deduction")
+race_history = next(i for i in client.get("/api/orders/history", params={"limit": 200}).json()
+                   if i["order_upload_id"] == race_upload.json()["order_upload_id"])
+expect(race_history["status"] == "PENDING" and race_history["pending_count"] == 2,
+       "a blocked batch remains pending and visible in order history")
 
 print("30b. Railway root opens the app and variant SKUs group by their final size")
 root = client.get("/", follow_redirects=False)
