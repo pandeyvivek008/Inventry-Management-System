@@ -134,6 +134,18 @@
           <div id="manual-product-results" class="manual-product-results" role="region" aria-label="Matching products and size stock" hidden></div>
         </div>
       </div>
+      <section class="panel visual-scanner-panel" aria-labelledby="visual-scan-title">
+        <div class="visual-scan-head"><div><h2 id="visual-scan-title"><i class="fa-solid fa-camera"></i> फोटो से प्रोडक्ट खोजें</h2><p class="hint">साफ़ फोटो लें या अपलोड करें। दिशा कैटलॉग की सबसे मिलती-जुलती तस्वीरें और लाइव साइज़ स्टॉक दिखाएगी। सही डिज़ाइन आप चुनेंगे।</p></div><span class="visual-safe-note">स्कैन से स्टॉक नहीं बदलेगा</span></div>
+        <div class="visual-scan-controls">
+          <button id="visual-camera-toggle" type="button" class="btn-secondary"><i class="fa-solid fa-camera"></i> कैमरा खोलें</button>
+          <button id="visual-capture" type="button" class="btn-primary" disabled><i class="fa-solid fa-camera-retro"></i> फोटो लें</button>
+          <label class="btn-ghost visual-upload-label"><i class="fa-solid fa-image"></i> फोटो अपलोड करें<input id="visual-upload" type="file" accept="image/jpeg,image/png,image/webp" hidden></label>
+        </div>
+        <div id="visual-camera-wrap" class="visual-camera-wrap" hidden><video id="visual-camera" playsinline muted></video></div>
+        <div id="visual-preview-wrap" class="visual-preview-wrap" hidden><img id="visual-preview" alt="उत्पाद खोजने के लिए चुनी गई तस्वीर"><button id="visual-clear" type="button" class="btn-ghost">दूसरी फोटो चुनें</button></div>
+        <div id="visual-scan-msg" class="msg" role="status"></div>
+        <div id="visual-results" class="visual-results" hidden></div>
+      </section>
 
       <div id="scan-result" class="panel" hidden style="margin-top:16px;"></div>
     </section>
@@ -321,7 +333,7 @@
       <input id="assistant-chat-input" type="text" maxlength="500" autocomplete="off" placeholder="Product, size, ya stock batayein…" aria-label="Message the inventory assistant">
       <button id="assistant-send" type="submit" aria-label="Send message"><i class="fa-solid fa-paper-plane"></i></button>
     </form>
-    <div class="assistant-quick-actions"><button id="assistant-sales-summary" type="button"><i class="fa-solid fa-chart-line"></i> Aaj ki sales</button></div>
+    <div class="assistant-quick-actions"><button id="assistant-sales-summary" type="button"><i class="fa-solid fa-chart-line"></i> Aaj ki sales</button><button id="assistant-automation-help" type="button"><i class="fa-solid fa-wand-magic-sparkles"></i> आवाज़ के आदेश</button></div>
     <p class="assistant-footnote">Products, stock, alerts, reorder, orders aur sales poochhein · stock update confirm ke baad · Pause voice rokta hai</p>
   </section>
   <button id="assistant-launcher" class="assistant-launcher" type="button" aria-label="Open Disha Inventory Assistant" title="Talk with Disha" aria-expanded="false">
@@ -341,6 +353,6 @@
 <div id="toast" class="toast" hidden></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
-<script src="app.js?v=disha-hindi-gemini-female-tts-20261013"></script>
+<script src="app.js?v=disha-self-hosted-visual-matching-20261013"></script>
 </body>
 </html>

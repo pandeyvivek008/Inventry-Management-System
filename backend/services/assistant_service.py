@@ -3,6 +3,7 @@
 The model only extracts what the user asked for. Catalog lookup, current stock,
 authorization to mutate, and all inventory writes remain in the application DB.
 """
+import asyncio
 import base64
 import json
 import logging
@@ -28,7 +29,18 @@ OPENAI_TRANSCRIPTION_URL = "https://api.openai.com/v1/audio/transcriptions"
 OPENAI_SPEECH_URL = "https://api.openai.com/v1/audio/speech"
 GEMINI_INTERACTIONS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
 GEMINI_VOICES_URL = "https://generativelanguage.googleapis.com/v1beta/voices"
+OLLAMA_CHAT_URL = "/api/chat"
 _female_voice_cache: tuple[float, str] | None = None
+
+
+def _local_service_headers(key_name: str) -> dict[str, str]:
+    """Optional bearer auth for self-hosted endpoints behind an HTTPS gateway."""
+    token = os.getenv(key_name, "").strip()
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+def _is_local_provider(provider: str | None = None) -> bool:
+    return (provider or os.getenv("AI_PROVIDER", "gemini")).strip().lower() in {"local", "ollama"}
 
 INTENT_SCHEMA = {
     "type": "object",
@@ -121,15 +133,17 @@ async def transcribe_audio(audio: bytes, filename: str, content_type: str) -> st
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
     provider = os.getenv("AI_PROVIDER", "gemini").strip().lower()
+    if provider in {"local", "ollama"}:
+        return await _transcribe_with_local(audio, filename, content_type)
     if provider == "gemini" and not gemini_key:
         raise AssistantProviderError(
             "GEMINI_API_KEY is required for Hindi voice transcription.",
             user_message="हिंदी वॉइस के लिए Railway Variables में GEMINI_API_KEY जोड़ें।",
         )
     if provider == "gemini":
-        return await _transcribe_with_gemini(audio, content_type, gemini_key)
+        return await _transcribe_with_gemini_or_local(audio, filename, content_type, gemini_key)
     if not api_key and gemini_key and provider == "auto":
-        return await _transcribe_with_gemini(audio, content_type, gemini_key)
+        return await _transcribe_with_gemini_or_local(audio, filename, content_type, gemini_key)
     if not api_key:
         raise AssistantProviderError(
             "No audio transcription provider key is configured.",
@@ -161,7 +175,7 @@ async def transcribe_audio(audio: bytes, filename: str, content_type: str) -> st
             raise
         logger.warning("OpenAI transcription failed; trying configured Gemini transcription fallback.")
         try:
-            return await _transcribe_with_gemini(audio, content_type, gemini_key)
+            return await _transcribe_with_gemini_or_local(audio, filename, content_type, gemini_key)
         except AssistantProviderError as gemini_error:
             logger.warning("Both configured audio transcription providers failed.")
             raise AssistantProviderError(
@@ -176,7 +190,7 @@ async def transcribe_audio(audio: bytes, filename: str, content_type: str) -> st
         )
         if provider == "auto" and gemini_key:
             try:
-                return await _transcribe_with_gemini(audio, content_type, gemini_key)
+                return await _transcribe_with_gemini_or_local(audio, filename, content_type, gemini_key)
             except AssistantProviderError as gemini_error:
                 raise AssistantProviderError(
                     "OpenAI and Gemini transcription both failed.",
@@ -184,6 +198,55 @@ async def transcribe_audio(audio: bytes, filename: str, content_type: str) -> st
                     user_message=f"OpenAI voice connection nahi hua; Gemini fallback bhi fail hua ({gemini_error.user_message}). Type karke baat jaari rakhein.",
                 ) from gemini_error
         raise openai_error from exc
+
+
+async def _transcribe_with_gemini_or_local(audio: bytes, filename: str, content_type: str, gemini_key: str) -> str:
+    try:
+        return await _transcribe_with_gemini(audio, content_type, gemini_key)
+    except AssistantProviderError as gemini_error:
+        if gemini_error.upstream_status in {None, 500, 502, 503, 504} and os.getenv("LOCAL_STT_URL", "").strip():
+            logger.warning("Gemini transcription unavailable; trying configured local speech-to-text service.")
+            return await _transcribe_with_local(audio, filename, content_type)
+        raise
+
+
+async def _transcribe_with_local(audio: bytes, filename: str, content_type: str) -> str:
+    """Call an OpenAI-compatible self-hosted Whisper transcription endpoint."""
+    endpoint = os.getenv("LOCAL_STT_URL", "").strip()
+    if not endpoint:
+        raise AssistantProviderError(
+            "LOCAL_STT_URL is required for self-hosted Hindi voice input.",
+            user_message="स्थानीय वॉइस सेवा अभी सेट नहीं है। टेक्स्ट से बात जारी रखें या LOCAL_STT_URL सेट करें।",
+        )
+    prompt = (
+        "Transcribe Hindi speech only in Devanagari. Preserve product names, colors, size labels and numbers as spoken; "
+        "do not translate or answer. Inventory terms: stock, pieces, add, set, delete, restore, dispatch, S M L XL XXL."
+    )
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=10.0)) as client:
+            response = await client.post(
+                endpoint,
+                headers=_local_service_headers("LOCAL_STT_API_KEY"),
+                data={"model": os.getenv("LOCAL_STT_MODEL", "small").strip() or "small", "language": "hi", "response_format": "json", "prompt": prompt},
+                files={"file": (filename, audio, content_type or "audio/webm")},
+            )
+        if response.status_code >= 400:
+            logger.warning("Local transcription returned HTTP %s: %s", response.status_code, response.text[:300])
+            raise AssistantProviderError(
+                f"Local transcription returned HTTP {response.status_code}.", upstream_status=response.status_code,
+                user_message=f"स्थानीय आवाज़ सेवा ने जवाब नहीं दिया (HTTP {response.status_code})। टेक्स्ट से बात जारी रखें।",
+            )
+        transcript = str(response.json().get("text") or "").strip()[:500]
+        if not transcript:
+            raise AssistantProviderError("Local transcription returned no speech text.", user_message="आवाज़ साफ़ नहीं मिली। कृपया दोबारा बोलें।")
+        return transcript
+    except AssistantProviderError:
+        raise
+    except (httpx.HTTPError, ValueError, TypeError) as exc:
+        logger.warning("Local transcription failed (%s).", type(exc).__name__)
+        raise AssistantProviderError(
+            "Local transcription request failed.", user_message="स्थानीय आवाज़ सेवा से संपर्क नहीं हो पाया। टेक्स्ट से बात जारी रखें।",
+        ) from exc
 
 
 async def _transcribe_with_gemini(audio: bytes, content_type: str, api_key: str) -> str:
@@ -202,12 +265,24 @@ async def _transcribe_with_gemini(audio: bytes, content_type: str, api_key: str)
         "generationConfig": {"temperature": 0, "maxOutputTokens": 256},
     }
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=7.0)) as client:
-            response = await client.post(
-                GEMINI_API_URL.format(model=quote(model, safe="-._")),
-                headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
-                json=payload,
-            )
+        response = None
+        for attempt in range(3):
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=7.0)) as client:
+                    response = await client.post(
+                        GEMINI_API_URL.format(model=quote(model, safe="-._")),
+                        headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+                        json=payload,
+                    )
+            except httpx.TransportError:
+                if attempt == 2:
+                    raise
+                await asyncio.sleep(0.3 * (attempt + 1))
+                continue
+            if response.status_code not in {500, 502, 503, 504} or attempt == 2:
+                break
+            logger.warning("Gemini transcription temporarily returned HTTP %s; retry %s/2.", response.status_code, attempt + 1)
+            await asyncio.sleep(0.3 * (attempt + 1))
         if response.status_code >= 400:
             logger.warning("Gemini transcription returned HTTP %s: %s", response.status_code, response.text[:300])
             status = response.status_code
@@ -265,6 +340,35 @@ async def _gemini_female_hindi_voice(api_key: str) -> str:
 
 async def synthesize_speech(text: str) -> bytes:
     """Render Hindi speech with Gemini TTS and a Hindi female voice."""
+    if _is_local_provider():
+        endpoint = os.getenv("LOCAL_TTS_URL", "").strip()
+        if not endpoint:
+            raise AssistantProviderError(
+                "LOCAL_TTS_URL is required for self-hosted speech output.",
+                user_message="स्थानीय हिंदी आवाज़ सेवा अभी सेट नहीं है। जवाब टेक्स्ट में उपलब्ध है।",
+            )
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+                response = await client.post(
+                    endpoint,
+                    headers={"Content-Type": "application/json", **_local_service_headers("LOCAL_TTS_API_KEY")},
+                    json={"text": text[:1200], **({"voice": os.getenv("LOCAL_TTS_VOICE", "").strip()} if os.getenv("LOCAL_TTS_VOICE", "").strip() else {})},
+                )
+            if response.status_code >= 400:
+                logger.warning("Local speech returned HTTP %s: %s", response.status_code, response.text[:300])
+                raise AssistantProviderError(
+                    f"Local speech returned HTTP {response.status_code}.", upstream_status=response.status_code,
+                    user_message="स्थानीय आवाज़ सेवा अभी जवाब नहीं दे पाई। जवाब टेक्स्ट में उपलब्ध है।",
+                )
+            audio = response.content
+            if not audio.startswith(b"RIFF") or b"WAVE" not in audio[:16]:
+                raise AssistantProviderError("Local speech endpoint did not return WAV audio.", user_message="स्थानीय आवाज़ सेवा ने सही ऑडियो नहीं लौटाया। जवाब टेक्स्ट में उपलब्ध है।")
+            return audio
+        except AssistantProviderError:
+            raise
+        except httpx.HTTPError as exc:
+            logger.warning("Local speech failed (%s).", type(exc).__name__)
+            raise AssistantProviderError("Local speech request failed.", user_message="स्थानीय आवाज़ सेवा से संपर्क नहीं हो पाया। जवाब टेक्स्ट में उपलब्ध है।") from exc
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
         raise AssistantProviderError("GEMINI_API_KEY is required for generated Hindi speech.", user_message="हिंदी आवाज़ के लिए Railway Variables में GEMINI_API_KEY जोड़ें।")
@@ -311,6 +415,8 @@ def active_provider() -> str | None:
     requested = os.getenv("AI_PROVIDER", "gemini").strip().lower()
     has_openai = bool(os.getenv("OPENAI_API_KEY", "").strip())
     has_gemini = bool(os.getenv("GEMINI_API_KEY", "").strip())
+    if requested in {"local", "ollama"}:
+        return "local" if os.getenv("LOCAL_AI_URL", "").strip() else None
     if requested == "openai":
         return "openai" if has_openai else None
     if requested == "gemini":
@@ -340,7 +446,7 @@ def _openai_json_schema(schema: dict) -> dict:
 async def parse_inventory_request(message: str, history: list[dict], *, _provider_override: str | None = None) -> dict:
     provider = _provider_override or active_provider()
     if not provider:
-        raise AssistantProviderError("No Gemini API key is configured. Set GEMINI_API_KEY in Railway Variables.")
+        raise AssistantProviderError("No AI provider is configured.", user_message="कोई AI सेवा सेट नहीं है। Railway Variables जाँचें।")
 
     conversation = []
     for item in history[-10:]:
@@ -386,7 +492,16 @@ async def parse_inventory_request(message: str, history: list[dict], *, _provide
         # Keep the response latency bounded; full app work is performed by the
         # database-backed routes after the model returns a structured intent.
         async with httpx.AsyncClient(timeout=httpx.Timeout(25.0, connect=7.0)) as client:
-            if provider == "openai":
+            if provider == "local":
+                local_url = os.getenv("LOCAL_AI_URL", "").strip().rstrip("/")
+                local_model = os.getenv("LOCAL_AI_MODEL", "qwen2.5:3b").strip() or "qwen2.5:3b"
+                local_messages = [{"role": "system", "content": SYSTEM_PROMPT}, *conversation]
+                response = await client.post(
+                    f"{local_url}{OLLAMA_CHAT_URL}",
+                    headers={**_local_service_headers("LOCAL_AI_API_KEY"), "Content-Type": "application/json"},
+                    json={"model": local_model, "messages": local_messages, "stream": False, "format": INTENT_SCHEMA, "options": {"temperature": 0.15}},
+                )
+            elif provider == "openai":
                 api_key = os.getenv("OPENAI_API_KEY", "").strip()
                 model = os.getenv("OPENAI_MODEL", DEFAULT_OPENAI_MODEL).strip() or DEFAULT_OPENAI_MODEL
                 openai_payload = {
@@ -423,15 +538,15 @@ async def parse_inventory_request(message: str, history: list[dict], *, _provide
             # Keep provider keys private; only log the upstream status and safe error body.
             logger.warning("%s assistant request returned HTTP %s: %s", provider, response.status_code, response.text[:500])
             status = response.status_code
-            model_variable = "OPENAI_MODEL" if provider == "openai" else "GEMINI_MODEL"
-            key_label = "OpenAI API key" if provider == "openai" else "Gemini API key"
+            model_variable = "LOCAL_AI_MODEL" if provider == "local" else "OPENAI_MODEL" if provider == "openai" else "GEMINI_MODEL"
+            key_label = "स्थानीय AI सेवा" if provider == "local" else "OpenAI API key" if provider == "openai" else "Gemini API key"
             if status in (401, 403):
-                advice = f"{key_label} reject hui ya is project ko API access nahi mila. Railway Variables mein {provider.upper()} key check karein."
+                advice = "स्थानीय AI सेवा का authentication token जाँचें।" if provider == "local" else f"{key_label} reject hui ya is project ko API access nahi mila. Railway Variables mein {provider.upper()} key check karein."
             elif status == 404:
-                default_model = DEFAULT_OPENAI_MODEL if provider == "openai" else DEFAULT_MODEL
-                advice = f"{provider.title()} model nahi mila. Railway mein {model_variable} ko {default_model} set karein."
+                default_model = "qwen2.5:3b" if provider == "local" else DEFAULT_OPENAI_MODEL if provider == "openai" else DEFAULT_MODEL
+                advice = f"{provider.title()} model nahi mila. {model_variable} को {default_model} सेट करें और local model pull करें।"
             elif status == 429:
-                advice = f"{provider.title()} quota/rate limit poori hui. Provider dashboard mein isi project ka usage aur billing check karein, phir retry karein."
+                advice = "स्थानीय AI सेवा व्यस्त है या उसकी rate limit लगी है। थोड़ी देर बाद retry करें।" if provider == "local" else f"{provider.title()} quota/rate limit poori hui. Provider dashboard mein isi project ka usage aur billing check karein, phir retry karein."
             elif status == 400:
                 advice = f"{provider.title()} request reject hui. Railway ka {model_variable} aur structured-output/API configuration check karein."
             else:
@@ -441,7 +556,9 @@ async def parse_inventory_request(message: str, history: list[dict], *, _provide
                 user_message=f"{advice} ({provider.title()} HTTP {status})",
             )
         body = response.json()
-        if provider == "openai":
+        if provider == "local":
+            content = str(body.get("message", {}).get("content") or "")
+        elif provider == "openai":
             content = str(body.get("output_text") or "")
             if not content:
                 content = "".join(
@@ -451,7 +568,7 @@ async def parse_inventory_request(message: str, history: list[dict], *, _provide
                 )
             if body.get("status") not in (None, "completed"):
                 raise AssistantProviderError(f"OpenAI response status: {body.get('status')}.")
-        else:
+        elif provider == "gemini":
             content = "".join(
                 str(part.get("text", ""))
                 for part in body["candidates"][0]["content"]["parts"]
@@ -523,4 +640,11 @@ async def _fallback_or_raise(message: str, history: list[dict], provider: str, o
                         f"{error.user_message} Doosri API bhi fail hui: {fallback_exc.user_message}"
                     ),
                 ) from fallback_exc
+    if provider == "local" and not override:
+        raise AssistantProviderError(
+            "Self-hosted Ollama request failed.", upstream_status=error.upstream_status,
+            user_message=f"स्थानीय AI सेवा से जवाब नहीं मिला। मॉडल चल रहा है और LOCAL_AI_URL सही है, यह जाँचें। {error.user_message}",
+        ) from error
     raise error
+    if requested in {"local", "ollama"}:
+        return "local" if os.getenv("LOCAL_AI_URL", "").strip() else None

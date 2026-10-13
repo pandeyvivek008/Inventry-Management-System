@@ -2,6 +2,7 @@ import shutil
 import uuid
 import re
 import time
+import logging
 from difflib import SequenceMatcher
 from collections import defaultdict, deque
 from threading import Lock
@@ -22,9 +23,11 @@ import schemas
 from services import (
     inventory_service, alert_service, excel_service, reorder_service,
     barcode_service, bulk_stock_service, bulk_product_service, assistant_service,
+    visual_match_service, visual_search_service,
 )
 
 Base.metadata.create_all(bind=engine)
+logger = logging.getLogger(__name__)
 
 
 def migrate_legacy_brand_data_explicitly(target_engine=engine):
@@ -386,7 +389,7 @@ async def inventory_assistant_chat(payload: schemas.AssistantChatRequest, reques
     explicit stock-adjustment confirmation flow.
     """
     if not assistant_service.api_key_configured():
-        raise HTTPException(status_code=503, detail="Disha ke liye Railway app service Variables mein GEMINI_API_KEY add karein, phir redeploy karein.")
+        raise HTTPException(status_code=503, detail="Disha की AI सेवा सेट नहीं है। AI_PROVIDER और संबंधित सेवा URL/की जाँचें।")
     client_ip = request.client.host if request.client else "unknown"
     if not _assistant_rate_limit(client_ip):
         raise HTTPException(status_code=429, detail="Assistant request limit reached. Please wait a minute and try again.")
@@ -831,21 +834,75 @@ def update_variant(variant_code: str, payload: schemas.VariantUpdate, db: Sessio
 @app.post("/api/products/{sku}/image")
 def upload_product_image(sku: str, file: UploadFile = File(...), db: Session = Depends(get_db)):
     product = _get_product_by_sku(db, sku)
-    ext = Path(file.filename).suffix or ".jpg"
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in {".jpg", ".jpeg", ".png", ".webp"}:
+        ext = ".jpg"
+    content = file.file.read(visual_match_service.MAX_SCAN_BYTES + 1)
+    try:
+        visual_match_service.image_signature(content)
+    except visual_match_service.InvalidProductImage as exc:
+        raise HTTPException(400, str(exc)) from exc
     fname = f"{product.sku}_{uuid.uuid4().hex[:8]}{ext}"
     dest = STATIC_DIR / "product_images" / fname
-    with dest.open("wb") as f:
-        shutil.copyfileobj(file.file, f)
+    dest.write_bytes(content)
     old_path = product.image_path
     product.image_path = f"/static/product_images/{fname}"
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        dest.unlink(missing_ok=True)
+        raise
+    # Visual indexing is optional and must never prevent a valid product photo
+    # from being saved. PostgreSQL index setup is an explicit maintenance task.
+    try:
+        visual_search_service.index_product_image(db, product.id, content)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.warning("Product photo saved but visual indexing failed (%s).", type(exc).__name__)
     if old_path:
-        old_file = STATIC_DIR.parent / old_path.lstrip("/").replace("static/", "static/", 1)
         try:
             (BASE_DIR / old_path.lstrip("/")).unlink(missing_ok=True)
         except Exception:
             pass
     return {"image_path": product.image_path}
+
+
+@app.post("/api/products/visual-match")
+async def visual_product_match(
+    request: Request,
+    file: UploadFile = File(...),
+    limit: int = Query(5, ge=1, le=10),
+    db: Session = Depends(get_db),
+):
+    """Return a small visual-match shortlist; this route never changes stock."""
+    client_key = request.client.host if request.client else "unknown"
+    if not visual_search_service.allow_scan(client_key):
+        raise HTTPException(429, "Too many image searches. Please wait a minute and try again.")
+    content = await file.read(visual_match_service.MAX_SCAN_BYTES + 1)
+    try:
+        visual_match_service.image_signature(content)
+        hits = visual_search_service.search(db, content, STATIC_DIR, limit)
+    except visual_match_service.InvalidProductImage as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except visual_search_service.VisualSearchUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    product_ids = [hit.product_id for hit in hits]
+    products = db.query(models.Product).options(selectinload(models.Product.variants)).filter(
+        models.Product.id.in_(product_ids), models.Product.is_deleted == False  # noqa: E712
+    ).all() if product_ids else []
+    by_id = {product.id: product for product in products}
+    matches = []
+    for hit in hits:
+        product = by_id.get(hit.product_id)
+        if product:
+            matches.append({"similarity": round(hit.similarity * 100), "product": _product_out(product)})
+    return {
+        "catalog_images": len(product_ids),
+        "matches": matches,
+        "notice": "Visual matches are suggestions. Confirm the design before editing stock.",
+    }
 
 
 # ------------------------------------------------------------------ #

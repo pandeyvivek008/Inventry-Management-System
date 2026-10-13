@@ -262,6 +262,7 @@ function switchView(name) {
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("is-active", v.id === `view-${name}`));
   closeDrawer();
   if (name !== "scan") stopCamera();
+  if (name !== "scan") stopVisualCamera();
   if (name === "dashboard") { loadSummary(); loadInventory(); loadMoversChart(); }
   if (name === "products" && !window.__keepProductSearch) {
     $("product-search").value = "";
@@ -1083,6 +1084,120 @@ function renderScanProduct(product, onlyVariantCode = null) {
 }
 
 // ================================================================ //
+// VISUAL PRODUCT SEARCH — local catalog matching, never changes stock
+// ================================================================ //
+let visualCameraStream = null;
+let visualSelectedFile = null;
+let visualPreviewUrl = null;
+
+function setVisualMessage(message = "", kind = "") {
+  const el = $("visual-scan-msg");
+  if (!el) return;
+  el.textContent = message;
+  el.className = `msg ${kind}`.trim();
+}
+
+function stopVisualCamera() {
+  visualCameraStream?.getTracks().forEach((track) => track.stop());
+  visualCameraStream = null;
+  const video = $("visual-camera");
+  if (video) video.srcObject = null;
+  if ($("visual-camera-wrap")) $("visual-camera-wrap").hidden = true;
+  if ($("visual-camera-toggle")) $("visual-camera-toggle").innerHTML = '<i class="fa-solid fa-camera"></i> कैमरा खोलें';
+  if ($("visual-capture")) $("visual-capture").disabled = true;
+}
+
+function chooseVisualFile(file) {
+  if (!file) return;
+  if (!/^image\/(?:jpeg|png|webp)$/i.test(file.type) || file.size > 10 * 1024 * 1024) {
+    setVisualMessage("JPG, PNG या WEBP की साफ़ फोटो चुनें (अधिकतम 10 MB)।", "error");
+    return;
+  }
+  visualSelectedFile = file;
+  if (visualPreviewUrl) URL.revokeObjectURL(visualPreviewUrl);
+  visualPreviewUrl = URL.createObjectURL(file);
+  $("visual-preview").src = visualPreviewUrl;
+  $("visual-preview-wrap").hidden = false;
+  $("visual-results").hidden = true;
+  matchVisualProduct();
+}
+
+async function toggleVisualCamera() {
+  if (visualCameraStream) { stopVisualCamera(); return; }
+  if (!navigator.mediaDevices?.getUserMedia) { setVisualMessage("इस ब्राउज़र में कैमरा उपलब्ध नहीं है। फोटो अपलोड करें।", "error"); return; }
+  try {
+    visualCameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 960 } }, audio: false });
+    const video = $("visual-camera");
+    video.srcObject = visualCameraStream;
+    await video.play();
+    $("visual-camera-wrap").hidden = false;
+    $("visual-camera-toggle").innerHTML = '<i class="fa-solid fa-video-slash"></i> कैमरा बंद करें';
+    $("visual-capture").disabled = false;
+    setVisualMessage("एक प्रोडक्ट को बीच में रखें और फोटो लें।");
+  } catch (error) {
+    stopVisualCamera();
+    setVisualMessage(error?.name === "NotAllowedError" ? "कैमरा अनुमति बंद है। ब्राउज़र में अनुमति दें और फिर कोशिश करें।" : "कैमरा चालू नहीं हुआ। फोटो अपलोड करके खोजें।", "error");
+  }
+}
+
+function captureVisualPhoto() {
+  const video = $("visual-camera");
+  if (!visualCameraStream || !video?.videoWidth) return;
+  const canvas = document.createElement("canvas");
+  canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+  canvas.getContext("2d").drawImage(video, 0, 0);
+  canvas.toBlob((blob) => { if (blob) chooseVisualFile(new File([blob], "visual-product.jpg", { type: "image/jpeg" })); }, "image/jpeg", 0.92);
+  stopVisualCamera();
+}
+
+async function matchVisualProduct() {
+  if (!visualSelectedFile) return;
+  const results = $("visual-results");
+  setVisualMessage("कैटलॉग की तस्वीरों से मिलान कर रहे हैं…");
+  try {
+    const data = new FormData(); data.append("file", visualSelectedFile);
+    const response = await fetch(`${API}/products/visual-match?limit=5`, { method: "POST", body: data });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.detail || "तस्वीर से खोज पूरी नहीं हुई।");
+    if (!payload.matches?.length) {
+      results.hidden = true;
+      setVisualMessage("कैटलॉग में खोजने लायक फोटो नहीं मिलीं। पहले प्रोडक्ट में फोटो जोड़ें।", "error");
+      return;
+    }
+    results.hidden = false;
+    results.innerHTML = `<h3>मिलती-जुलती डिज़ाइन <span class="hint">सही प्रोडक्ट चुनें</span></h3><div class="visual-result-grid">${payload.matches.map((match, index) => {
+      const product = match.product;
+      const stock = (product.variants || []).map((variant) => `<span class="size-chip status-${variant.status}">${esc(variant.size)}: ${variant.status === "UNCOUNTED" ? "—" : esc(variant.current_stock)}</span>`).join("");
+      return `<article class="visual-match-card"><div class="visual-match-photo">${product.image_path ? `<img src="${esc(product.image_path)}" alt="${esc(product.name)}">` : ""}</div><div class="visual-match-body"><div><span class="visual-rank">#${index + 1}</span><strong>${esc(product.name)}</strong></div><span class="visual-score">फोटो समानता ${match.similarity}%</span><div class="pcard-sizes">${stock}</div><button type="button" class="btn-secondary visual-open-product" data-sku="${esc(product.sku)}">यह सही डिज़ाइन है</button></div></article>`;
+    }).join("")}</div>`;
+    results.querySelectorAll(".visual-open-product").forEach((button) => button.addEventListener("click", async () => {
+      try {
+        const product = await getJSON(`${API}/products/${encodeURIComponent(button.dataset.sku)}`);
+        renderScanProduct(product);
+        setVisualMessage(`${product.name} चुना गया। नीचे हर साइज़ का लाइव स्टॉक है।`, "success");
+      } catch (_) { setVisualMessage("चुना हुआ प्रोडक्ट नहीं खुल पाया।", "error"); }
+    }));
+    setVisualMessage("पाँच सबसे मिलती-जुलती डिज़ाइन दिखाई गई हैं। स्टॉक अपडेट से पहले सही डिज़ाइन चुनें।", "success");
+  } catch (error) {
+    results.hidden = true;
+    setVisualMessage(error.message || "तस्वीर से खोज पूरी नहीं हुई। दूसरी साफ़ फोटो आज़माएँ।", "error");
+  }
+}
+
+$("visual-camera-toggle")?.addEventListener("click", toggleVisualCamera);
+$("visual-capture")?.addEventListener("click", captureVisualPhoto);
+$("visual-upload")?.addEventListener("change", (event) => chooseVisualFile(event.target.files?.[0]));
+$("visual-clear")?.addEventListener("click", () => {
+  visualSelectedFile = null;
+  if (visualPreviewUrl) URL.revokeObjectURL(visualPreviewUrl);
+  visualPreviewUrl = null;
+  $("visual-preview").removeAttribute("src");
+  $("visual-preview-wrap").hidden = true;
+  $("visual-results").hidden = true;
+  setVisualMessage("फोटो चुनें या कैमरे से लें।");
+});
+
+// ================================================================ //
 // BULK STOCK COUNT
 // ================================================================ //
 function updateBulkDownloadLink() {
@@ -1650,12 +1765,52 @@ function openAssistant({ speakGreeting = true, focusInput = true, greetingText =
   if (focusInput) $("assistant-chat-input")?.focus({ preventScroll: true });
 }
 
+function dishaAutomationHelp() {
+  return "आप कह सकती हैं: ‘डैशबोर्ड खोलो’, ‘प्रोडक्ट खोलो’, ‘स्कैनर खोलो’, ‘अलर्ट दिखाओ’, ‘रीऑर्डर सूची खोलो’, ‘ऑर्डर खोलो’, ‘बल्क स्टॉक खोलो’, ‘हिस्ट्री दिखाओ’, ‘आज की बिक्री बताओ’, या ‘ऐप का स्टेटस बताओ’। स्टॉक या ऑर्डर बदलने से पहले मैं हमेशा पुष्टि माँगूँगी।";
+}
+
+async function runDishaLocalAutomation(message) {
+  const text = String(message || "").trim().toLocaleLowerCase("hi-IN");
+  const moveTo = (view, reply) => { switchView(view); return reply; };
+  if (/^(?:voice\s+commands?|commands?|automation|help\s+commands?)\b|(?:कमान्ड|कमांड|आदेश|ऑटोमेशन).*(?:बताओ|दिखाओ|help)/u.test(text)) return dishaAutomationHelp();
+  if (/(?:dashboard|home|overview|डैशबोर्ड|होम).*(?:kholo|open|dikhao|दिखाओ|खोलो)|^(?:dashboard|home|डैशबोर्ड)$/u.test(text)) return moveTo("dashboard", "डैशबोर्ड खोल दिया है। यहाँ इन्वेंटरी का लाइव सारांश है।");
+  if (/(?:products?|catalog|प्रोडक्ट|कैटलॉग).*(?:kholo|open|dikhao|दिखाओ|खोलो)|^(?:products?|प्रोडक्ट)$/u.test(text)) return moveTo("products", "प्रोडक्ट सूची खोल दी है। नाम, रंग या SKU से खोज सकते हैं।");
+  if (/(?:scanner|scan|camera|स्कैनर|कैमरा).*(?:kholo|open|dikhao|दिखाओ|खोलो)|^(?:scanner|scan|स्कैनर)$/u.test(text)) return moveTo("scan", "स्कैन पेज खोल दिया है। QR/बारकोड स्कैन करें या नाम से प्रोडक्ट खोजें। कैमरे के लिए browser permission Allow करना होगा।");
+  if (/(?:alerts?|low stock|अलर्ट|लो स्टॉक).*(?:kholo|open|dikhao|दिखाओ|खोलो)|^(?:alerts?|अलर्ट)$/u.test(text)) return moveTo("alerts", "स्टॉक अलर्ट खोल दिए हैं।");
+  if (/(?:reorder|restock|रीऑर्डर|रीस्टॉक).*(?:kholo|open|dikhao|दिखाओ|खोलो)|^(?:reorder|रीऑर्डर)$/u.test(text)) return moveTo("reorder", "रीऑर्डर सूची खोल दी है।");
+  if (/(?:orders?|order processing|ऑर्डर).*(?:kholo|open|dikhao|दिखाओ|खोलो)|^(?:orders?|ऑर्डर)$/u.test(text)) return moveTo("orders", "ऑर्डर पेज खोल दिया है। भेजने से पहले पुष्टि जरूरी है।");
+  if (/(?:bulk stock|bulk count|bulk|बल्क स्टॉक|बल्क काउंट).*(?:kholo|open|dikhao|दिखाओ|खोलो)|^(?:bulk|बल्क)$/u.test(text)) return moveTo("bulk", "बल्क स्टॉक काउंट खोल दिया है।");
+  if (/(?:history|recent activity|हिस्ट्री|इतिहास).*(?:kholo|open|dikhao|दिखाओ|खोलो)|^(?:history|हिस्ट्री|इतिहास)$/u.test(text)) return moveTo("history", "स्टॉक बदलाव का इतिहास खोल दिया है।");
+  if (isDailySalesRequest(text)) {
+    try { const summary = await getJSON(`${API}/analytics/daily-sales`); switchView("dashboard"); return formatDailySalesSummary(summary); }
+    catch (_) { return "आज की बिक्री का सारांश अभी नहीं मिल पाया। थोड़ी देर बाद फिर पूछें।"; }
+  }
+  if (/(?:app|inventory|system|एप|इन्वेंटरी|सिस्टम).*(?:status|स्थिति|कैसी है|summary|सारांश)/u.test(text)) {
+    try {
+      const summary = await getJSON(`${API}/summary`);
+      switchView("dashboard");
+      return `अभी ${summary.products} डिज़ाइन और ${summary.variants} साइज़ हैं। ${summary.ok} स्टॉक में, ${summary.low} कम स्टॉक, ${summary.out} स्टॉक खत्म, और ${summary.open_alerts} खुले अलर्ट हैं।`;
+    } catch (_) { return "ऐप का स्टेटस अभी नहीं मिल पाया। थोड़ी देर बाद फिर पूछें।"; }
+  }
+  return null;
+}
+
 async function sendAssistantMessage(message, selectedSku = null, { fromVoice = false } = {}) {
   const clean = String(message || "").trim().slice(0, 500);
   if (!clean) return;
   if (isNewConversationRequest(clean)) { startNewAssistantConversation({ fromVoice }); return; }
   if (assistantBusy) return;
   if (handlePendingAssistantConfirmation(clean)) return;
+  const localReply = await runDishaLocalAutomation(clean);
+  if (localReply) {
+    addAssistantMessage("user", clean);
+    assistantHistory.push({ role: "user", content: clean });
+    assistantHistory.push({ role: "assistant", content: localReply });
+    saveAssistantHistory();
+    addAssistantMessage("assistant", localReply);
+    speakAssistantMessage(localReply);
+    return;
+  }
   assistantBusy = true;
   const requestSequence = ++assistantRequestSequence;
   const requestSessionId = assistantSessionId;
@@ -1849,10 +2004,11 @@ async function startDishaMic() {
     assistantPaused = true;
     assistantWakeEnabled = false;
     assistantWakeArmed = false;
-    updateDishaListeningUI("Microphone permission needed · allow it in browser settings");
+    const reason = error?.name === "NotAllowedError" || error?.name === "SecurityError" ? "माइक की अनुमति दें" : error?.name === "NotFoundError" ? "माइक नहीं मिला · इनपुट डिवाइस चुनें" : "माइक चालू नहीं हुआ · फिर से दबाएँ";
+    updateDishaListeningUI(reason);
     if (!assistantPermissionNoticeShown) {
       assistantPermissionNoticeShown = true;
-      addAssistantMessage("system", "Disha ko microphone permission chahiye. Browser ke address-bar site controls mein Microphone ko Allow karein, phir Disha ko dobara tap karein. Earbuds connected hon to unka mic system ke input device mein select karein.");
+      addAssistantMessage("system", error?.name === "NotFoundError" ? "माइक्रोफ़ोन नहीं मिला। लैपटॉप/फोन या ईयरबड का माइक जोड़ें और सिस्टम की इनपुट सेटिंग में चुनें।" : "दिशा को माइक्रोफ़ोन की अनुमति चाहिए। ब्राउज़र के साइट नियंत्रण में Microphone को Allow करें, फिर दिशा को दोबारा दबाएँ।");
     }
   }
 }
@@ -1913,7 +2069,7 @@ function startDishaUtteranceRecording() {
 async function transcribeDishaUtterance(blob, filename) {
   if (!blob || blob.size < 900 || assistantPaused) return;
   assistantVoiceProcessing = true;
-  updateDishaListeningUI("Understanding your Hindi/English…");
+  updateDishaListeningUI("आपकी बात समझ रही हूँ…");
   try {
     const form = new FormData();
     form.append("file", blob, filename);
@@ -1929,7 +2085,7 @@ async function transcribeDishaUtterance(blob, filename) {
     }
   } finally {
     assistantVoiceProcessing = false;
-    if (!assistantPaused) updateDishaListeningUI(assistantWakeArmed ? "Mic on · say ‘Hi Disha’" : "Listening · speak Hindi or English");
+    if (!assistantPaused) updateDishaListeningUI(assistantWakeArmed ? "‘दिशा’ बोलें" : "सुन रही हूँ · हिंदी में बोलें");
   }
 }
 
@@ -2027,6 +2183,7 @@ function formatDailySalesSummary(summary) {
 }
 
 $("assistant-sales-summary")?.addEventListener("click", () => sendAssistantMessage("Aaj ki dispatched sales ka short summary batao."));
+$("assistant-automation-help")?.addEventListener("click", () => sendAssistantMessage("आवाज़ के आदेश बताओ।"));
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden" && !assistantPaused) setDishaPaused(true);
 });

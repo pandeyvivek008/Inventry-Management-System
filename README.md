@@ -6,7 +6,8 @@ importer for your marketplace seller-listings export, Excel/CSV order deduction 
 matches on your actual marketplace SKU codes, QR-code scan-to-recount, bulk physical
 stock counting, Excel bulk product/size import, automatic low-stock alerts, a daily reorder list, a searchable
 **Products** view with photo upload and delete, a modern Tailwind CSS interface, and a
-designed (not-yet-trained) path to photo-based stock updates.
+Hindi conversational Disha assistant, safe voice stock/product operations, and
+photo-to-catalog visual search with size-wise live stock.
 
 ## 1. Architecture
 
@@ -35,7 +36,9 @@ SERVICE LAYER  backend/services/
   reorder_service       pending marketplace orders -> a shortage picklist / vendor-ready reorder list
   barcode_service        one Code128 barcode per design; scan it to open all
                        sizes together
-  ai_inventory_service   Phase 2 - designed, not yet trained (see #6)
+  assistant_service      Gemini/OpenAI intent parsing or optional self-hosted Ollama,
+                         Hindi transcription fallback and local Piper speech output
+  visual_search_service  local photo matching or indexed PostgreSQL/pgvector search
         |  SQLAlchemy ORM
 DATA LAYER  backend/models.py
   SQLite file today (inventory.db) -> PostgreSQL later via one env var
@@ -204,63 +207,42 @@ dispatched, use **Mark This Batch as Dispatched**; only then is physical stock d
   appending the style id), and one design with two rows both claiming the same size
   (kept the first, flagged the rest for you to check in your seller panel).
 
-## 7. Phase 2 - AI photo-to-inventory (designed, not yet trained)
+## 7. Disha AI and visual product search
 
 ### Conversational stock assistant
 
-The floating Disha assistant uses OpenAI first when both keys are configured,
-and automatically retries Gemini if OpenAI fails. If only one key is configured,
-it uses that provider. It interprets Hindi, Hinglish, English, and casual
-conversation, then the app resolves inventory requests against its own catalog
-and stock ledger. Inventory and product changes are validated by the app and
-shown for confirmation; the model does not write directly to the database.
+The floating Disha assistant understands spoken Hindi, Romanized Hindi, and
+Hinglish, then the app resolves inventory requests against its own catalog and
+stock ledger. Inventory and product changes are validated by the app and shown
+for confirmation; the model does not write directly to the database.
 
 Configure `OPENAI_API_KEY` as a **Railway app-service variable** to use OpenAI.
-`OPENAI_MODEL` defaults to `gpt-5-mini` and can be overridden. Optional
-`AI_PROVIDER=openai` forces OpenAI; `AI_PROVIDER=gemini` forces Gemini; the
-default `auto` prefers OpenAI and falls back to Gemini when both keys are set.
-Never place API keys in HTML, JavaScript, Git, or screenshots. Provider
-errors show a safe HTTP status and the relevant next step; manual inventory
-tools continue to work when an AI provider is unavailable.
+`AI_PROVIDER=gemini` keeps the existing Gemini setup. `AI_PROVIDER=auto`
+prefers OpenAI and falls back to Gemini for chat/audio when both keys are set.
+Optional `AI_PROVIDER=local` routes the structured Hindi intent to Ollama and
+voice input/output to separately hosted Whisper-compatible and Piper services.
+Never place API keys in HTML, JavaScript, Git, or screenshots. Local setup and
+the deployment boundary are documented in [SELF_HOSTED_AI_HI.md](SELF_HOSTED_AI_HI.md).
 
 Chat history currently stays in that browser's local storage. It is not shared
 between browsers or devices; user accounts and server-side chat history are not
-implemented yet. Disha's microphone starts only after the user taps the robot
-button; it does not listen on page load or use a wake word. Allow microphone
-access, then speak Hindi, Hinglish, or English in normal sentences. A persistent
-media stream avoids browser SpeechRecognition's repeated mic restarts. OpenAI
-transcription and built-in speech generation use the app-service key; replies
-fall back to the device voice if speech generation is unavailable. Say
+implemented yet. Disha's microphone starts only after the user opens/taps Disha;
+browser permission is required. Speech transcription is Hindi-only. Gemini's
+temporary audio 5xx errors retry a bounded number of times, then use local
+Whisper if configured. Say
 **haan/yes** to confirm a pending action or **nahi/no** to cancel. The mic pauses
 when Disha is closed or the tab goes to the background. Daily sales summaries
 count dispatched inventory units (not pending orders); the app does not currently
 store sales prices or revenue.
 
-Hindi/Hinglish examples, confirmation steps, photo controls, microphone and
-earbud setup, and troubleshooting are in the [Disha user manual](DISHA_USER_MANUAL_HI.md).
-The [Disha architecture guide](DISHA_AI_ARCHITECTURE_HI.md) explains the model,
-safe CRUD path, local-laptop setup, and why the linked NMT translation notebooks
-are not suitable conversational inventory models.
+Hindi examples, confirmation steps, photo controls, microphone and earbud setup,
+and troubleshooting are in [VOICE_AUTOMATION_HI.md](VOICE_AUTOMATION_HI.md).
 
-The full design, a **working and tested** nearest-neighbor matching algorithm, and
-exact activation steps are in `backend/services/ai_inventory_service.py`. Short
-version, confirmed against real photos of your rack during development:
-
-- **Identifying which design is in a photo** - reliable with today's models
-  (CLIP-style image embeddings compared against one reference embedding per design).
-- **Counting exact pieces in a stack of folded, identical garments from one photo** -
-  not reliably solved by computer vision alone; there's no visible boundary between
-  piece 3 and piece 4 in a folded stack, and a model-worn "listing" photo looks very
-  different from a folded, poly-wrapped warehouse photo of the same design.
-- **The workflow this is built for:** camera identifies the design (reliable) -> system
-  shows a best-effort suggested count -> one tap confirms or corrects it before it's
-  saved. A more reliable alternative worth considering: the QR labels already built for
-  Scan & Recount are a more dependable route to an exact count than image-based
-  counting ever will be.
-- Not wired into a live endpoint: it needs model weights downloaded on a machine with
-  internet access (this build environment didn't have that) and 100-200 of your own
-  rack photos to fine-tune detection. The matching *algorithm itself* is implemented
-  and unit-tested with synthetic data; only the vision model connection is left.
+The Scan & Recount page also includes a basic local image matching shortlist:
+it compares colour histograms and perceptual hashes against saved product photos.
+It is not a trained fashion model or a guarantee; employees confirm the product
+before using the stock editor. Details and PostgreSQL index setup are in
+[VISUAL_PRODUCT_SCANNER_HI.md](VISUAL_PRODUCT_SCANNER_HI.md).
 
 ## 8. What's tested
 

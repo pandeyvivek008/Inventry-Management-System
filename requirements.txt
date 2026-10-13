@@ -17,3 +17,4 @@ psycopg[binary]>=3.1   # PostgreSQL driver - needed once DATABASE_URL points at 
 # ultralytics
 
 qrcode[pil]>=7.4
+redis>=5.0
