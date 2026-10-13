@@ -1,27 +1,41 @@
 # Railway: SigLIP 2 visual product search
 
-This deploy package switches the visual matcher from generic CLIP to Google's public `google/siglip2-base-patch16-224` image-text encoder and stores versioned 768-dimensional vectors for product-linked reference photos. SigLIP 2 is multilingual and supports image retrieval; it is not fine-tuned on Twins Lady's catalog. Use actual catalog photos to set thresholds before treating any match as confirmed. Model weights are downloaded from Hugging Face at first use unless already cached.
+The app calls a separate, private Railway service for Google's public `google/siglip2-base-patch16-224` image encoder. The app remains on its small core dependency set, so model startup/inference does not block stock and order requests. The service downloads public model weights automatically at startup; no Hugging Face token is needed. Model files persist in a Railway volume. The model is general-purpose, not fine-tuned on Twins Lady photos.
 
 ## Before enabling on production
 
 1. Deploy first to a staging Railway environment with a copy of the catalog and image volume. Do not run test uploads or index rebuilds against a production database without a restorable backup and an approved maintenance plan.
-2. Give the app persistent storage for product images and model cache. Example volume mount `/data` with:
+2. A PostgreSQL service showing **Online** is not yet proof that the app is using it. The previous Railway shell output showed `DATABASE_URL` was unset and `/app/backend/inventory.db` existed. Do not simply point the app at a new empty Postgres database: SQLite rows and uploaded photos do not move automatically. Back up and migrate the catalog, variants, orders, transaction history, and photo files first; verify counts in the target DB; only then set the app variable `DATABASE_URL=${{pgvector.DATABASE_URL}}` (replace `pgvector` with the exact service name). Do this in staging first. This visual-model service never connects to or edits the inventory database.
+
+3. Keep product photos on a persistent volume mounted to the app service. Do not put the model cache on the app service. For the model service create a separate Railway service from this same GitHub repo and set its **Root Directory** to `/backend`.
+
+4. On the model service add a persistent volume mounted at `/data`, and set:
 
    ```text
-   PRODUCT_IMAGE_DIR=/data/product_images
    HF_HOME=/data/huggingface
-   TRANSFORMERS_CACHE=/data/huggingface/transformers
+   VISUAL_AI_API_KEY=<generate-a-long-random-secret>
    ```
 
-3. Install CPU PyTorch and visual dependencies in the Railway Build Command:
+   Use the same random secret in both services. Keep it in Railway Variables, never `.env` committed to Git. `HF_HOME` stores automatically downloaded weights between deploys.
+
+5. In the model service set Build Command:
 
    ```sh
-   pip install --index-url https://download.pytorch.org/whl/cpu torch && pip install -r requirements.txt -r requirements-visual-ai.txt
+   pip install --index-url https://download.pytorch.org/whl/cpu torch && pip install -r requirements-visual-ai.txt
    ```
 
-   Keep the existing app start command. This model package is substantially heavier than the old CLIP encoder; confirm the service can build, start, load the model, and keep enough memory for the rest of the app before rolling it out. The Hugging Face model card lists roughly 1.5 GB of weight files, before Python/PyTorch runtime memory.
+   Set Start Command to `uvicorn visual_model_service:app --host 0.0.0.0 --port $PORT`.
 
-4. Set the existing conservative starting values, then calibrate them on a labeled validation set:
+6. In the app service set:
+
+   ```text
+   VISUAL_AI_URL=http://${{VisualModel.RAILWAY_PRIVATE_DOMAIN}}:${{VisualModel.PORT}}
+   VISUAL_AI_API_KEY=<the-same-long-random-secret>
+   ```
+
+   Replace `VisualModel` with the exact Railway service name. Railway's private service reference variables are documented in [Working with Domains](https://docs.railway.com/networking/domains/working-with-domains). The model service should not have a public domain. Check `/health` from the service logs or Railway private network; readiness is returned only after model weights load. First deployment downloads the model and can take several minutes. Keep adequate RAM for PyTorch; do not add these heavy packages to the inventory app service.
+
+7. Set the existing conservative starting values, then calibrate them on a labeled validation set:
 
    ```text
    VISUAL_MATCH_MIN_SCORE=0.82
@@ -34,16 +48,16 @@ This deploy package switches the visual matcher from generic CLIP to Google's pu
 
 ## Index existing catalog photos
 
-After the app deploys with the new `product_images` table and the persistent image volume is mounted, run once from the same Railway service/container environment:
+After the app deploys with the `product_images` table and persistent photo volume mounted, run once from the **app service** container (not the model service):
 
 ```sh
 cd backend
 python scripts/rebuild_visual_index.py
 ```
 
-The script links legacy `products.image_path` records to their actual product ID, then writes embeddings to `product_visual_embeddings_siglip2_v1`. It does not update stock, orders, or transaction history. If the script skips any photos, fix the file/volume issue and rerun it before relying on visual search.
+The script links legacy `products.image_path` records to their actual product ID, then requests embeddings from `VISUAL_AI_URL` and writes them to `product_visual_embeddings_siglip2_v1`. It does not update stock, orders, or transaction history. It must use the app's real PostgreSQL `DATABASE_URL`, not its SQLite default. If it skips any photos, fix the volume/path/service issue and rerun it before relying on visual search.
 
-Each new product's first photo is the main catalog photo. Add up to seven extra genuine reference views using the Add Product photo picker; they are linked to the same product record and indexed separately. Replacing the main photo refreshes its vector. A failed index leaves the saved image in place, logs the failure, and causes the search to fail closed until reindexing succeeds.
+Each product's first photo is the main catalog photo. Add up to seven extra genuine reference views using the product photo picker; they are linked to the same product and indexed separately. Replacing the main photo refreshes its vector. A failed index leaves the saved image in place, logs the failure, and causes the search to fail closed until reindexing succeeds.
 
 ## Staging acceptance
 
@@ -52,6 +66,10 @@ Each new product's first photo is the main catalog photo. Add up to seven extra 
 - Verify each result shows the product identity and current size-wise stock from the database.
 - Verify the scan endpoint never changes stock or creates products.
 - If the model/index is unavailable, manual product search and recount remain available.
+
+## Fine-tuning data
+
+See [VISUAL_FINE_TUNING_HI.md](VISUAL_FINE_TUNING_HI.md) for the supplied photo labels and why they are not enough to claim a reliable fine-tuned model. Add labeled product references first; do not call reference indexing “training.”
 
 ## Rollback and limits
 

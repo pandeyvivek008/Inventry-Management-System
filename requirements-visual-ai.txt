@@ -1,6 +1,0 @@
-# Install CPU PyTorch first using the official CPU wheel index; see Railway runbook.
-# SigLIP 2 Base is a general multilingual vision-language encoder, not a garment-finetuned model.
-transformers>=4.51.1,<5
-accelerate>=1.2,<2
-safetensors>=0.5,<1
-sentencepiece>=0.2,<1

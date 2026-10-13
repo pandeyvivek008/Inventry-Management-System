@@ -77,8 +77,8 @@ def _load_encoder():
             from transformers import AutoModel, AutoProcessor
         except ImportError as exc:
             raise ImageModelUnavailable(
-                "SigLIP 2 visual AI is not installed on this service. Install requirements-visual-ai.txt, "
-                "then rebuild the product image index."
+                "SigLIP 2 runtime is not installed in this process. Configure the private visual-model service "
+                "or install the model-service dependencies, then rebuild the product image index."
             ) from exc
         try:
             processor = AutoProcessor.from_pretrained(MODEL_ID)

@@ -25,10 +25,11 @@ Pura Railway setup, exact service variables, persistent volume, deployment ke ba
 ## Local testing
 
 ```powershell
-# Root repository folder se, optional CPU model install
+# Root repository folder se. This installs the heavy encoder only for a local
+# single-process test; on Railway use the separate visual-model service above.
 $env:DATABASE_URL = "sqlite:///./test_visual_match.db"
-pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
-pip install -r requirements.txt -r requirements-visual-ai.txt
+pip install --index-url https://download.pytorch.org/whl/cpu torch
+pip install -r backend/requirements-visual-ai.txt
 Set-Location backend
 python -m uvicorn main:app --host 127.0.0.1 --port 8000
 ```

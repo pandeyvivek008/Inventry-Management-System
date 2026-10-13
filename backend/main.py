@@ -12,14 +12,14 @@ from datetime import datetime, timezone, timedelta
 from io import BytesIO
 from pathlib import Path
 
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Query, Request
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Query, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse, RedirectResponse, Response
 from sqlalchemy import case, func, or_, delete as sa_delete, inspect as sa_inspect, text
 from sqlalchemy.orm import Session, joinedload, selectinload, contains_eager
 
-from database import Base, engine, get_db
+from database import Base, engine, get_db, SessionLocal
 import models
 import schemas
 from services import (
@@ -30,6 +30,30 @@ from services import (
 
 Base.metadata.create_all(bind=engine)
 logger = logging.getLogger(__name__)
+
+
+def _index_product_photo_background(product_id: int, image_id: int, content: bytes, image_path: str) -> None:
+    """Index a saved catalog photo after the upload response has been returned.
+
+    SigLIP's first model load can take several seconds on a small Railway
+    service. Photo saving and inventory creation must not wait for that work.
+    """
+    db = SessionLocal()
+    path = Path(image_path)
+    try:
+        visual_search_service.index_product_image(db, product_id, image_id, content, path)
+        db.commit()
+        visual_search_service.clear_visual_cache()
+    except Exception as exc:
+        db.rollback()
+        try:
+            visual_search_service.remove_product_embedding(db, product_id, image_id)
+            db.commit()
+        except Exception:
+            db.rollback()
+        logger.warning("Product photo saved; visual indexing queued for later rebuild (%s).", type(exc).__name__)
+    finally:
+        db.close()
 
 
 def migrate_legacy_brand_data_explicitly(target_engine=engine):
@@ -837,7 +861,12 @@ def update_variant(variant_code: str, payload: schemas.VariantUpdate, db: Sessio
 
 
 @app.post("/api/products/{sku}/image")
-def upload_product_image(sku: str, file: UploadFile = File(...), db: Session = Depends(get_db)):
+def upload_product_image(
+    sku: str,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
     product = _get_product_by_sku(db, sku)
     content = file.file.read(visual_match_service.MAX_SCAN_BYTES + 1)
     try:
@@ -865,22 +894,7 @@ def upload_product_image(sku: str, file: UploadFile = File(...), db: Session = D
         db.rollback()
         dest.unlink(missing_ok=True)
         raise
-    # Visual indexing is optional and must never prevent a valid product photo
-    # from being saved. If re-indexing fails, remove the prior vector so it can
-    # never point to the replaced photo.
-    try:
-        visual_search_service.index_product_image(db, product.id, primary_ref.id, content, dest)
-        db.commit()
-        visual_search_service.clear_visual_cache()
-    except Exception as exc:
-        db.rollback()
-        try:
-            visual_search_service.remove_product_embedding(db, product.id, primary_ref.id)
-            db.commit()
-        except Exception:
-            db.rollback()
-        visual_search_service.clear_visual_cache()
-        logger.warning("Product photo saved but visual indexing failed (%s).", type(exc).__name__)
+    background_tasks.add_task(_index_product_photo_background, product.id, primary_ref.id, content, str(dest))
     if old_path:
         try:
             old_name = Path(old_path).name
@@ -893,6 +907,7 @@ def upload_product_image(sku: str, file: UploadFile = File(...), db: Session = D
 @app.post("/api/products/{sku}/images")
 async def upload_product_reference_images(
     sku: str,
+    background_tasks: BackgroundTasks,
     files: list[UploadFile] = File(...),
     db: Session = Depends(get_db),
 ):
@@ -929,17 +944,9 @@ async def upload_product_reference_images(
             dest.unlink(missing_ok=True)
         raise
 
-    indexed = 0
     for image, content, dest in saved:
-        try:
-            visual_search_service.index_product_image(db, product.id, image.id, content, dest)
-            db.commit()
-            indexed += 1
-        except Exception as exc:
-            db.rollback()
-            logger.warning("Reference photo saved but SigLIP indexing failed (%s).", type(exc).__name__)
-    visual_search_service.clear_visual_cache()
-    return {"saved": len(saved), "indexed": indexed, "message": "Photos saved and linked to this product. Search indexing may require a reindex if unavailable."}
+        background_tasks.add_task(_index_product_photo_background, product.id, image.id, content, str(dest))
+    return {"saved": len(saved), "queued_for_indexing": len(saved), "message": "Photos saved. Visual indexing will finish in the background."}
 
 
 @app.post("/api/products/visual-match")

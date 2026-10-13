@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Inventory Management System</title>
 <script>try{if(localStorage.getItem("inventoryTheme")==="dark")document.documentElement.dataset.theme="dark"}catch{}</script>
-<link rel="stylesheet" href="style.css?v=alert-pager-manual-20261013">
+<link rel="stylesheet" href="style.css?v=product-size-photo-disha-20261014">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
 </head>
 <body>
@@ -259,7 +259,7 @@
 
 <!-- ================= ADD PRODUCT MODAL ================= -->
 <div id="add-product-modal" class="modal-backdrop" hidden>
-  <div class="modal-card">
+  <div class="modal-card add-product-card">
     <div class="modal-head"><h2>Add Product</h2><button id="close-add-product" class="icon-btn" aria-label="Close"><i class="fa-solid fa-xmark"></i></button></div>
     <div class="add-mode-tabs" role="tablist" aria-label="Add products">
       <button type="button" class="add-mode-tab is-active" data-add-mode="single" role="tab" aria-selected="true"><i class="fa-solid fa-box"></i> Single product</button>
@@ -269,13 +269,19 @@
       <div class="product-main-fields">
         <div class="photo-pick">
           <label class="photo-pick-box" id="add-photo-box">
-            <span id="add-photo-placeholder"><i class="fa-solid fa-image"></i><br><small>Add photo</small></span>
-            <img id="add-photo-preview" hidden>
-            <input type="file" id="add-photo-input" accept="image/jpeg,image/png,image/webp" multiple hidden>
+            <span id="add-photo-placeholder"><i class="fa-solid fa-camera"></i><br><strong>Add front photo</strong><small>Main catalog image</small></span>
+            <img id="add-photo-preview" alt="Front view preview" hidden>
+            <input type="file" id="add-photo-input" accept="image/jpeg,image/png,image/webp" hidden>
           </label>
+          <div class="photo-pick-note"><strong id="photo-selection-count">0 of 8 photos</strong><span>Front photo is used as the main product image.</span></div>
         </div>
         <div class="product-fields">
-          <p class="hint">Add front, back, and close-up photos (up to 8) to improve visual product search. The first photo is the main catalog image.</p>
+          <div class="product-photo-angles" aria-label="Product photo angles">
+            <label class="photo-angle-card" for="add-back-photo-input"><span class="photo-angle-thumb" id="add-back-photo-thumb"><i class="fa-solid fa-shirt"></i></span><span><strong>Back photo</strong><small id="add-back-photo-label">Add back view</small></span><input type="file" id="add-back-photo-input" accept="image/jpeg,image/png,image/webp" hidden></label>
+            <label class="photo-angle-card" for="add-closeup-photo-input"><span class="photo-angle-thumb" id="add-closeup-photo-thumb"><i class="fa-solid fa-magnifying-glass-plus"></i></span><span><strong>Close-up</strong><small id="add-closeup-photo-label">Fabric or detail</small></span><input type="file" id="add-closeup-photo-input" accept="image/jpeg,image/png,image/webp" hidden></label>
+            <label class="photo-angle-card" for="add-extra-photo-input"><span class="photo-angle-thumb" id="add-extra-photo-thumb"><i class="fa-solid fa-images"></i></span><span><strong>Other views</strong><small id="add-extra-photo-label">Add up to 5 more</small></span><input type="file" id="add-extra-photo-input" accept="image/jpeg,image/png,image/webp" multiple hidden></label>
+          </div>
+          <p class="hint product-photo-hint">Use clear front, back, and fabric-detail photos. Up to 8 photos can help visual product search.</p>
           <label class="field">SKU / Style Code<input name="sku" required placeholder="e.g. STYLE_001" class="input"></label>
           <label class="field">Product Name<input name="name" required placeholder="e.g. Teal Zari Suit" class="input"></label>
           <label class="field">Category<input name="category" placeholder="Kurta Sets / Salwar Suits" class="input"></label>
@@ -325,8 +331,8 @@
   <aside id="assistant-photo-preview" class="assistant-photo-preview" aria-label="Disha product photo preview" hidden></aside>
   <section id="assistant-panel" class="assistant-panel" aria-label="Disha Inventory Assistant" hidden>
     <header class="assistant-panel-head">
-      <span class="assistant-avatar"><i class="fa-solid fa-robot"></i></span>
-      <div class="assistant-head-copy"><strong>Disha · Inventory Assistant</strong><small><span class="assistant-online-dot"></span><span id="assistant-state">Ready to help</span></small></div>
+      <span class="assistant-avatar"><img src="assets/disha-mascot.jpg" alt="Disha AI assistant"></span>
+      <div class="assistant-head-copy"><strong>Disha · Inventory Assistant</strong><small><span class="assistant-online-dot"></span><span id="assistant-state">Ready to help</span></small><small class="assistant-powered">Powered by HackerRoom</small></div>
       <button id="assistant-new-chat" class="assistant-head-btn" type="button" aria-label="Start a new conversation" title="New conversation"><i class="fa-solid fa-plus"></i></button>
       <button id="assistant-history-button" class="assistant-head-btn" type="button" aria-label="Conversation history" title="Conversation history"><i class="fa-solid fa-clock-rotate-left"></i></button>
       <button id="assistant-pause" class="assistant-head-btn assistant-pause-btn" type="button" aria-label="Pause Disha voice and listening" title="Pause Disha voice and listening"><i class="fa-solid fa-pause"></i></button>
@@ -343,8 +349,24 @@
     <p class="assistant-footnote">Products, stock, alerts, reorder, orders aur sales poochhein · stock update confirm ke baad · Pause voice rokta hai</p>
   </section>
   <button id="assistant-launcher" class="assistant-launcher" type="button" aria-label="Open Disha Inventory Assistant" title="Talk with Disha" aria-expanded="false">
-    <i class="fa-solid fa-robot"></i><span class="assistant-launcher-dot"></span>
+    <img src="assets/disha-mascot.jpg" alt=""><span class="assistant-launcher-dot"></span><span class="assistant-launcher-label">Disha AI</span>
   </button>
+</div>
+
+<div id="add-size-modal" class="modal-backdrop" hidden>
+  <section class="modal-card modal-sm add-size-card" role="dialog" aria-modal="true" aria-labelledby="add-size-title">
+    <header class="modal-head"><div><h2 id="add-size-title">Add size</h2><p id="add-size-product-name" class="hint"></p></div><button id="close-add-size" class="icon-btn" type="button" aria-label="Close"><i class="fa-solid fa-xmark"></i></button></header>
+    <form id="add-size-form">
+      <label class="field">Size / Variant<input id="new-size-value" class="input" maxlength="20" required placeholder="e.g. S, XXL, 32"></label>
+      <div class="add-size-fields">
+        <label class="field">Starting stock<input id="new-size-stock" class="input" type="number" min="0" value="0" inputmode="numeric"></label>
+        <label class="field">Alert below<input id="new-size-threshold" class="input" type="number" min="0" value="5" inputmode="numeric"></label>
+        <label class="field">Target stock<input id="new-size-target" class="input" type="number" min="0" value="20" inputmode="numeric"></label>
+      </div>
+      <p id="add-size-msg" class="msg" aria-live="polite"></p>
+      <footer class="modal-actions-end"><button id="cancel-add-size" class="btn-ghost" type="button">Cancel</button><button id="submit-add-size" class="btn-primary" type="submit"><i class="fa-solid fa-plus"></i> Add size</button></footer>
+    </form>
+  </section>
 </div>
 
 <input id="assistant-photo-input" type="file" accept="image/*" hidden>
@@ -359,6 +381,6 @@
 <div id="toast" class="toast" hidden></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
-<script src="app.js?v=disha-self-hosted-visual-matching-20261013"></script>
+<script src="app.js?v=product-size-photo-disha-20261014"></script>
 </body>
 </html>

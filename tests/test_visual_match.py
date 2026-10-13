@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from PIL import Image  # noqa: E402
 import main  # noqa: E402
 from services import visual_match_service, visual_search_service  # noqa: E402
+import visual_model_service  # noqa: E402
 
 
 def _photo(colour):
@@ -161,8 +162,48 @@ def test_missing_model_fails_closed_instead_of_returning_a_nearest_sku():
     assert "model missing" in response.json()["detail"]
 
 
+def test_remote_visual_model_service_uses_bearer_key_and_validates_vector():
+    photo = _photo((30, 40, 50))
+    expected = [0.0] * visual_match_service.VECTOR_DIMENSIONS
+    expected[0] = 1.0
+    fake_response = type("Response", (), {
+        "json": lambda self: {"model": visual_match_service.MODEL_VERSION, "embedding": expected},
+        "raise_for_status": lambda self: None,
+    })()
+    with patch.dict(os.environ, {
+        "VISUAL_AI_URL": "http://visual-model.railway.internal",
+        "VISUAL_AI_API_KEY": "test-visual-token",
+    }), patch("httpx.post", return_value=fake_response) as post:
+        result = visual_search_service._image_embedding(photo)
+    assert result == tuple(expected)
+    assert post.call_args.kwargs["headers"]["Authorization"] == "Bearer test-visual-token"
+    assert post.call_args.args[0] == "http://visual-model.railway.internal/v1/embed"
+
+    fake_response.json = lambda: {"embedding": [float("nan")] * visual_match_service.VECTOR_DIMENSIONS}
+    with patch.dict(os.environ, {
+        "VISUAL_AI_URL": "http://visual-model.railway.internal",
+        "VISUAL_AI_API_KEY": "test-visual-token",
+    }), patch("httpx.post", return_value=fake_response):
+        try:
+            visual_search_service._image_embedding(photo)
+        except visual_match_service.ImageModelUnavailable:
+            pass
+        else:
+            raise AssertionError("Non-finite remote vectors must fail closed")
+
+    with patch.dict(os.environ, {"VISUAL_AI_API_KEY": "private-service-test-key"}):
+        visual_model_service._authorize("Bearer private-service-test-key")
+        try:
+            visual_model_service._authorize("Bearer wrong-key")
+        except visual_model_service.HTTPException as exc:
+            assert exc.status_code == 401
+        else:
+            raise AssertionError("Visual service must reject a wrong API key")
+
+
 if __name__ == "__main__":
     test_verified_match_returns_real_catalog_identity_and_live_stock()
     test_near_tied_designs_are_ambiguous_not_auto_selected()
     test_invalid_image_is_rejected_and_empty_catalog_is_no_match()
     test_missing_model_fails_closed_instead_of_returning_a_nearest_sku()
+    test_remote_visual_model_service_uses_bearer_key_and_validates_vector()

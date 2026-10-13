@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import time
 from collections import deque
@@ -70,6 +71,45 @@ def _vector_literal(values: tuple[float, ...]) -> str:
     if len(values) != VECTOR_DIMENSIONS:
         raise VisualSearchUnavailable(f"Visual model returned {len(values)} dimensions; expected {VECTOR_DIMENSIONS}.")
     return "[" + ",".join(f"{value:.8f}" for value in values) + "]"
+
+
+def _image_embedding(content: bytes) -> tuple[float, ...]:
+    """Get image features from the isolated model service in production.
+
+    Local development may use the in-process encoder. Railway should set
+    VISUAL_AI_URL so model memory/CPU cannot starve inventory transactions.
+    """
+    url = os.getenv("VISUAL_AI_URL", "").strip().rstrip("/")
+    if not url:
+        return visual_match_service.image_embedding(content)
+
+    import httpx
+
+    api_key = os.getenv("VISUAL_AI_API_KEY", "").strip()
+    if not api_key:
+        raise visual_match_service.ImageModelUnavailable(
+            "VISUAL_AI_API_KEY is required when VISUAL_AI_URL is configured."
+        )
+    try:
+        response = httpx.post(
+            f"{url}/v1/embed",
+            files={"file": ("product-image.jpg", content, "image/jpeg")},
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=float(os.getenv("VISUAL_AI_TIMEOUT_SECONDS", "120")),
+        )
+        response.raise_for_status()
+        raw = response.json().get("embedding")
+        if not isinstance(raw, list) or len(raw) != VECTOR_DIMENSIONS:
+            raise ValueError("Visual model service returned an invalid embedding shape.")
+        values = tuple(float(value) for value in raw)
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError("Visual model service returned non-finite embedding values.")
+        _vector_literal(values)
+        return values
+    except Exception as exc:
+        raise visual_match_service.ImageModelUnavailable(
+            "The visual model service is unavailable or returned an invalid response."
+        ) from exc
 
 
 def _redis():
@@ -174,7 +214,7 @@ def ensure_postgres_index(engine) -> None:
 
 def index_product_image(db, product_id: int, image_id: int, content: bytes, image_path: Path | None = None) -> None:
     """Index one saved reference image; called after its DB row is created."""
-    values = visual_match_service.image_embedding(content)
+    values = _image_embedding(content)
     if _database_is_postgres(db):
         embedding = _vector_literal(values)
         db.execute(text(f"""
@@ -220,7 +260,6 @@ def _postgres_search(db, embedding: tuple[float, ...], limit: int) -> list[Searc
             WHERE e.model_name = :model_name AND p.is_deleted = FALSE
             ORDER BY e.embedding <=> CAST(:embedding AS vector)
             LIMIT :shortlist
-        )
         ), best_reference_per_product AS (
             SELECT product_id, image_id, similarity,
                    ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY similarity DESC) AS rank
@@ -257,7 +296,7 @@ def _development_search(db, embedding: tuple[float, ...], image_dir: Path, limit
                 with _local_embedding_lock:
                     cached = _local_embeddings.get(image.id)
                 if not cached or cached[0] != signature:
-                    ref_embedding = visual_match_service.image_embedding(candidate.read_bytes())
+                    ref_embedding = _image_embedding(candidate.read_bytes())
                     with _local_embedding_lock:
                         _local_embeddings[image.id] = (signature, ref_embedding)
                 else:
@@ -284,7 +323,7 @@ def _decide(hits: list[SearchHit]) -> SearchResult:
 
 def search(db, content: bytes, image_dir: Path, limit: int) -> SearchResult:
     """Rank saved design reference photos. Recognition never modifies inventory."""
-    embedding = visual_match_service.image_embedding(content)
+    embedding = _image_embedding(content)
     if _database_is_postgres(db):
         try:
             hits = _postgres_search(db, embedding, max(limit, 5))

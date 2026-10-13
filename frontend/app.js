@@ -153,9 +153,16 @@ let assistantCurrentPhotoProduct = null;
 let assistantPhotoZoom = 1;
 let assistantAudioPlayer = null;
 let assistantAudioObjectUrl = null;
+function setDishaSpeakingUI(speaking) {
+  document.getElementById("assistant-widget")?.classList.toggle("is-speaking", speaking);
+  const state = document.getElementById("assistant-state");
+  if (state && speaking) state.textContent = "दिशा बोल रही है…";
+  else if (state && !assistantPaused) updateDishaListeningUI();
+}
 function finishAssistantSpeech(speechId) {
   if (speechId !== assistantSpeechId) return;
   assistantSpeaking = false;
+  setDishaSpeakingUI(false);
   assistantIgnoreTranscriptUntil = Date.now() + 900;
   clearTimeout(assistantSpeechGuardTimer);
   assistantAudioPlayer = null;
@@ -194,6 +201,7 @@ async function speakAssistantMessage(message) {
   assistantAudioObjectUrl = null;
   clearTimeout(assistantSpeechGuardTimer);
   assistantSpeaking = true;
+  setDishaSpeakingUI(true);
   try {
     const response = await fetch(`${API}/assistant/speech`, {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -529,16 +537,7 @@ function renderDetail(product, container, opts = {}) {
     }
   }));
 
-  container.querySelector("#seat-add").addEventListener("click", async () => {
-    const size = prompt("New size (e.g. S, M, L, XL, XXL):");
-    if (!size || !size.trim()) return;
-    try {
-      const updated = await apiPost(`${API}/products/${encodeURIComponent(product.sku)}/variants`, { size: size.trim(), initial_stock: 0 });
-      renderDetail(updated, container, opts);
-      showToast(`Size ${size.trim().toUpperCase()} added`);
-      await refreshInventoryViews();
-    } catch (err) { showToast(err.message, true); }
-  });
+  container.querySelector("#seat-add").addEventListener("click", () => openAddSizeModal(product, container, opts));
 
   const photoBox = container.querySelector("#detail-photo-box");
   const photoInput = container.querySelector("#detail-photo-input");
@@ -588,9 +587,63 @@ function renderDetail(product, container, opts = {}) {
   });
 }
 
+let pendingAddSize = null;
+function openAddSizeModal(product, container, opts) {
+  pendingAddSize = { product, container, opts };
+  $("add-size-product-name").textContent = `${product.name} · ${product.sku}`;
+  $("add-size-form").reset();
+  $("new-size-stock").value = "0";
+  $("new-size-threshold").value = "5";
+  $("new-size-target").value = "20";
+  $("add-size-msg").textContent = "";
+  $("add-size-msg").className = "msg";
+  $("submit-add-size").disabled = false;
+  $("add-size-modal").hidden = false;
+  setTimeout(() => $("new-size-value").focus(), 0);
+}
+function closeAddSizeModal() {
+  $("add-size-modal").hidden = true;
+  pendingAddSize = null;
+}
+$("close-add-size")?.addEventListener("click", closeAddSizeModal);
+$("cancel-add-size")?.addEventListener("click", closeAddSizeModal);
+$("add-size-modal")?.addEventListener("click", (event) => {
+  if (event.target.id === "add-size-modal") closeAddSizeModal();
+});
+$("add-size-form")?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const pending = pendingAddSize;
+  const size = $("new-size-value").value.trim();
+  const message = $("add-size-msg"), button = $("submit-add-size");
+  if (!pending || !size) return;
+  button.disabled = true;
+  button.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Adding…';
+  message.textContent = "Saving this size and its stock settings…";
+  message.className = "msg";
+  try {
+    const updated = await apiPost(`${API}/products/${encodeURIComponent(pending.product.sku)}/variants`, {
+      size,
+      initial_stock: Number($("new-size-stock").value) || 0,
+      reorder_threshold: $("new-size-threshold").value === "" ? 5 : Number($("new-size-threshold").value),
+      target_stock_level: $("new-size-target").value === "" ? 20 : Number($("new-size-target").value),
+    });
+    closeAddSizeModal();
+    renderDetail(updated, pending.container, pending.opts);
+    showToast(`Size ${size.toUpperCase()} added`, "success");
+    await refreshInventoryViews();
+  } catch (error) {
+    message.textContent = error.message || "Could not add this size.";
+    message.className = "msg error";
+  } finally {
+    button.disabled = false;
+    button.innerHTML = '<i class="fa-solid fa-plus"></i> Add size';
+  }
+});
+
 // ---------------- Add Product modal ----------------
 let addPhotoFiles = [];
-let addPhotoPreviewToken = 0;
+let addPhotoSlots = { front: null, back: null, closeup: null, extra: [] };
+let addPhotoObjectUrls = [];
 function selectAddMode(mode) {
   const bulk = mode === "bulk";
   $("bulk-product-panel").hidden = !bulk;
@@ -621,26 +674,69 @@ $("close-add-product").addEventListener("click", () => { $("add-product-modal").
 $("add-product-modal").addEventListener("click", (e) => { if (e.target.id === "add-product-modal") $("add-product-modal").hidden = true; });
 
 $("add-photo-box").addEventListener("click", () => $("add-photo-input").click());
-$("add-photo-input").addEventListener("change", () => {
-  const files = Array.from($("add-photo-input").files || []);
-  if (files.length > 8) {
-    $("add-photo-input").value = "";
-    showToast("Choose up to 8 product photos.", "error");
-    return;
+function selectedProductPhotos() {
+  return [addPhotoSlots.front, addPhotoSlots.back, addPhotoSlots.closeup, ...addPhotoSlots.extra].filter(Boolean);
+}
+function makePhotoPreviewUrl(file) {
+  const url = URL.createObjectURL(file);
+  addPhotoObjectUrls.push(url);
+  return url;
+}
+function updatePhotoAngle(role, file) {
+  const key = role === "closeup" ? "closeup" : role;
+  const thumb = $(`add-${key}-photo-thumb`);
+  const label = $(`add-${key}-photo-label`);
+  if (!thumb || !label) return;
+  thumb.replaceChildren();
+  if (file) {
+    const image = document.createElement("img");
+    image.src = makePhotoPreviewUrl(file);
+    image.alt = `${role} product photo preview`;
+    image.onerror = () => { image.remove(); thumb.innerHTML = '<i class="fa-solid fa-image"></i>'; };
+    thumb.appendChild(image);
+    label.textContent = file.name;
+  } else {
+    const icon = document.createElement("i");
+    icon.className = role === "back" ? "fa-solid fa-shirt" : "fa-solid fa-magnifying-glass-plus";
+    thumb.appendChild(icon);
+    label.textContent = role === "back" ? "Add back view" : "Fabric or detail";
   }
+}
+function refreshProductPhotoSelection() {
+  addPhotoFiles = selectedProductPhotos();
+  $("photo-selection-count").textContent = `${addPhotoFiles.length} of 8 photos`;
+  const mainPhoto = addPhotoSlots.front || addPhotoFiles[0] || null;
+  $("add-photo-preview").hidden = !mainPhoto;
+  $("add-photo-placeholder").hidden = Boolean(mainPhoto);
+  if (mainPhoto) $("add-photo-preview").src = makePhotoPreviewUrl(mainPhoto);
+  else $("add-photo-preview").removeAttribute("src");
+  updatePhotoAngle("back", addPhotoSlots.back);
+  updatePhotoAngle("closeup", addPhotoSlots.closeup);
+  $("add-extra-photo-label").textContent = addPhotoSlots.extra.length ? `${addPhotoSlots.extra.length} selected` : "Add up to 5 more";
+}
+function handleProductPhotoInput(event, role) {
+  const files = Array.from(event.target.files || []);
   if (!files.length) return;
-  addPhotoFiles = files;
-  $("add-photo-placeholder").innerHTML = `<i class="fa-solid fa-images"></i><br><small>${files.length} photo${files.length === 1 ? "" : "s"} selected</small>`;
-  const token = ++addPhotoPreviewToken;
-  const reader = new FileReader();
-  reader.onload = () => {
-    if (token !== addPhotoPreviewToken) return;
-    $("add-photo-preview").src = reader.result;
-    $("add-photo-preview").hidden = false;
-    $("add-photo-placeholder").hidden = true;
-  };
-  reader.readAsDataURL(files[0]);
-});
+  const selectedFixed = [addPhotoSlots.front, addPhotoSlots.back, addPhotoSlots.closeup].filter(Boolean).length;
+  if (role === "extra") {
+    const allowed = Math.min(5, Math.max(0, 8 - selectedFixed));
+    addPhotoSlots.extra = files.slice(0, allowed);
+    if (files.length > allowed) showToast("Up to 8 photos total are allowed for one product.", "info");
+  } else {
+    const replacing = Boolean(addPhotoSlots[role]);
+    if (addPhotoFiles.length - (replacing ? 1 : 0) >= 8) {
+      event.target.value = "";
+      showToast("Up to 8 photos total are allowed for one product.", "error");
+      return;
+    }
+    addPhotoSlots[role] = files[0];
+  }
+  refreshProductPhotoSelection();
+}
+$("add-photo-input").addEventListener("change", (event) => handleProductPhotoInput(event, "front"));
+$("add-back-photo-input").addEventListener("change", (event) => handleProductPhotoInput(event, "back"));
+$("add-closeup-photo-input").addEventListener("change", (event) => handleProductPhotoInput(event, "closeup"));
+$("add-extra-photo-input").addEventListener("change", (event) => handleProductPhotoInput(event, "extra"));
 
 function addSizeRow(size = "") {
   const row = document.createElement("div");
@@ -677,11 +773,20 @@ function resetAddForm() {
   $("size-rows").innerHTML = "";
   STANDARD_SIZES.forEach((s) => addSizeRow(s));
   addPhotoFiles = [];
-  ++addPhotoPreviewToken;
+  addPhotoSlots = { front: null, back: null, closeup: null, extra: [] };
+  addPhotoObjectUrls.forEach((url) => URL.revokeObjectURL(url));
+  addPhotoObjectUrls = [];
   $("add-photo-preview").src = "";
   $("add-photo-preview").hidden = true;
   $("add-photo-placeholder").hidden = false;
   $("add-photo-input").value = "";
+  $("add-back-photo-input").value = "";
+  $("add-closeup-photo-input").value = "";
+  $("add-extra-photo-input").value = "";
+  updatePhotoAngle("back", null);
+  updatePhotoAngle("closeup", null);
+  $("add-extra-photo-label").textContent = "Add up to 5 more";
+  $("photo-selection-count").textContent = "0 of 8 photos";
 }
 resetAddForm();
 $("add-size-row").addEventListener("click", () => addSizeRow());
@@ -701,7 +806,7 @@ $("add-product-form").addEventListener("submit", async (e) => {
 
   submitButton.disabled = true;
   submitButton.dataset.originalText = submitButton.textContent;
-  submitButton.textContent = "Saving...";
+  submitButton.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Saving product…';
   try {
     const data = await apiPost(`${API}/products`, {
       sku: form.elements.namedItem("sku").value,
@@ -713,6 +818,7 @@ $("add-product-form").addEventListener("submit", async (e) => {
     if (addPhotoFiles.length) {
       try {
         const fd = new FormData(); fd.append("file", addPhotoFiles[0]);
+        submitButton.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Saving main photo…';
         const imageResponse = await fetch(`${API}/products/${encodeURIComponent(data.sku)}/image`, { method: "POST", body: fd });
         if (!imageResponse.ok) {
           const imageError = await imageResponse.json().catch(() => ({}));
@@ -721,6 +827,7 @@ $("add-product-form").addEventListener("submit", async (e) => {
         if (addPhotoFiles.length > 1) {
           const extras = new FormData();
           addPhotoFiles.slice(1).forEach((file) => extras.append("files", file));
+          submitButton.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Saving ${addPhotoFiles.length - 1} more photo${addPhotoFiles.length > 2 ? "s" : ""}…`;
           const extraResponse = await fetch(`${API}/products/${encodeURIComponent(data.sku)}/images`, { method: "POST", body: extras });
           if (!extraResponse.ok) {
             const imageError = await extraResponse.json().catch(() => ({}));
@@ -735,12 +842,10 @@ $("add-product-form").addEventListener("submit", async (e) => {
     form.reset(); resetAddForm(); msg.textContent = "";
     $("add-product-modal").hidden = true;
     showToast(photoWarning ? `Product added — ${newSku}.${photoWarning}` : `Product added successfully — ${newSku}`, photoWarning ? "info" : "success", photoWarning ? 4200 : 1500);
-    await refreshInventoryViews();
     window.__keepProductSearch = true;
     switchView("products");
     $("product-search").value = "";
-    await loadLatestProducts();
-    await loadMoversChart();
+    await Promise.allSettled([loadLatestProducts(), loadSummary(), loadAlerts(), loadReorderList()]);
   } catch (err) { msg.textContent = err.message; msg.className = "msg error"; showToast(err.message || "Could not add product", "error", 2200); }
   finally { submitButton.disabled = false; submitButton.textContent = submitButton.dataset.originalText || "Save Product"; }
 });
@@ -1946,6 +2051,7 @@ function setDishaPaused(paused) {
     assistantSpeechId += 1;
     clearTimeout(assistantSpeechGuardTimer);
     assistantSpeaking = false;
+    setDishaSpeakingUI(false);
     window.speechSynthesis?.cancel();
     assistantAudioPlayer?.pause();
     assistantAudioPlayer = null;
