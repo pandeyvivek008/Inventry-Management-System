@@ -1,26 +1,55 @@
-# फोटो से प्रोडक्ट खोजना
+# फोटो से सही product design खोजें
 
-इस सुविधा में स्कैन से stock नहीं बदलता। यह catalog की सुरक्षित तस्वीरों से अधिकतम पाँच मिलते-जुलते designs दिखाती है; सही design चुनने के बाद ही मौजूदा size-wise stock form में बदलाव करें।
+Visual scan uploaded photo ko catalog ke **saved product photos** se CLIP image embeddings ke zariye compare karta hai. SKU/name/rang se score nahi banta. Scan sirf pehchan aur live stock dikhata hai; stock tab tak nahi badalta jab tak staff alag se size count update na kare.
 
-## इस्तेमाल करें
+## Scan kaise karein
 
-1. **Scan & Recount** खोलें।
-2. **फोटो से प्रोडक्ट खोजें** में कैमरा खोलें या JPG/PNG/WEBP फोटो अपलोड करें। फ़ाइल अधिकतम 10 MB होनी चाहिए।
-3. Top matches में सही design चुनें। App उसी product record से live sizes/stock दिखाती है।
+1. Products page par har design ki ek saaf, asli photo upload karein. Koshish karein ki garment frame ke beech mein ho, poora design dikhe, blur na ho aur background kam ho.
+2. Sidebar se **Visual Product Search** kholen.
+3. Mobile/PC camera se photo lein ya JPG, PNG, WEBP (10 MB tak) upload karein.
+4. `matched` aaye to product photo, name, sizes aur live stock dekhein. Phir design verify karke **इस design के sizes खोलें** chunein.
+5. `ambiguous` aaye to candidates sirf suggestions hain. Kisi stock-changing action se pehle photo dekhkar sahi design chunein.
+6. `no_match` aaye to app guess nahi karegi. Clear front photo lein, catalog mein photo check karein, ya product name/SKU se manual search karein.
 
-Catalog में फोटो नहीं है तो पहले Products → Edit से साफ़ front image जोड़ें। Photo save होना visual index पर निर्भर नहीं: index अनुपलब्ध हो तो image upload फिर भी सफल रहता है।
+## Match status aur score
 
-## पहचान की सीमा
+- **matched:** sabse achha cosine similarity score configured minimum se upar hai aur agle design se kafi alag hai.
+- **ambiguous:** kai photos ka score kareeb hai; suggestions milenge, automatic selection nahi.
+- **no_match:** score threshold se kam hai, catalog khaali hai, ya koi active product candidate nahi mila.
+- `Cosine similarity` ek model similarity score hai, probability ya accuracy guarantee nahi. Default `0.82` / margin `0.06` sirf conservative starting point hain—real Twins Lady photos ke bina ise calibrated nahi kaha ja sakta.
 
-वर्तमान `colour-shape-v1` विधि local colour histogram और perceptual hash तुलना करती है। यह CLIP/fashion-trained AI नहीं है और समान रंग, embroidery, crop, background या lighting में गलत ranking हो सकती है। Match percentage को confidence guarantee न मानें। हमेशा सही design स्वयं confirm करें।
+## Railway setup
 
-SQLite में local fallback catalog 500 images तक सीमित है। PostgreSQL में visual search के लिए pgvector extension और एक बार index setup चाहिए:
+Pura Railway setup, exact service variables, persistent volume, deployment ke baad index build aur safe validation steps [RAILWAY_VISUAL_MATCH_SETUP_HI.md](RAILWAY_VISUAL_MATCH_SETUP_HI.md) mein hain. Existing production database ko replace mat karein. Model optional hai; package ya index ready na ho to API 503 dekar unsafe guess rokegi.
+
+## Local testing
 
 ```powershell
+# Root repository folder se, optional CPU model install
+$env:DATABASE_URL = "sqlite:///./test_visual_match.db"
+pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
+pip install -r requirements.txt -r requirements-visual-ai.txt
 Set-Location backend
-python scripts/rebuild_visual_index.py
+python -m uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 
-पहले production backup लें और database permissions verify करें। Script live database की saved images पढ़ती है और vector index बनाती है; इसे app startup या customer request में न चलाएँ। Product photo update के बाद नई image vector best-effort में upsert होती है।
+SQLite ke saath rebuild script nahi chalti. Local SQLite scans pehli baar photos ko encode karte hain, phir embeddings process memory mein cache hote hain; catalog 500 images tak limited hai. Regression checks root se `python tests/test_visual_match.py` chalakar run karein. Agar `PRODUCT_IMAGE_DIR` set karte hain to app aur test ko wahi path dena hoga.
 
-Redis optional है: `REDIS_URL` repeated scan cache और instances के बीच scan rate limit के लिए है। Image files अभी app-local path में रखी जाती हैं; multiple isolated Railway instances चलाने से पहले shared durable image storage जोड़ना जरूरी है।
+## Photo badalne ke baad
+
+Normal product image upload ke baad PostgreSQL embedding best-effort upsert hoti hai. Agar index kaam na kare, photo save rehti hai, lekin purana embedding hata diya jata hai—old photo ke naam par galat product match nahi aayega. Log mein warning check karein, PostgreSQL `vector` extension/index repair karein, phir one-off rebuild chalayein.
+
+## Accuracy validation
+
+Threshold ko production mein tune karne se pehle alag staging database mein kam-se-kam:
+
+- same product ki alag lighting/angle/camera photos (positive samples)
+- same rang ke lekin alag print, neckline, embroidery ya sleeve wale products (hard negatives)
+- catalog ke bahar ke kapde aur non-garment images (no-match samples)
+- close designs ka ambiguous pair
+
+har sample ke expected design/status ko spreadsheet mein label karein. Matching aur wrong-match rate dekhkar threshold badlein. `matched` cases bhi visual review ke bina stock mutation ka authorization nahi hain. Abhi automated tests deterministic vectors use karte hain; real garment-photo benchmark repo mein nahi mila, isliye real-world match rate establish nahi hai.
+
+## Seemayen
+
+Model general-purpose OpenCLIP ViT-B/32 hai, fashion-specific fine-tune nahi. Garments ke print aur cut mein bahut chhota farq, occlusion, folded clothing, mannequin/background, heavy crop ya multiple garments hone par galat ranking/`no_match` ho sakta hai. Har design ke liye abhi ek reference photo index hoti hai. Zyada reliable recognition ke liye multiple approved angles ya Twins Lady labeled photo set chahiye.

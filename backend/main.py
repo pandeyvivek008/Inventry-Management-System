@@ -1,3 +1,5 @@
+import asyncio
+import os
 import shutil
 import uuid
 import re
@@ -62,7 +64,10 @@ app.add_middleware(
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 STATIC_DIR.mkdir(exist_ok=True)
-(STATIC_DIR / "product_images").mkdir(exist_ok=True)
+PRODUCT_IMAGE_DIR = Path(os.getenv("PRODUCT_IMAGE_DIR") or str(STATIC_DIR / "product_images")).resolve()
+PRODUCT_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+# Mount the persistent Railway image directory before the general static mount.
+app.mount("/static/product_images", StaticFiles(directory=PRODUCT_IMAGE_DIR), name="product-images")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 FRONTEND_DIR = BASE_DIR.parent / "frontend"
@@ -834,16 +839,14 @@ def update_variant(variant_code: str, payload: schemas.VariantUpdate, db: Sessio
 @app.post("/api/products/{sku}/image")
 def upload_product_image(sku: str, file: UploadFile = File(...), db: Session = Depends(get_db)):
     product = _get_product_by_sku(db, sku)
-    ext = Path(file.filename or "").suffix.lower()
-    if ext not in {".jpg", ".jpeg", ".png", ".webp"}:
-        ext = ".jpg"
     content = file.file.read(visual_match_service.MAX_SCAN_BYTES + 1)
     try:
-        visual_match_service.image_signature(content)
+        visual_match_service.validate_image(content)
+        ext = visual_match_service.image_extension(content)
     except visual_match_service.InvalidProductImage as exc:
         raise HTTPException(400, str(exc)) from exc
     fname = f"{product.sku}_{uuid.uuid4().hex[:8]}{ext}"
-    dest = STATIC_DIR / "product_images" / fname
+    dest = PRODUCT_IMAGE_DIR / fname
     dest.write_bytes(content)
     old_path = product.image_path
     product.image_path = f"/static/product_images/{fname}"
@@ -854,16 +857,25 @@ def upload_product_image(sku: str, file: UploadFile = File(...), db: Session = D
         dest.unlink(missing_ok=True)
         raise
     # Visual indexing is optional and must never prevent a valid product photo
-    # from being saved. PostgreSQL index setup is an explicit maintenance task.
+    # from being saved. If re-indexing fails, remove the prior vector so it can
+    # never point to the replaced photo.
     try:
         visual_search_service.index_product_image(db, product.id, content)
         db.commit()
+        visual_search_service.clear_visual_cache()
     except Exception as exc:
         db.rollback()
+        try:
+            visual_search_service.remove_product_embedding(db, product.id)
+            db.commit()
+        except Exception:
+            db.rollback()
+        visual_search_service.clear_visual_cache()
         logger.warning("Product photo saved but visual indexing failed (%s).", type(exc).__name__)
     if old_path:
         try:
-            (BASE_DIR / old_path.lstrip("/")).unlink(missing_ok=True)
+            old_name = Path(old_path).name
+            (PRODUCT_IMAGE_DIR / old_name).unlink(missing_ok=True)
         except Exception:
             pass
     return {"image_path": product.image_path}
@@ -876,32 +888,39 @@ async def visual_product_match(
     limit: int = Query(5, ge=1, le=10),
     db: Session = Depends(get_db),
 ):
-    """Return a small visual-match shortlist; this route never changes stock."""
+    """Return a verified, ambiguous, or no-match result; this route never changes stock."""
     client_key = request.client.host if request.client else "unknown"
     if not visual_search_service.allow_scan(client_key):
         raise HTTPException(429, "Too many image searches. Please wait a minute and try again.")
     content = await file.read(visual_match_service.MAX_SCAN_BYTES + 1)
     try:
-        visual_match_service.image_signature(content)
-        hits = visual_search_service.search(db, content, STATIC_DIR, limit)
+        visual_match_service.validate_image(content)
+        result = await asyncio.to_thread(visual_search_service.search, db, content, PRODUCT_IMAGE_DIR, limit)
     except visual_match_service.InvalidProductImage as exc:
         raise HTTPException(400, str(exc)) from exc
     except visual_search_service.VisualSearchUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
-    product_ids = [hit.product_id for hit in hits]
+    except visual_match_service.ImageModelUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    product_ids = [hit.product_id for hit in result.matches]
     products = db.query(models.Product).options(selectinload(models.Product.variants)).filter(
         models.Product.id.in_(product_ids), models.Product.is_deleted == False  # noqa: E712
     ).all() if product_ids else []
     by_id = {product.id: product for product in products}
     matches = []
-    for hit in hits:
+    for hit in result.matches:
         product = by_id.get(hit.product_id)
         if product:
-            matches.append({"similarity": round(hit.similarity * 100), "product": _product_out(product)})
+            matches.append({"similarity": round(hit.similarity, 4), "product": _product_out(product)})
+    status = result.status if matches else "no_match"
+    message = result.message if matches else "No active catalog match is available. Check the product photos or try another photo."
     return {
         "catalog_images": len(product_ids),
+        "status": status,
         "matches": matches,
-        "notice": "Visual matches are suggestions. Confirm the design before editing stock.",
+        "message": message,
+        "score_type": "cosine_similarity_not_probability",
+        "notice": "Only a matched result is a strong visual match. Ambiguous results are suggestions; photo search never changes stock.",
     }
 
 

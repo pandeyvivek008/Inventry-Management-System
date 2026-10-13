@@ -262,7 +262,7 @@ function switchView(name) {
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("is-active", v.id === `view-${name}`));
   closeDrawer();
   if (name !== "scan") stopCamera();
-  if (name !== "scan") stopVisualCamera();
+  if (name !== "visual") stopVisualCamera();
   if (name === "dashboard") { loadSummary(); loadInventory(); loadMoversChart(); }
   if (name === "products" && !window.__keepProductSearch) {
     $("product-search").value = "";
@@ -1103,14 +1103,14 @@ function stopVisualCamera() {
   const video = $("visual-camera");
   if (video) video.srcObject = null;
   if ($("visual-camera-wrap")) $("visual-camera-wrap").hidden = true;
-  if ($("visual-camera-toggle")) $("visual-camera-toggle").innerHTML = '<i class="fa-solid fa-camera"></i> कैमरा खोलें';
+  if ($("visual-camera-toggle")) $("visual-camera-toggle").innerHTML = '<i class="fa-solid fa-camera"></i> Open camera';
   if ($("visual-capture")) $("visual-capture").disabled = true;
 }
 
 function chooseVisualFile(file) {
   if (!file) return;
   if (!/^image\/(?:jpeg|png|webp)$/i.test(file.type) || file.size > 10 * 1024 * 1024) {
-    setVisualMessage("JPG, PNG या WEBP की साफ़ फोटो चुनें (अधिकतम 10 MB)।", "error");
+    setVisualMessage("Choose a clear JPG, PNG, or WEBP photo (maximum 10 MB).", "error");
     return;
   }
   visualSelectedFile = file;
@@ -1124,19 +1124,19 @@ function chooseVisualFile(file) {
 
 async function toggleVisualCamera() {
   if (visualCameraStream) { stopVisualCamera(); return; }
-  if (!navigator.mediaDevices?.getUserMedia) { setVisualMessage("इस ब्राउज़र में कैमरा उपलब्ध नहीं है। फोटो अपलोड करें।", "error"); return; }
+  if (!navigator.mediaDevices?.getUserMedia) { setVisualMessage("Camera access is unavailable in this browser. Upload a photo instead.", "error"); return; }
   try {
     visualCameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 960 } }, audio: false });
     const video = $("visual-camera");
     video.srcObject = visualCameraStream;
     await video.play();
     $("visual-camera-wrap").hidden = false;
-    $("visual-camera-toggle").innerHTML = '<i class="fa-solid fa-video-slash"></i> कैमरा बंद करें';
+    $("visual-camera-toggle").innerHTML = '<i class="fa-solid fa-video-slash"></i> Close camera';
     $("visual-capture").disabled = false;
-    setVisualMessage("एक प्रोडक्ट को बीच में रखें और फोटो लें।");
+    setVisualMessage("Center one product in the frame and take a clear photo.");
   } catch (error) {
     stopVisualCamera();
-    setVisualMessage(error?.name === "NotAllowedError" ? "कैमरा अनुमति बंद है। ब्राउज़र में अनुमति दें और फिर कोशिश करें।" : "कैमरा चालू नहीं हुआ। फोटो अपलोड करके खोजें।", "error");
+    setVisualMessage(error?.name === "NotAllowedError" ? "Camera permission is blocked. Allow access in browser settings and try again." : "Camera did not start. Upload a photo to search instead.", "error");
   }
 }
 
@@ -1153,34 +1153,38 @@ function captureVisualPhoto() {
 async function matchVisualProduct() {
   if (!visualSelectedFile) return;
   const results = $("visual-results");
-  setVisualMessage("कैटलॉग की तस्वीरों से मिलान कर रहे हैं…");
+  setVisualMessage("Comparing with saved product photos…");
   try {
     const data = new FormData(); data.append("file", visualSelectedFile);
     const response = await fetch(`${API}/products/visual-match?limit=5`, { method: "POST", body: data });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.detail || "तस्वीर से खोज पूरी नहीं हुई।");
-    if (!payload.matches?.length) {
+    if (!response.ok) throw new Error(payload.detail || "Photo search could not be completed.");
+    if (payload.status === "no_match" || !payload.matches?.length) {
       results.hidden = true;
-      setVisualMessage("कैटलॉग में खोजने लायक फोटो नहीं मिलीं। पहले प्रोडक्ट में फोटो जोड़ें।", "error");
+      setVisualMessage(payload.message || "No catalog photo was similar enough. Try a clear, front-facing photo.", "error");
       return;
     }
     results.hidden = false;
-    results.innerHTML = `<h3>मिलती-जुलती डिज़ाइन <span class="hint">सही प्रोडक्ट चुनें</span></h3><div class="visual-result-grid">${payload.matches.map((match, index) => {
+    const ambiguous = payload.status === "ambiguous";
+    const title = ambiguous ? "Match is uncertain" : "Strong visual match";
+    const hint = ambiguous ? "Suggestions only. Review the photo before opening a design." : "Product identity matched visually; stock is read live from the database.";
+    results.innerHTML = `<h3>${title} <span class="hint">${hint}</span></h3><div class="visual-result-grid">${payload.matches.map((match, index) => {
       const product = match.product;
       const stock = (product.variants || []).map((variant) => `<span class="size-chip status-${variant.status}">${esc(variant.size)}: ${variant.status === "UNCOUNTED" ? "—" : esc(variant.current_stock)}</span>`).join("");
-      return `<article class="visual-match-card"><div class="visual-match-photo">${product.image_path ? `<img src="${esc(product.image_path)}" alt="${esc(product.name)}">` : ""}</div><div class="visual-match-body"><div><span class="visual-rank">#${index + 1}</span><strong>${esc(product.name)}</strong></div><span class="visual-score">फोटो समानता ${match.similarity}%</span><div class="pcard-sizes">${stock}</div><button type="button" class="btn-secondary visual-open-product" data-sku="${esc(product.sku)}">यह सही डिज़ाइन है</button></div></article>`;
+      const score = Number(match.similarity);
+      return `<article class="visual-match-card"><div class="visual-match-photo">${product.image_path ? `<img src="${esc(product.image_path)}" alt="${esc(product.name)}">` : ""}</div><div class="visual-match-body"><div><span class="visual-rank">#${index + 1}</span><strong>${esc(product.name)}</strong></div><span class="visual-score">Cosine similarity ${Number.isFinite(score) ? score.toFixed(3) : "—"} · not a probability</span><div class="pcard-sizes">${stock}</div><button type="button" class="btn-secondary visual-open-product" data-sku="${esc(product.sku)}">${ambiguous ? "Review this design" : "Open all sizes"}</button></div></article>`;
     }).join("")}</div>`;
     results.querySelectorAll(".visual-open-product").forEach((button) => button.addEventListener("click", async () => {
       try {
         const product = await getJSON(`${API}/products/${encodeURIComponent(button.dataset.sku)}`);
+        switchView("scan");
         renderScanProduct(product);
-        setVisualMessage(`${product.name} चुना गया। नीचे हर साइज़ का लाइव स्टॉक है।`, "success");
-      } catch (_) { setVisualMessage("चुना हुआ प्रोडक्ट नहीं खुल पाया।", "error"); }
+      } catch (_) { setVisualMessage("Could not open that product.", "error"); }
     }));
-    setVisualMessage("पाँच सबसे मिलती-जुलती डिज़ाइन दिखाई गई हैं। स्टॉक अपडेट से पहले सही डिज़ाइन चुनें।", "success");
+    setVisualMessage(payload.message || (ambiguous ? "Review the candidates before opening sizes." : "Review the match before updating stock."), ambiguous ? "error" : "success");
   } catch (error) {
     results.hidden = true;
-    setVisualMessage(error.message || "तस्वीर से खोज पूरी नहीं हुई। दूसरी साफ़ फोटो आज़माएँ।", "error");
+    setVisualMessage(error.message || "Photo search failed. Try another clear photo.", "error");
   }
 }
 
@@ -1194,7 +1198,7 @@ $("visual-clear")?.addEventListener("click", () => {
   $("visual-preview").removeAttribute("src");
   $("visual-preview-wrap").hidden = true;
   $("visual-results").hidden = true;
-  setVisualMessage("फोटो चुनें या कैमरे से लें।");
+  setVisualMessage("Choose a photo or take one with the camera.");
 });
 
 // ================================================================ //

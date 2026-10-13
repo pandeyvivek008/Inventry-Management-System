@@ -1,0 +1,3 @@
+# Optional CPU-only visual design search. Install after CPU torch/torchvision.
+# See RAILWAY_VISUAL_MATCH_SETUP_HI.md for the exact Railway Build Command.
+open_clip_torch>=2.24,<3

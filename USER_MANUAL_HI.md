@@ -36,6 +36,16 @@ Products search mein name, SKU, color ya size type karein. Design card kholkar s
 4. Sahi size ka actual physical count bharein aur **Update** dabayen. Update hone ke baad success message/check karein.
 5. USB/Bluetooth scanner gun aam taur par keyboard jaisa input bhejti hai. Scanner ka output field mein aaye to code Enter ke saath submit hota hai.
 
+### Visual Product Search
+
+Sidebar se **Visual Product Search** kholen. Camera photo lein ya JPG/PNG/WEBP upload karein (10 MB tak). CLIP model catalog mein saved product photos se visual comparison karta hai:
+
+- **Strong match:** photo, product name aur database se live size-wise stock dekhein; phir design verify karein.
+- **Ambiguous:** candidates sirf suggestions hain. Photo dekhkar sahi design khud chunein.
+- **No match:** app guess nahi karegi. Saaf front photo lein ya manual name/SKU search use karein.
+
+Photo match se stock kabhi update nahi hota. Design kholne par app **Scan & Recount** page par uske sizes laaye. Sahi size ka count alag se submit karein. Har product par pehle photo honi chahiye. CLIP general image model hai, isliye subtle design differences ko user ko verify karna hoga. Model/index setup unavailable ho to feature error dikhayega; name/SKU search ke liye Scan & Recount ka manual search use karein. Railway administrator setup ke liye [RAILWAY_VISUAL_MATCH_SETUP_HI.md](RAILWAY_VISUAL_MATCH_SETUP_HI.md) dekhein.
+
 ## 4. Bulk Stock Count
 
 1. **Bulk Stock Count** kholen aur current stock count sheet download karein.

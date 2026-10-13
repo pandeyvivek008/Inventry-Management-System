@@ -33,6 +33,7 @@
       <button data-view="dashboard" class="rail-link is-active"><i class="fa-solid fa-chart-line"></i><span class="rail-label">Dashboard</span></button>
       <button data-view="products" class="rail-link"><i class="fa-solid fa-box-open"></i><span class="rail-label">Products</span></button>
       <button data-view="scan" class="rail-link"><i class="fa-solid fa-qrcode"></i><span class="rail-label">Scan &amp; Recount</span></button>
+      <button data-view="visual" class="rail-link"><i class="fa-solid fa-camera-retro"></i><span class="rail-label">Visual Product Search</span></button>
       <button data-view="bulk" class="rail-link"><i class="fa-solid fa-clipboard-check"></i><span class="rail-label">Bulk Stock Count</span></button>
       <button data-view="orders" class="rail-link"><i class="fa-solid fa-file-invoice"></i><span class="rail-label">Process Orders</span></button>
       <button data-view="reorder" class="rail-link"><i class="fa-solid fa-cart-shopping"></i><span class="rail-label">Reorder List</span></button>
@@ -134,20 +135,24 @@
           <div id="manual-product-results" class="manual-product-results" role="region" aria-label="Matching products and size stock" hidden></div>
         </div>
       </div>
+      <div id="scan-result" class="panel" hidden style="margin-top:16px;"></div>
+    </section>
+
+    <!-- ============== VISUAL PRODUCT SEARCH ============== -->
+    <section id="view-visual" class="view">
+      <header class="view-head"><div><h1>Visual Product Search</h1><p class="sub">Find a catalog design from a photo. Review the image match and live size-wise stock before opening the product.</p></div></header>
       <section class="panel visual-scanner-panel" aria-labelledby="visual-scan-title">
-        <div class="visual-scan-head"><div><h2 id="visual-scan-title"><i class="fa-solid fa-camera"></i> फोटो से प्रोडक्ट खोजें</h2><p class="hint">साफ़ फोटो लें या अपलोड करें। दिशा कैटलॉग की सबसे मिलती-जुलती तस्वीरें और लाइव साइज़ स्टॉक दिखाएगी। सही डिज़ाइन आप चुनेंगे।</p></div><span class="visual-safe-note">स्कैन से स्टॉक नहीं बदलेगा</span></div>
+        <div class="visual-scan-head"><div><h2 id="visual-scan-title"><i class="fa-solid fa-camera"></i> Search by product photo</h2><p class="hint">Take a clear photo or upload one. Disha compares it with saved catalog photos and shows current stock from the database.</p></div><span class="visual-safe-note">Photo search does not change stock</span></div>
         <div class="visual-scan-controls">
-          <button id="visual-camera-toggle" type="button" class="btn-secondary"><i class="fa-solid fa-camera"></i> कैमरा खोलें</button>
-          <button id="visual-capture" type="button" class="btn-primary" disabled><i class="fa-solid fa-camera-retro"></i> फोटो लें</button>
-          <label class="btn-ghost visual-upload-label"><i class="fa-solid fa-image"></i> फोटो अपलोड करें<input id="visual-upload" type="file" accept="image/jpeg,image/png,image/webp" hidden></label>
+          <button id="visual-camera-toggle" type="button" class="btn-secondary"><i class="fa-solid fa-camera"></i> Open camera</button>
+          <button id="visual-capture" type="button" class="btn-primary" disabled><i class="fa-solid fa-camera-retro"></i> Take photo</button>
+          <label class="btn-ghost visual-upload-label"><i class="fa-solid fa-image"></i> Upload photo<input id="visual-upload" type="file" accept="image/jpeg,image/png,image/webp" hidden></label>
         </div>
         <div id="visual-camera-wrap" class="visual-camera-wrap" hidden><video id="visual-camera" playsinline muted></video></div>
-        <div id="visual-preview-wrap" class="visual-preview-wrap" hidden><img id="visual-preview" alt="उत्पाद खोजने के लिए चुनी गई तस्वीर"><button id="visual-clear" type="button" class="btn-ghost">दूसरी फोटो चुनें</button></div>
+        <div id="visual-preview-wrap" class="visual-preview-wrap" hidden><img id="visual-preview" alt="Selected product search photo"><button id="visual-clear" type="button" class="btn-ghost">Choose another photo</button></div>
         <div id="visual-scan-msg" class="msg" role="status"></div>
         <div id="visual-results" class="visual-results" hidden></div>
       </section>
-
-      <div id="scan-result" class="panel" hidden style="margin-top:16px;"></div>
     </section>
 
     <!-- ================= BULK STOCK COUNT ================= -->

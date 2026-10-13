@@ -38,7 +38,7 @@ SERVICE LAYER  backend/services/
                        sizes together
   assistant_service      Gemini/OpenAI intent parsing or optional self-hosted Ollama,
                          Hindi transcription fallback and local Piper speech output
-  visual_search_service  local photo matching or indexed PostgreSQL/pgvector search
+  visual_search_service  cached CPU CLIP embeddings + versioned PostgreSQL/pgvector index
         |  SQLAlchemy ORM
 DATA LAYER  backend/models.py
   SQLite file today (inventory.db) -> PostgreSQL later via one env var
@@ -239,10 +239,14 @@ Hindi examples, confirmation steps, photo controls, microphone and earbud setup,
 and troubleshooting are in [VOICE_AUTOMATION_HI.md](VOICE_AUTOMATION_HI.md).
 
 The Scan & Recount page also includes a basic local image matching shortlist:
-it compares colour histograms and perceptual hashes against saved product photos.
-It is not a trained fashion model or a guarantee; employees confirm the product
-before using the stock editor. Details and PostgreSQL index setup are in
-[VISUAL_PRODUCT_SCANNER_HI.md](VISUAL_PRODUCT_SCANNER_HI.md).
+it uses CPU OpenCLIP ViT-B/32 embeddings over the actual saved product photos,
+then fails closed as `no_match` or `ambiguous` when evidence is weak or close.
+The model is general purpose, not fashion fine-tuned, and its cosine similarity
+is not a probability. People still confirm the design before changing stock.
+The optional model/index and persistent Railway image-volume setup are in
+[VISUAL_PRODUCT_SCANNER_HI.md](VISUAL_PRODUCT_SCANNER_HI.md) and
+[RAILWAY_VISUAL_MATCH_SETUP_HI.md](RAILWAY_VISUAL_MATCH_SETUP_HI.md). The complete
+Hindi/English app guide is in [USER_MANUAL_HI.md](USER_MANUAL_HI.md).
 
 ## 8. What's tested
 

@@ -1,32 +1,31 @@
-"""Fast, local visual matching for the product-photo catalog.
+"""CLIP image embedding helpers for the product-photo matcher.
 
-This is deliberately a *matching* service, not a claim that a photograph can
-identify every garment with certainty.  It compares the scan against the
-photos already saved on products and always returns a ranked shortlist for a
-person to confirm.  It has no cloud/API dependency and is suitable for the
-small-to-medium catalogs this app starts with.
+The encoder is loaded lazily on CPU. No SKU, product-name, filename, or colour
+heuristic participates in the visual score. If the optional model runtime or
+weights are unavailable, callers fail closed instead of returning a guessed
+nearest product.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from functools import lru_cache
 from io import BytesIO
-from pathlib import Path
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 
 MAX_SCAN_BYTES = 10 * 1024 * 1024
-_RESAMPLE = getattr(Image.Resampling, "LANCZOS", Image.LANCZOS)
+MAX_IMAGE_DIMENSION = 8000
+MODEL_ARCH = "ViT-B-32"
+MODEL_PRETRAINED = "laion2b_s34b_b79k"
+VECTOR_DIMENSIONS = 512
 
 
 class InvalidProductImage(ValueError):
-    """The browser supplied a non-image or a damaged image."""
+    """The browser supplied a non-image, damaged, or excessive image."""
 
 
-@dataclass(frozen=True)
-class ImageSignature:
-    colors: tuple[float, ...]
-    dhash: int
+class ImageModelUnavailable(RuntimeError):
+    """The optional CLIP runtime or model weights are unavailable."""
 
 
 def _open_image(content: bytes) -> Image.Image:
@@ -34,50 +33,69 @@ def _open_image(content: bytes) -> Image.Image:
         raise InvalidProductImage("Image must be between 1 byte and 10 MB.")
     try:
         with Image.open(BytesIO(content)) as source:
+            width, height = source.size
+            if source.format not in {"JPEG", "PNG", "WEBP"}:
+                raise InvalidProductImage("Only JPG, PNG, and WEBP images are supported.")
+            if width < 32 or height < 32 or width > MAX_IMAGE_DIMENSION or height > MAX_IMAGE_DIMENSION:
+                raise InvalidProductImage("Image dimensions must be between 32 and 8000 pixels.")
             source.verify()
         with Image.open(BytesIO(content)) as source:
             return ImageOps.exif_transpose(source).convert("RGB")
+    except InvalidProductImage:
+        raise
     except (UnidentifiedImageError, OSError, ValueError) as exc:
-        raise InvalidProductImage("Please choose a clear JPG, PNG, WEBP, or other valid image.") from exc
+        raise InvalidProductImage("Please choose a clear JPG, PNG, or WEBP image.") from exc
 
 
-def image_signature(content: bytes) -> ImageSignature:
-    """Build a compact colour + shape signature without a heavy ML runtime."""
+def validate_image(content: bytes) -> None:
+    """Validate and safely decode an image without loading the model."""
+    _open_image(content)
+
+
+def image_extension(content: bytes) -> str:
+    """Return a browser-safe extension based on image bytes, not user filename."""
+    _open_image(content)
+    try:
+        with Image.open(BytesIO(content)) as source:
+            return {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp"}[source.format]
+    except (UnidentifiedImageError, OSError, KeyError) as exc:
+        raise InvalidProductImage("Only JPG, PNG, and WEBP images are supported.") from exc
+
+
+@lru_cache(maxsize=1)
+def _load_encoder():
+    try:
+        import open_clip
+        import torch
+    except ImportError as exc:
+        raise ImageModelUnavailable(
+            "Visual AI is not installed on this service. Install requirements-visual-ai.txt, "
+            "then rebuild the product image index."
+        ) from exc
+    try:
+        model, _, preprocess = open_clip.create_model_and_transforms(
+            MODEL_ARCH,
+            pretrained=MODEL_PRETRAINED,
+            device="cpu",
+        )
+        model.eval()
+        return torch, model, preprocess
+    except Exception as exc:
+        raise ImageModelUnavailable(
+            "CLIP could not load its model weights. Check Railway memory, outbound access, "
+            "and the configured Hugging Face cache volume."
+        ) from exc
+
+
+def image_embedding(content: bytes) -> tuple[float, ...]:
+    """Return a normalized 512-dimensional CLIP image embedding on CPU."""
     image = _open_image(content)
-    # A six-bin RGB histogram gives useful colour/design separation while
-    # dHash still rewards matching embroidery/outline shapes.
-    small = ImageOps.fit(image, (96, 96), method=_RESAMPLE, centering=(0.5, 0.5))
-    histogram = [0] * 216
-    pixels = small.get_flattened_data() if hasattr(small, "get_flattened_data") else small.getdata()
-    for red, green, blue in pixels:
-        histogram[(red // 43) * 36 + (green // 43) * 6 + (blue // 43)] += 1
-    total = float(96 * 96)
-    colors = tuple(value / total for value in histogram)
-
-    grey = ImageOps.fit(image.convert("L"), (9, 8), method=_RESAMPLE, centering=(0.5, 0.5))
-    bits = 0
-    for y in range(8):
-        for x in range(8):
-            bits = (bits << 1) | int(grey.getpixel((x, y)) > grey.getpixel((x + 1, y)))
-    return ImageSignature(colors=colors, dhash=bits)
-
-
-def score_signatures(scan: ImageSignature, reference: ImageSignature) -> float:
-    """Return an explainable 0..1 similarity score.
-
-    Histogram cosine similarity is intentionally weighted more than dHash:
-    shop photos often have a different crop/background, but colour remains a
-    very useful discriminator for this catalogue workflow.
-    """
-    dot = sum(a * b for a, b in zip(scan.colors, reference.colors))
-    scan_norm = sum(a * a for a in scan.colors) ** 0.5
-    ref_norm = sum(a * a for a in reference.colors) ** 0.5
-    color_score = dot / (scan_norm * ref_norm) if scan_norm and ref_norm else 0.0
-    hash_distance = (scan.dhash ^ reference.dhash).bit_count()
-    shape_score = 1.0 - hash_distance / 64.0
-    return max(0.0, min(1.0, color_score * 0.70 + shape_score * 0.30))
-
-
-def score_image_files(scan_content: bytes, image_path: Path) -> float:
-    """Compare a browser-uploaded scan to one locally stored reference image."""
-    return score_signatures(image_signature(scan_content), image_signature(image_path.read_bytes()))
+    torch, model, preprocess = _load_encoder()
+    try:
+        tensor = preprocess(image).unsqueeze(0)
+        with torch.inference_mode():
+            embedding = model.encode_image(tensor).float()
+            embedding = embedding / embedding.norm(dim=-1, keepdim=True).clamp(min=1e-12)
+        return tuple(float(value) for value in embedding[0].tolist())
+    except Exception as exc:
+        raise ImageModelUnavailable("CLIP could not create an image embedding.") from exc
