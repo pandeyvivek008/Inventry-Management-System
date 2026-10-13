@@ -1512,7 +1512,7 @@ function addAssistantMessage(role, content, options = {}) {
     const actionText = action.type === "stock_update"
       ? `${esc(action.name)} · ${esc(action.sku)}<div>Size ${esc(action.size)}: ${Number(action.current_stock)} → <b>${Number(action.proposed_stock)}</b> pieces</div>`
       : action.type === "product_create"
-        ? `Create ${esc(action.name)} · ${esc(action.sku)}<div>Sizes: ${action.sizes.map(esc).join(", ")} · starting stock 0</div>`
+        ? `प्रोडक्ट बनाएं: ${esc(action.name)} · ${esc(action.sku)}<div>साइज़: ${action.sizes.map(esc).join(", ")} · शुरुआती स्टॉक 0</div>`
         : action.type === "product_update"
           ? `Edit ${esc(action.sku)}<div>${Object.entries(action.changes).map(([key, value]) => `${esc(key)}: ${esc(value)}`).join(" · ")}</div>`
           : action.type === "product_archive"
@@ -1520,7 +1520,7 @@ function addAssistantMessage(role, content, options = {}) {
             : action.type === "product_restore"
               ? `Restore ${esc(action.sku)}<div>Design and its trashed sizes</div>`
               : `Dispatch batch ${Number(action.order_id)}<div>${esc(action.filename || "Orders")} · ${Number(action.lines)} lines · ${Number(action.units)} pieces</div>`;
-    card.innerHTML = `<strong>${actionText}</strong><button class="btn-primary assistant-confirm-stock" type="button">${action.type === "stock_update" ? "Confirm stock update" : "Confirm this action"}</button>`;
+    card.innerHTML = `<strong>${actionText}</strong><button class="btn-primary assistant-confirm-stock" type="button">${action.type === "stock_update" ? "स्टॉक बदलने की पुष्टि करें" : "इस बदलाव की पुष्टि करें"}</button>`;
     bubble.appendChild(card);
     const button = card.querySelector(".assistant-confirm-stock");
     assistantConfirmationButton = button;
@@ -1530,7 +1530,7 @@ function addAssistantMessage(role, content, options = {}) {
       button.disabled = true;
       button.textContent = "Updating…";
       try {
-        let success = "Action complete.";
+        let success = "बदलाव पूरा हो गया।";
         if (action.type === "stock_update") {
           const updated = await apiPost(`${API}/inventory/adjust`, {
             variant_code: action.variant_code, new_count: Number(action.proposed_stock),
@@ -1540,7 +1540,7 @@ function addAssistantMessage(role, content, options = {}) {
           success = `${action.name}, ${action.sku}, size ${action.size}: stock ${Number(action.current_stock)} se ${updated.current_stock} pieces ho gaya. Update complete.`;
         } else if (action.type === "product_create") {
           await apiPost(`${API}/products`, { sku: action.sku, name: action.name, category: action.category || null, variants: action.sizes.map((size) => ({ size, initial_stock: 0 })) });
-          success = `${action.name} (${action.sku}) product ${action.sizes.length} sizes ke saath create ho gaya. Starting stock 0 hai; physical count ke baad stock set karein.`;
+          success = `${action.name} प्रोडक्ट बन गया है। इसमें ${action.sizes.length} साइज़ हैं और शुरुआती स्टॉक शून्य है। गिनती के बाद स्टॉक अपडेट कर सकती हैं।`;
         } else if (action.type === "product_update") {
           await apiPatch(`${API}/products/${encodeURIComponent(action.sku)}`, action.changes);
           success = `${action.sku} product details update ho gayi.`;
@@ -1630,8 +1630,8 @@ function restoreAssistantMessages() {
 
 function assistantGreeting() {
   const hour = new Date().getHours();
-  const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
-  return `${greeting}! Main Disha, aapki Inventory Assistant hoon. Product, colour, size aur stock ke baare mein bataiye—main pehle current stock check karke, update se pehle aapse confirm karungi. Aaj main aapki kya help kar sakti hoon?`;
+  const greeting = hour < 12 ? "सुप्रभात" : hour < 17 ? "नमस्कार" : "शुभ संध्या";
+  return `${greeting}! मैं दिशा, आपकी इन्वेंटरी सहायक हूँ। प्रोडक्ट, रंग, साइज़ या स्टॉक के बारे में बताइए। मैं पहले मौजूदा स्टॉक जाँचूँगी और बदलाव करने से पहले आपसे पुष्टि करूँगी। आज मैं आपकी क्या मदद करूँ?`;
 }
 
 function openAssistant({ speakGreeting = true, focusInput = true, greetingText = null } = {}) {
@@ -1752,7 +1752,7 @@ function updateDishaListeningUI(message = "") {
   const button = $("assistant-pause");
   const isListening = assistantWakeEnabled && !assistantPaused && !assistantMicBlocked && Boolean(assistantMicStream);
   indicator?.classList.toggle("is-listening", isListening);
-  if (state) state.textContent = message || (assistantPaused ? "Tap Disha to start voice" : assistantMicBlocked ? "Allow microphone access in browser settings" : isListening ? (assistantWakeArmed ? "Listening · say ‘Hi Disha’" : "Listening · Hindi and English") : assistantMicStarting ? "Connecting microphone…" : "Starting voice chat…");
+  if (state) state.textContent = message || (assistantPaused ? "दिशा को आवाज़ देने के लिए टैप करें" : assistantMicBlocked ? "ब्राउज़र में माइक्रोफ़ोन की अनुमति दें" : isListening ? (assistantWakeArmed ? "सुन रही हूँ · ‘हाय दिशा’ बोलें" : "हिंदी में बोलें") : assistantMicStarting ? "माइक्रोफ़ोन जुड़ रहा है…" : "वॉइस चैट शुरू हो रही है…");
   dot?.classList.toggle("is-listening", isListening);
   if (button) {
     button.classList.toggle("is-paused", assistantPaused);

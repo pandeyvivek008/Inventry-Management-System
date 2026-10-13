@@ -35,7 +35,7 @@ async def fake_transcribe(audio, filename, content_type):
 
 async def fake_speech(text):
     check("Disha" in text, "speech endpoint receives assistant text")
-    return b"fake-mp3"
+    return b"RIFFfake-wav"
 
 
 main.assistant_service.api_key_configured = lambda: True
@@ -65,8 +65,8 @@ transcribed = client.post("/api/assistant/transcribe", files={
 check(transcribed.status_code == 200 and transcribed.json()["text"] == "Blue kurta size M mein 3 add karo",
       "Hindi/English voice transcript endpoint")
 spoken = client.post("/api/assistant/speech", json={"text": "Hello, main Disha hoon"})
-check(spoken.status_code == 200 and spoken.content == b"fake-mp3" and spoken.headers["content-type"].startswith("audio/mpeg"),
-      "spoken response endpoint returns audio without exposing provider keys")
+check(spoken.status_code == 200 and spoken.content == b"RIFFfake-wav" and spoken.headers["content-type"].startswith("audio/wav"),
+      "spoken response endpoint serves Gemini WAV audio with the correct content type")
 created = client.post("/api/products", json={
     "sku": "DISHA-TEST-01", "name": "Blue Kurta", "category": "Kurta Set",
     "variants": [{"size": "S", "initial_stock": 12}, {"size": "M", "initial_stock": 4}],
@@ -120,13 +120,17 @@ check(stale.status_code == 409, "stale stock confirmation rejected")
 check(ask("missing", intent="stock_add", product_query="Blue Kurta", size="XL", quantity=2)["status"] == "missing_size",
       "missing size is safely explained")
 
-proposal = ask("create", intent="product_create", sku="DISHA-NEW-02", product_name="Green Suit", sizes="S M")
-check(proposal["status"] == "confirm_action", "product create requires confirmation")
+proposal = ask("नया प्रोडक्ट बनाओ", intent="product_create", sku="DISHA-NEW-02", product_name="Green Suit", sizes="एस एम एल")
+check(proposal["status"] == "confirm_action" and proposal["action"]["sizes"] == ["S", "M", "L"],
+      "Hindi voice product creation parses Hindi size names and requires confirmation")
+check("Green Suit" in proposal["reply"] and "क्या सेव कर दूँ" in proposal["reply"],
+      "product creation confirmation is understandable Hindi")
 created = client.post("/api/products", json={
     "sku": proposal["action"]["sku"], "name": proposal["action"]["name"],
     "variants": [{"size": size, "initial_stock": 0} for size in proposal["action"]["sizes"]],
 })
-check(created.status_code == 200, "confirmed product create succeeds")
+check(created.status_code == 200 and len(created.json()["variants"]) == 3,
+      "confirmed voice product create succeeds with all requested sizes")
 
 proposal = ask("rename", intent="product_update", product_query="Blue Kurta", new_name="Blue Kurta Updated")
 changed = client.patch(f"/api/products/{proposal['action']['sku']}", json=proposal["action"]["changes"])

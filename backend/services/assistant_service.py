@@ -7,6 +7,7 @@ import base64
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from urllib.parse import quote
 
@@ -21,10 +22,13 @@ load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 logger = logging.getLogger(__name__)
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 OPENAI_API_URL = "https://api.openai.com/v1/responses"
-DEFAULT_MODEL = "gemini-3.5-flash-lite"
+DEFAULT_MODEL = "gemini-3.8-flash"
 DEFAULT_OPENAI_MODEL = "gpt-5-mini"
 OPENAI_TRANSCRIPTION_URL = "https://api.openai.com/v1/audio/transcriptions"
 OPENAI_SPEECH_URL = "https://api.openai.com/v1/audio/speech"
+GEMINI_INTERACTIONS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
+GEMINI_VOICES_URL = "https://generativelanguage.googleapis.com/v1beta/voices"
+_female_voice_cache: tuple[float, str] | None = None
 
 INTENT_SCHEMA = {
     "type": "object",
@@ -48,7 +52,7 @@ INTENT_SCHEMA = {
     "additionalProperties": False,
 }
 
-SYSTEM_PROMPT = """You are Disha, a warm, capable conversational assistant. Understand Hindi, Hinglish, and English.
+SYSTEM_PROMPT = """You are Disha, a warm, capable Hindi-only conversational assistant. Understand natural spoken Hindi, Devanagari Hindi, and Romanized Hindi/Hinglish, but always answer in natural Hindi using Devanagari script. Do not answer in English. Keep actual catalog product names and SKU identifiers exactly as stored when needed for an unambiguous inventory result.
 Return only the required JSON object. Never invent a product, SKU, size, or stock value.
 Allowed intent: stock_add, stock_set, stock_check, product_search, alerts_summary, reorder_summary, pending_orders, recent_activity, product_create, product_update, product_archive, product_restore, order_dispatch, daily_sales, app_status, conversation, help, other.
 Examples:
@@ -68,6 +72,7 @@ Examples:
 - 'pending orders kitne hain', 'orders ka status batao' => pending_orders.
 - 'recent stock changes/history dikhao' => recent_activity; product_query can narrow it.
 - Product creation => product_create. Extract only explicitly provided sku, product_name, category, and comma-separated sizes. Never invent missing SKU/name/sizes.
+- Hindi voice product creation example: 'नया प्रोडक्ट बनाओ, SKU DRESS-21, नाम नीली ड्रेस, साइज़ एस एम एल' or 'DRESS-21 नीली ड्रेस के एस एम एल साइज़ जोड़ो' => product_create, sku='DRESS-21', product_name='नीली ड्रेस', sizes='S M L'. If any required field is unclear, ask for it; do not save until the app asks for confirmation.
 - Product metadata changes => product_update; product_query identifies the existing design; fill only explicitly requested new_sku, new_name, or new_category.
 - 'move design to trash/delete design' => product_archive; product_query identifies the design. 'restore design' => product_restore.
 - 'dispatch batch 123' => order_dispatch and order_id=123. Never dispatch without an explicitly identified batch ID.
@@ -82,7 +87,7 @@ For stock_add, quantity means units to add. For stock_set, it means the final ph
 Do not put the product's size, quantity, action words, or generic words like 'design', 'product', 'stock' in product_query.
 
 Also return `reply`:
-- For conversation, help, or other, write a natural, useful answer as Disha. Match the user's language and tone; use recent chat history so follow-up conversation makes sense. Be friendly and conversational like a general chat assistant, not a fixed FAQ. Answer ordinary non-inventory questions directly when you can; be honest when unsure. Keep most replies to 1–3 short sentences and ask one clear follow-up only when it helps. Do not repeat an earlier greeting, recap, or answer unless the user asks; don't steer every topic back to inventory.
+- For conversation, help, or other, write a natural, useful answer as Disha in Hindi (Devanagari) only, whatever language/script the user used. Use recent chat history so follow-up conversation makes sense. Be friendly and conversational like a general chat assistant, not a fixed FAQ. Answer ordinary non-inventory questions directly when you can; be honest when unsure. Keep most replies to 1–3 short sentences and ask one clear follow-up only when it helps. Do not repeat an earlier greeting, recap, or answer unless the user asks; don't steer every topic back to inventory.
 - For app_status and data/action intents (stock_add, stock_set, stock_check, product_search, alerts_summary, reorder_summary, pending_orders, recent_activity, product_create, product_update, product_archive, product_restore, order_dispatch, daily_sales), leave reply empty; the application will validate against live data and present a confirmation proposal.
 - Never claim you changed stock. The application handles stock actions separately and requires confirmation.
 - Disha can answer from the live app catalog, size-level inventory, alerts, reorder shortages, pending orders, stock history, daily dispatched sales, and overall dashboard status. Stock changes, product create/edit/archive/restore, and order dispatch are performed only through an app-provided action card after explicit user confirmation. Never say an action succeeded before the app confirms it. Do not claim arbitrary database, file-upload, settings, or code access.
@@ -112,22 +117,27 @@ def _audio_provider_error(status: int, feature: str) -> AssistantProviderError:
 
 
 async def transcribe_audio(audio: bytes, filename: str, content_type: str) -> str:
-    """Transcribe a short utterance with OpenAI, falling back to Gemini in auto mode."""
+    """Transcribe a short Hindi utterance using the configured provider."""
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
-    provider = os.getenv("AI_PROVIDER", "auto").strip().lower()
-    if provider == "gemini" and gemini_key:
+    provider = os.getenv("AI_PROVIDER", "gemini").strip().lower()
+    if provider == "gemini" and not gemini_key:
+        raise AssistantProviderError(
+            "GEMINI_API_KEY is required for Hindi voice transcription.",
+            user_message="हिंदी वॉइस के लिए Railway Variables में GEMINI_API_KEY जोड़ें।",
+        )
+    if provider == "gemini":
         return await _transcribe_with_gemini(audio, content_type, gemini_key)
     if not api_key and gemini_key and provider == "auto":
         return await _transcribe_with_gemini(audio, content_type, gemini_key)
     if not api_key:
         raise AssistantProviderError(
             "No audio transcription provider key is configured.",
-            user_message="Voice ke liye Railway Variables mein OPENAI_API_KEY ya GEMINI_API_KEY chahiye. Tab tak type karke baat karein.",
+            user_message="हिंदी वॉइस के लिए Railway Variables में GEMINI_API_KEY जोड़ें। तब तक टाइप करके बात कर सकती हैं।",
         )
     prompt = (
-        "Transcribe spoken Hindi, Hinglish, or English exactly in its original script and language. "
-        "Keep product names, colours, sizes, quantities, and SKU words as spoken. Do not translate or answer. "
+        "Transcribe spoken Hindi only. Write Hindi words in Devanagari, even when the speaker uses casual Hindi pronunciation. "
+        "Keep product names, colours, sizes, quantities, and SKU identifiers as spoken. Do not translate or answer. "
         "Inventory vocabulary: size S M L XL XXL, stock, pieces, add, set, delete, restore, dispatch."
     )
     try:
@@ -183,8 +193,8 @@ async def _transcribe_with_gemini(audio: bytes, content_type: str, api_key: str)
     payload = {
         "contents": [{"role": "user", "parts": [
             {"text": (
-                "Transcribe this speech exactly as spoken in Hindi, Hinglish, or English. "
-                "Keep product names, colours, sizes and quantities. Do not translate, answer, or add commentary. "
+                "Transcribe this speech in Hindi only. Write Hindi words in Devanagari, but preserve actual product names, SKU identifiers, size labels, and numbers as spoken. "
+                "Do not translate, answer, or add commentary. "
                 "Return only the transcript."
             )},
             {"inlineData": {"mimeType": mime_type, "data": base64.b64encode(audio).decode("ascii")}},
@@ -224,40 +234,81 @@ async def _transcribe_with_gemini(audio: bytes, content_type: str, api_key: str)
         ) from exc
 
 
-async def synthesize_speech(text: str) -> bytes:
-    """Render Disha with a friendly built-in TTS voice (no voice cloning)."""
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if not api_key:
-        raise AssistantProviderError("OPENAI_API_KEY is required for generated speech.")
-    payload = {
-        "model": os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts"),
-        "voice": os.getenv("OPENAI_TTS_VOICE", "coral"),
-        "input": text[:1200],
-        "instructions": "Speak Hindi, Hinglish, or English in a warm, friendly, gently upbeat feminine-sounding conversational voice. Keep it cute and pleasant without sounding childish or exaggerated. Use clear Indian pronunciation, natural pauses, and an expressive but calm tone. Say product names as readable words; do not spell punctuation or SKU separators aloud.",
-        "response_format": "mp3",
-    }
+async def _gemini_female_hindi_voice(api_key: str) -> str:
+    """Cache the first Hindi female conversational voice returned by Gemini."""
+    global _female_voice_cache
+    configured_voice = os.getenv("GEMINI_TTS_VOICE", "").strip()
+    if configured_voice:
+        return configured_voice
+    now = time.monotonic()
+    if _female_voice_cache and now - _female_voice_cache[0] < 86400:
+        return _female_voice_cache[1]
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(40.0, connect=7.0)) as client:
+            response = await client.get(
+                GEMINI_VOICES_URL,
+                headers={"x-goog-api-key": api_key},
+                params={"language_code": "hi-IN", "gender": "female", "context": "Conversational", "type": "prebuilt", "search": "warm", "page_size": 50},
+            )
+        if response.status_code >= 400:
+            logger.warning("Gemini voice library returned HTTP %s; using configured fallback voice.", response.status_code)
+            return os.getenv("GEMINI_TTS_FALLBACK_VOICE", "Kore").strip() or "Kore"
+        voices = response.json().get("voices", [])
+        match = next((voice for voice in voices if voice.get("id")), None)
+        voice_id = str(match["id"]) if match else (os.getenv("GEMINI_TTS_FALLBACK_VOICE", "Kore").strip() or "Kore")
+        _female_voice_cache = (now, voice_id)
+        return voice_id
+    except (httpx.HTTPError, ValueError, TypeError) as exc:
+        logger.warning("Gemini voice library lookup failed (%s); using configured fallback voice.", type(exc).__name__)
+        return os.getenv("GEMINI_TTS_FALLBACK_VOICE", "Kore").strip() or "Kore"
+
+
+async def synthesize_speech(text: str) -> bytes:
+    """Render Hindi speech with Gemini TTS and a Hindi female voice."""
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        raise AssistantProviderError("GEMINI_API_KEY is required for generated Hindi speech.", user_message="हिंदी आवाज़ के लिए Railway Variables में GEMINI_API_KEY जोड़ें।")
+    voice = await _gemini_female_hindi_voice(api_key)
+    payload = {
+        "model": os.getenv("GEMINI_TTS_MODEL", "gemini-3.8-flash-lite-tts").strip() or "gemini-3.8-flash-lite-tts",
+        "input": [{"type": "user_input", "content": [{
+            "type": "text", "text": text[:1200],
+            "annotations": [{"type": "speech_metadata", "style": "warm, friendly, gently cheerful Hindi conversation, natural Indian pronunciation, clear moderate pace, pleasant feminine voice"}],
+        }]}],
+        "response_format": {"type": "audio"},
+        "generation_config": {"speech_config": [{"voice": voice}]},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(45.0, connect=7.0)) as client:
             response = await client.post(
-                OPENAI_SPEECH_URL,
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                GEMINI_INTERACTIONS_URL,
+                headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
                 json=payload,
             )
         if response.status_code >= 400:
-            logger.warning("OpenAI speech returned HTTP %s: %s", response.status_code, response.text[:300])
-            raise _audio_provider_error(response.status_code, "speech")
-        return response.content
+            logger.warning("Gemini speech returned HTTP %s: %s", response.status_code, response.text[:300])
+            status = response.status_code
+            advice = "Gemini API key/model access check karein." if status in (401, 403, 404) else "Gemini quota/rate limit check karein." if status == 429 else "Gemini voice service abhi response nahi de paayi."
+            raise AssistantProviderError(f"Gemini speech returned HTTP {status}.", upstream_status=status, user_message=f"{advice} (Gemini TTS HTTP {status})")
+        body = response.json()
+        audio_data = body.get("output_audio", {}).get("data")
+        if not audio_data:
+            audio_items = [part for step in body.get("steps", []) if step.get("type") == "model_output" for part in step.get("content", []) if part.get("type") == "audio" and part.get("data")]
+            audio_data = audio_items[-1]["data"] if audio_items else None
+        if not audio_data:
+            raise AssistantProviderError("Gemini TTS returned no audio.", user_message="Gemini se awaaz nahi bani. Text mein jawab dikhaya hai.")
+        return base64.b64decode(audio_data, validate=True)
     except AssistantProviderError:
         raise
-    except httpx.HTTPError as exc:
-        logger.warning("OpenAI speech failed (%s).", type(exc).__name__)
+    except (httpx.HTTPError, ValueError, TypeError) as exc:
+        logger.warning("Gemini speech failed (%s).", type(exc).__name__)
         raise AssistantProviderError(
-            "OpenAI speech generation failed.", user_message="Voice response abhi generate nahi hui. Browser voice par fallback karenge."
+            "Gemini speech generation failed.", user_message="हिंदी आवाज़ अभी नहीं बन पाई। जवाब टेक्स्ट में उपलब्ध है।"
         ) from exc
 
 
 def active_provider() -> str | None:
-    requested = os.getenv("AI_PROVIDER", "auto").strip().lower()
+    requested = os.getenv("AI_PROVIDER", "gemini").strip().lower()
     has_openai = bool(os.getenv("OPENAI_API_KEY", "").strip())
     has_gemini = bool(os.getenv("GEMINI_API_KEY", "").strip())
     if requested == "openai":
@@ -289,7 +340,7 @@ def _openai_json_schema(schema: dict) -> dict:
 async def parse_inventory_request(message: str, history: list[dict], *, _provider_override: str | None = None) -> dict:
     provider = _provider_override or active_provider()
     if not provider:
-        raise AssistantProviderError("No AI provider key is configured. Set OPENAI_API_KEY or GEMINI_API_KEY in Railway Variables.")
+        raise AssistantProviderError("No Gemini API key is configured. Set GEMINI_API_KEY in Railway Variables.")
 
     conversation = []
     for item in history[-10:]:
@@ -455,7 +506,7 @@ async def parse_inventory_request(message: str, history: list[dict], *, _provide
 
 async def _fallback_or_raise(message: str, history: list[dict], provider: str, override: str | None, error: AssistantProviderError) -> dict:
     """Use the secondary configured API in auto mode, then report both failures."""
-    if not override and os.getenv("AI_PROVIDER", "auto").strip().lower() == "auto":
+    if not override and os.getenv("AI_PROVIDER", "gemini").strip().lower() == "auto":
         fallback = "gemini" if provider == "openai" else "openai"
         fallback_key = "GEMINI_API_KEY" if fallback == "gemini" else "OPENAI_API_KEY"
         if os.getenv(fallback_key, "").strip():

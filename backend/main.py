@@ -386,7 +386,7 @@ async def inventory_assistant_chat(payload: schemas.AssistantChatRequest, reques
     explicit stock-adjustment confirmation flow.
     """
     if not assistant_service.api_key_configured():
-        raise HTTPException(status_code=503, detail="No AI key is configured. Add OPENAI_API_KEY (recommended) or GEMINI_API_KEY to the Railway app service Variables, then redeploy.")
+        raise HTTPException(status_code=503, detail="Disha ke liye Railway app service Variables mein GEMINI_API_KEY add karein, phir redeploy karein.")
     client_ip = request.client.host if request.client else "unknown"
     if not _assistant_rate_limit(client_ip):
         raise HTTPException(status_code=429, detail="Assistant request limit reached. Please wait a minute and try again.")
@@ -509,17 +509,20 @@ async def inventory_assistant_chat(payload: schemas.AssistantChatRequest, reques
         name = intent["product_name"].strip()
         # Accept natural voice lists such as "S M L", comma-separated lists,
         # and multi-word size labels without splitting FREE SIZE into two.
-        raw_sizes = re.findall(r"FREE\s+SIZE|ONE\s+SIZE|[A-Za-z0-9-]+", intent["sizes"], flags=re.IGNORECASE)
+        size_text = intent["sizes"].upper()
+        for hindi_size, latin_size in (("डबल एक्सएल", "XXL"), ("एक्स्ट्रा लार्ज", "XL"), ("फ्री साइज", "FREE SIZE"), ("फ्री साइज़", "FREE SIZE"), ("एक्सएल", "XL"), ("एस", "S"), ("एम", "M"), ("एल", "L")):
+            size_text = size_text.replace(hindi_size.upper(), latin_size)
+        raw_sizes = re.findall(r"FREE\s+SIZE|ONE\s+SIZE|[A-Za-z0-9-]+", size_text, flags=re.IGNORECASE)
         sizes = [_assistant_size(value) for value in raw_sizes if value.strip()]
         sizes = list(dict.fromkeys(size for size in sizes if size))
         if not sku or not name or not sizes:
-            return {"status": "clarify", "reply": "Product banane ke liye SKU, product name aur sizes batayein. Example: 'SKU DRESS-21, name Blue Dress, sizes S M L ke saath product banao.'"}
+            return {"status": "clarify", "reply": "नया प्रोडक्ट बनाने के लिए उसका SKU, नाम और साइज़ बताइए। उदाहरण: SKU DRESS-21, नाम नीली ड्रेस, साइज़ एस एम एल। सेव करने से पहले मैं आपसे पुष्टि करूँगी।"}
         if len(sku) > 64 or len(name) > 300:
-            return {"status": "clarify", "reply": "SKU ya product name allowed length se zyada hai. Chhota SKU aur naam batayein."}
+            return {"status": "clarify", "reply": "SKU या प्रोडक्ट का नाम बहुत लंबा है। कृपया छोटा SKU और नाम बताइए।"}
         existing = db.query(models.Product).filter(models.Product.sku == sku).first()
         if existing:
-            return {"status": "clarify", "reply": f"SKU {sku} pehle se catalog ya Trash mein hai. Existing design ko edit/restore karein ya alag SKU dein."}
-        return {"status": "confirm_action", "reply": f"Naya design {name} ({sku}) banega, sizes {', '.join(sizes)} ke saath. Har size ka starting stock 0 rahega. Confirm karun?", "action": {"type": "product_create", "sku": sku, "name": name, "category": intent["category"] or None, "sizes": sizes}}
+            return {"status": "clarify", "reply": f"SKU {sku} पहले से कैटलॉग या ट्रैश में मौजूद है। मौजूदा प्रोडक्ट को एडिट या रिस्टोर करें, या दूसरा SKU बताइए।"}
+        return {"status": "confirm_action", "reply": f"मैं {name} प्रोडक्ट, SKU {sku}, साइज़ {', '.join(sizes)} के साथ बनाऊँगी। हर साइज़ का शुरुआती स्टॉक शून्य रहेगा। क्या सेव कर दूँ?", "action": {"type": "product_create", "sku": sku, "name": name, "category": intent["category"] or None, "sizes": sizes}}
     if action in {"product_update", "product_archive", "product_restore"}:
         product_query = payload.selected_sku.strip().upper() if payload.selected_sku else intent.get("product_query", "").strip()
         if not product_query:
@@ -682,7 +685,8 @@ async def assistant_speech(payload: schemas.AssistantSpeechRequest, request: Req
         audio = await assistant_service.synthesize_speech(payload.text)
     except assistant_service.AssistantProviderError as exc:
         raise HTTPException(503, detail=exc.user_message) from exc
-    return Response(content=audio, media_type="audio/mpeg", headers={"Cache-Control": "no-store"})
+    media_type = "audio/wav" if audio.startswith(b"RIFF") else "audio/mpeg"
+    return Response(content=audio, media_type=media_type, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/products/bulk-template")
