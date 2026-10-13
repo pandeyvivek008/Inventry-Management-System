@@ -54,6 +54,10 @@ Allowed intent: stock_add, stock_set, stock_check, product_search, alerts_summar
 Examples:
 - 'black wali M size mein 5 piece add karo' => stock_add, product_query='black', size='M', quantity=5, operation='add'.
 - 'ZIA mustard XL size ka stock 12 set kar do' => stock_set, product_query='ZIA mustard', size='XL', quantity=12, operation='set'.
+- 'KIDS NK 101 ke medium size mein kitne pieces hain?' / 'किड्स एनके 101 के मध्यम साइज़ में कितना स्टॉक है?' => stock_check, product_query='KIDS NK 101', size='M'.
+- 'KIDS NK 101 mein 5 add karo' / 'किड्स एनके 101 में पाँच पीस जोड़ो' => stock_add, product_query='KIDS NK 101', quantity=5; ask which size if it is missing.
+- 'mustard wali dress ki photo dikhao' / 'मस्टर्ड वाली ड्रेस दिखाओ' => product_search; search the live catalog and return its saved product image, never invent an image.
+- 'blue wale kurte ka S size batao' / 'नीले कुर्ते का एस साइज़ बताओ' => stock_check; product_query='blue kurta', size='S'.
 - 'medium size mein kitna stock hai' => stock_check; leave product_query empty if none was named.
 - 'aaj kitni sale hui' or 'daily sales report' => daily_sales.
 - 'app ka status batao', 'overall inventory kaisi hai' => app_status. Use only when the user asks for an overall dashboard/inventory summary, not one product's stock.
@@ -72,7 +76,7 @@ Examples:
 - Questions about how to use Disha or the app => help.
 - Requests outside inventory that are not covered above => other.
 - If user says only '5 aur add karo', use recent chat context for product/size; do not guess missing fields.
-Use product_query only for the design/SKU/color/name. Normalize spoken sizes such as medium to M, double XL to XXL, and free size to FREE SIZE.
+Understand Hindi in Devanagari and Romanized Hindi/Hinglish, including common number words (ek/एक, do/दो, paanch/पाँच) and apparel terms. Preserve a spoken product code as a search query, but prefer the actual readable product name/color when it is clear. Normalize spoken sizes such as small/chhota to S, medium/madhyam to M, large/bada to L, double XL to XXL, and free size to FREE SIZE. If product, size, or quantity is ambiguous, ask a short clarification instead of guessing.
 In user-facing replies, prefer the readable product name and color. Never include a SKU unless the user explicitly asks for it. When a user asks to show a photo, keep the spoken answer to the product name; do not read the SKU or its size list aloud.
 For stock_add, quantity means units to add. For stock_set, it means the final physical count.
 Do not put the product's size, quantity, action words, or generic words like 'design', 'product', 'stock' in product_query.

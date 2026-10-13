@@ -315,7 +315,14 @@ def _assistant_rate_limit(client_ip: str) -> bool:
 
 def _assistant_size(value: str) -> str:
     normalized = re.sub(r"\s+", " ", (value or "").strip().upper())
-    aliases = {"SMALL": "S", "MEDIUM": "M", "LARGE": "L", "2XL": "XXL", "XXXL": "3XL", "FREE-SIZE": "FREE SIZE", "ONE SIZE": "FREE SIZE"}
+    aliases = {
+        "SMALL": "S", "स्मॉल": "S", "छोटा": "S", "छोटी": "S",
+        "MEDIUM": "M", "मीडियम": "M", "मध्यम": "M",
+        "LARGE": "L", "लार्ज": "L", "बड़ा": "L", "बड़ी": "L", "बड़ी": "L",
+        "EXTRA LARGE": "XL", "एक्स्ट्रा लार्ज": "XL",
+        "2XL": "XXL", "2X-LARGE": "XXL", "DOUBLE XL": "XXL", "डबल एक्सएल": "XXL", "डबल एक्स्ट्रा लार्ज": "XXL",
+        "XXXL": "3XL", "FREE-SIZE": "FREE SIZE", "फ्री साइज": "FREE SIZE", "फ्री साइज़": "FREE SIZE", "ONE SIZE": "FREE SIZE", "एक साइज": "FREE SIZE",
+    }
     return aliases.get(normalized, normalized)
 
 

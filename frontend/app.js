@@ -1391,12 +1391,48 @@ function setAssistantPhotoZoom(value) {
   if (reset) reset.textContent = `${Math.round(assistantPhotoZoom * 100)}%`;
 }
 
+function assistantProductImageUrl(path) {
+  const source = String(path || "").trim();
+  if (!source || /^(?:data:|blob:)/i.test(source)) return source;
+  const rooted = /^(?:https?:)?\/\//i.test(source) || source.startsWith("/") ? source : `/${source}`;
+  return `${rooted}${rooted.includes("?") ? "&" : "?"}v=${Date.now()}`;
+}
+
+function showUnavailableProductImage(image, name) {
+  if (!image?.parentElement) return;
+  const placeholder = document.createElement("div");
+  placeholder.className = image.closest(".assistant-product-photo-button") ? "assistant-product-no-image" : "assistant-photo-preview-empty";
+  placeholder.innerHTML = '<i class="fa-solid fa-image"></i><span>Photo unavailable</span>';
+  placeholder.setAttribute("role", "img");
+  placeholder.setAttribute("aria-label", `${name || "Product"} photo unavailable`);
+  const button = image.closest(".assistant-product-photo-button");
+  if (button) button.replaceWith(placeholder);
+  else image.replaceWith(placeholder);
+}
+
 function openAssistantPhotoLightbox(product = assistantCurrentPhotoProduct) {
   if (!product?.image_path) return;
   assistantCurrentPhotoProduct = product;
   $("assistant-photo-lightbox-title").textContent = product.name;
   const image = $("assistant-photo-zoom-image");
-  image.src = `${product.image_path}${product.image_path.includes("?") ? "&" : "?"}v=${Date.now()}`;
+  image.onerror = () => {
+    image.hidden = true;
+    const viewport = $("assistant-photo-viewport");
+    let unavailable = viewport.querySelector(".assistant-photo-unavailable");
+    if (!unavailable) {
+      unavailable = document.createElement("div");
+      unavailable.className = "assistant-photo-unavailable";
+      viewport.appendChild(unavailable);
+    }
+    unavailable.textContent = `${product.name} photo is unavailable. Check the saved image file.`;
+  };
+  image.onload = () => {
+    image.hidden = false;
+    $("assistant-photo-viewport").querySelector(".assistant-photo-unavailable")?.remove();
+  };
+  image.hidden = false;
+  $("assistant-photo-viewport").querySelector(".assistant-photo-unavailable")?.remove();
+  image.src = assistantProductImageUrl(product.image_path);
   image.alt = `${product.name} product photo`;
   $("assistant-photo-lightbox").hidden = false;
   setAssistantPhotoZoom(1);
@@ -1408,7 +1444,8 @@ function setAssistantPhotoPreview(product) {
   assistantCurrentPhotoProduct = product;
   const preview = $("assistant-photo-preview");
   preview.hidden = false;
-  preview.innerHTML = `<header class="assistant-photo-preview-head"><strong title="${esc(product.name)}">${esc(product.name)}</strong><button type="button" data-photo-close aria-label="Close product photo"><i class="fa-solid fa-xmark"></i></button></header>${product.image_path ? `<div class="assistant-photo-preview-image"><button type="button" data-photo-open aria-label="Zoom ${esc(product.name)} photo"><img src="${esc(product.image_path)}?v=${Date.now()}" alt="${esc(product.name)} product photo"></button></div>` : '<div class="assistant-photo-preview-empty"><i class="fa-solid fa-image"></i>&nbsp; No photo added</div>'}<div class="assistant-photo-preview-actions"><button type="button" data-photo-change><i class="fa-solid fa-camera"></i> ${product.image_path ? "Change photo" : "Add photo"}</button><button type="button" data-photo-details>Open product & sizes</button></div>`;
+  preview.innerHTML = `<header class="assistant-photo-preview-head"><strong title="${esc(product.name)}">${esc(product.name)}</strong><button type="button" data-photo-close aria-label="Close product photo"><i class="fa-solid fa-xmark"></i></button></header>${product.image_path ? `<div class="assistant-photo-preview-image"><button type="button" data-photo-open aria-label="Zoom ${esc(product.name)} photo"><img src="${esc(assistantProductImageUrl(product.image_path))}" alt="${esc(product.name)} product photo"></button></div>` : '<div class="assistant-photo-preview-empty"><i class="fa-solid fa-image"></i>&nbsp; No photo added</div>'}<div class="assistant-photo-preview-actions"><button type="button" data-photo-change><i class="fa-solid fa-camera"></i> ${product.image_path ? "Change photo" : "Add photo"}</button><button type="button" data-photo-details>Open product & sizes</button></div>`;
+  preview.querySelector(".assistant-photo-preview-image img")?.addEventListener("error", (event) => showUnavailableProductImage(event.currentTarget, product.name), { once: true });
   preview.querySelector("[data-photo-close]").addEventListener("click", () => { preview.hidden = true; });
   preview.querySelector("[data-photo-open]")?.addEventListener("click", () => openAssistantPhotoLightbox(product));
   preview.querySelector("[data-photo-change]").addEventListener("click", () => $("assistant-photo-input").click());
@@ -1560,7 +1597,8 @@ function addAssistantMessage(role, content, options = {}) {
       card.className = "assistant-product-card";
       card.dataset.sku = product.sku;
       const sizes = (product.sizes || []).map((item) => `${esc(item.size)}: ${item.counted ? Number(item.stock) : "not counted"}`).join(" · ") || "No active sizes";
-      card.innerHTML = `${product.image_path ? `<button class="assistant-product-photo-button" type="button" aria-label="Show ${esc(product.name)} photo"><img src="${esc(product.image_path)}?v=${Date.now()}" alt="${esc(product.name)}" loading="lazy"></button>` : '<div class="assistant-product-no-image"><i class="fa-solid fa-image"></i><span>Photo not added</span></div>'}<div class="assistant-product-copy"><strong>${esc(product.name)}</strong><small>${esc(product.sku)}${product.category ? ` · ${esc(product.category)}` : ""}</small><small>${sizes}</small><button class="assistant-product-pick" type="button">Open all sizes</button></div>`;
+      card.innerHTML = `${product.image_path ? `<button class="assistant-product-photo-button" type="button" aria-label="Show ${esc(product.name)} photo"><img src="${esc(assistantProductImageUrl(product.image_path))}" alt="${esc(product.name)}" loading="lazy"></button>` : '<div class="assistant-product-no-image"><i class="fa-solid fa-image"></i><span>Photo not added</span></div>'}<div class="assistant-product-copy"><strong>${esc(product.name)}</strong><small>${esc(product.sku)}${product.category ? ` · ${esc(product.category)}` : ""}</small><small>${sizes}</small><button class="assistant-product-pick" type="button">Open all sizes</button></div>`;
+      card.querySelector(".assistant-product-photo-button img")?.addEventListener("error", (event) => showUnavailableProductImage(event.currentTarget, product.name), { once: true });
       card.querySelector(".assistant-product-photo-button")?.addEventListener("click", () => {
         setAssistantPhotoPreview(product);
         if (product.image_path) openAssistantPhotoLightbox(product);
@@ -1574,7 +1612,9 @@ function addAssistantMessage(role, content, options = {}) {
       list.appendChild(card);
     });
     bubble.appendChild(list);
-    setAssistantPhotoPreview(options.products[0]);
+    // Don't choose a photo for the user when a broad search has several
+    // possible designs; that could display a different colour/design's image.
+    if (options.products.length === 1) setAssistantPhotoPreview(options.products[0]);
   }
   messages.scrollTop = messages.scrollHeight;
   return bubble;

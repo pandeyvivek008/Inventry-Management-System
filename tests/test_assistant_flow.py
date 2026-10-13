@@ -10,6 +10,7 @@ os.environ["DATABASE_URL"] = f"sqlite:///{_test_db.replace(os.sep, '/')}"
 
 from fastapi.testclient import TestClient  # noqa: E402
 import main  # noqa: E402
+from database import SessionLocal  # noqa: E402
 
 client = TestClient(main.app)
 main._assistant_rate_limit = lambda _client_ip: True
@@ -71,12 +72,21 @@ created = client.post("/api/products", json={
     "variants": [{"size": "S", "initial_stock": 12}, {"size": "M", "initial_stock": 4}],
 })
 check(created.status_code == 200, "isolated Disha catalog created")
+with SessionLocal() as db:
+    blue_kurta = db.query(main.models.Product).filter_by(sku="DISHA-TEST-01").one()
+    blue_kurta.image_path = "/static/product_images/disha-test-blue.jpg"
+    db.commit()
 conversation = ask("hello")
 check(conversation["status"] == "reply", "normal conversation reply")
 result = ask("stock", intent="stock_check", product_query="Blue Kurta", size="S")
 check(result["stock"]["current_stock"] == 12, "stock query reads the live catalog")
+result = ask("Hindi size query", intent="stock_check", product_query="Blue Kurta", size="मध्यम")
+check(result["stock"]["size"] == "M" and result["stock"]["current_stock"] == 4,
+      "Hindi size word resolves to the exact live database variant")
 result = ask("design", intent="product_search", product_query="Blue Kurta")
 check(len(result["products"][0]["sizes"]) == 2, "design query returns every size")
+check(result["products"][0]["image_path"] == "/static/product_images/disha-test-blue.jpg",
+      "product search returns the image saved on that exact catalog record")
 result = ask("all sizes", intent="product_search", product_query="Blue Kurta")
 check(result["status"] == "product_search" and len(result["products"][0]["sizes"]) == 2,
       "all-size follow-up returns the full design")
