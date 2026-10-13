@@ -148,28 +148,11 @@ function noteAlertCount(n) {
 let assistantSpeaking = false;
 let assistantSpeechId = 0;
 let assistantSpeechGuardTimer = null;
-let assistantSpeechVoice = null;
 let assistantIgnoreTranscriptUntil = 0;
 let assistantCurrentPhotoProduct = null;
 let assistantPhotoZoom = 1;
 let assistantAudioPlayer = null;
 let assistantAudioObjectUrl = null;
-function chooseDishaVoice() {
-  if (!window.speechSynthesis) return;
-  const voices = window.speechSynthesis.getVoices();
-  const indianVoices = voices.filter((voice) => /^(hi|en)(-|_)?in$/i.test(voice.lang));
-  const hindiVoices = indianVoices.filter((voice) => /^hi(-|_)?in$/i.test(voice.lang));
-  const femaleVoiceName = /female|swara|kalpana|heera|priya|neerja|google hindi|google हिन्दी/i;
-  assistantSpeechVoice = hindiVoices.find((voice) => femaleVoiceName.test(voice.name))
-    || indianVoices.find((voice) => femaleVoiceName.test(voice.name))
-    || hindiVoices[0]
-    || voices.find((voice) => /female|swara|kalpana|heera|priya|neerja/i.test(voice.name))
-    || null;
-}
-if (window.speechSynthesis) {
-  chooseDishaVoice();
-  window.speechSynthesis.addEventListener?.("voiceschanged", chooseDishaVoice);
-}
 function finishAssistantSpeech(speechId) {
   if (speechId !== assistantSpeechId) return;
   assistantSpeaking = false;
@@ -189,11 +172,13 @@ function speakWithBrowserVoice(speechId, message) {
   const hasHindi = /[\u0900-\u097F]/.test(speechText);
   utterance.lang = hasHindi ? "hi-IN" : "en-IN";
   utterance.rate = 0.94;
-  utterance.pitch = 1.16;
+  utterance.pitch = 1.1;
   const available = window.speechSynthesis.getVoices();
   const matching = available.filter((voice) => hasHindi ? /^hi(-|_)?in/i.test(voice.lang) : /^en(-|_)?in/i.test(voice.lang));
   const friendlyVoice = matching.find((voice) => /female|coral|shimmer|google हिन्दी|google hindi|swara|kalpana|heera|priya|neerja/i.test(voice.name));
-  if (friendlyVoice || assistantSpeechVoice) utterance.voice = friendlyVoice || assistantSpeechVoice;
+  // Never substitute a Hindi voice for English (or vice versa): that was the
+  // source of the noticeably different accent in the browser fallback.
+  if (friendlyVoice) utterance.voice = friendlyVoice;
   utterance.onend = () => finishAssistantSpeech(speechId);
   utterance.onerror = () => finishAssistantSpeech(speechId);
   window.speechSynthesis.cancel();
@@ -1300,6 +1285,8 @@ let assistantMicSpeakingSince = 0;
 let assistantMicLastVoiceAt = 0;
 let assistantMicRecordingStartedAt = 0;
 let assistantVoiceProcessing = false;
+let assistantWakeArmed = false;
+let assistantLastVoiceErrorAt = 0;
 // Privacy by default: opening the app never turns on the microphone.
 // The user must tap the Disha launcher (or Start voice) for each session.
 let assistantPaused = true;
@@ -1725,7 +1712,7 @@ function updateDishaListeningUI(message = "") {
   const button = $("assistant-pause");
   const isListening = assistantWakeEnabled && !assistantPaused && !assistantMicBlocked && Boolean(assistantMicStream);
   indicator?.classList.toggle("is-listening", isListening);
-  if (state) state.textContent = message || (assistantPaused ? "Tap Disha to start voice" : assistantMicBlocked ? "Allow microphone access in browser settings" : isListening ? "Listening · Hindi and English" : assistantMicStarting ? "Connecting microphone…" : "Starting voice chat…");
+  if (state) state.textContent = message || (assistantPaused ? "Tap Disha to start voice" : assistantMicBlocked ? "Allow microphone access in browser settings" : isListening ? (assistantWakeArmed ? "Listening · say ‘Hi Disha’" : "Listening · Hindi and English") : assistantMicStarting ? "Connecting microphone…" : "Starting voice chat…");
   dot?.classList.toggle("is-listening", isListening);
   if (button) {
     button.classList.toggle("is-paused", assistantPaused);
@@ -1740,6 +1727,7 @@ function setDishaPaused(paused) {
   localStorage.setItem("dishaPaused", String(paused));
   if (paused) {
     assistantWakeEnabled = false;
+    assistantWakeArmed = false;
     assistantSpeechId += 1;
     clearTimeout(assistantSpeechGuardTimer);
     assistantSpeaking = false;
@@ -1751,6 +1739,7 @@ function setDishaPaused(paused) {
     stopDishaMic();
   } else {
     assistantWakeEnabled = true;
+    assistantWakeArmed = true;
     assistantMicBlocked = false;
     startDishaMic();
   }
@@ -1764,36 +1753,62 @@ async function startDishaMic() {
     assistantMicBlocked = true;
     assistantPaused = true;
     assistantWakeEnabled = false;
+    assistantWakeArmed = false;
     updateDishaListeningUI("Mic recording is not supported · type to chat");
     addAssistantMessage("system", "Is browser mein continuous mic recording supported nahi hai. Chrome/Edge update karein ya type karke baat karein.");
     return;
   }
   assistantMicStarting = true;
   assistantWakeEnabled = true;
+  assistantWakeArmed = true;
   updateDishaListeningUI("Connecting microphone…");
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  let audioContext = null;
   try {
+    // Create and resume the analyser context synchronously from the tap. Mobile
+    // Safari may refuse to start a context created after getUserMedia resolves.
+    if (!AudioContextClass) throw new Error("Audio analyser is unavailable");
+    audioContext = new AudioContextClass();
+    assistantMicContext = audioContext;
+    await audioContext.resume().catch(() => {});
+    if (assistantPaused || document.visibilityState === "hidden") {
+      await audioContext.close().catch(() => {});
+      if (assistantMicContext === audioContext) assistantMicContext = null;
+      return;
+    }
     const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
     if (assistantPaused || document.visibilityState === "hidden") {
       stream.getTracks().forEach((track) => track.stop());
+      await audioContext.close().catch(() => {});
+      if (assistantMicContext === audioContext) assistantMicContext = null;
       return;
     }
     assistantMicStream = stream;
-    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-    assistantMicContext = new AudioContextClass();
-    if (assistantMicContext.state === "suspended") await assistantMicContext.resume();
-    const source = assistantMicContext.createMediaStreamSource(stream);
-    assistantMicAnalyser = assistantMicContext.createAnalyser();
+    stream.getAudioTracks().forEach((track) => track.addEventListener("ended", () => {
+      if (assistantMicStream !== stream || assistantPaused) return;
+      stopDishaMic();
+      assistantPaused = true;
+      assistantWakeEnabled = false;
+      assistantWakeArmed = false;
+      updateDishaListeningUI("Microphone stopped · tap Disha to reconnect");
+    }, { once: true }));
+    if (audioContext.state === "suspended") await audioContext.resume().catch(() => {});
+    const source = audioContext.createMediaStreamSource(stream);
+    assistantMicAnalyser = audioContext.createAnalyser();
     assistantMicAnalyser.fftSize = 1024;
     source.connect(assistantMicAnalyser);
     assistantMicBlocked = false;
     assistantMicStarting = false;
-    updateDishaListeningUI("Listening · speak Hindi or English");
+    updateDishaListeningUI("Mic on · say ‘Hi Disha’");
     monitorDishaMic();
   } catch (error) {
+    await audioContext?.close().catch(() => {});
+    if (assistantMicContext === audioContext) assistantMicContext = null;
     assistantMicStarting = false;
     assistantMicBlocked = true;
     assistantPaused = true;
     assistantWakeEnabled = false;
+    assistantWakeArmed = false;
     updateDishaListeningUI("Microphone permission needed · allow it in browser settings");
     if (!assistantPermissionNoticeShown) {
       assistantPermissionNoticeShown = true;
@@ -1816,13 +1831,13 @@ function monitorDishaMic() {
       assistantMicSpeakingSince = 0;
       assistantMicLastVoiceAt = now;
       if (assistantMicRecorder?.state === "recording") assistantMicRecorder.stop();
-    } else if (level > 0.022) {
+    } else if (level > 0.012) {
       assistantMicSpeakingSince ||= now;
       assistantMicLastVoiceAt = now;
-      if (!assistantMicRecorder && now - assistantMicSpeakingSince >= 110) startDishaUtteranceRecording();
+      if (!assistantMicRecorder && now - assistantMicSpeakingSince >= 140) startDishaUtteranceRecording();
     } else {
       assistantMicSpeakingSince = 0;
-      if (assistantMicRecorder?.state === "recording" && now - assistantMicLastVoiceAt >= 850) assistantMicRecorder.stop();
+      if (assistantMicRecorder?.state === "recording" && now - assistantMicLastVoiceAt >= 1050) assistantMicRecorder.stop();
     }
     if (assistantMicRecorder?.state === "recording" && now - assistantMicRecordingStartedAt >= 15000) assistantMicRecorder.stop();
     assistantMicFrame = requestAnimationFrame(step);
@@ -1845,7 +1860,8 @@ function startDishaUtteranceRecording() {
       assistantMicChunks = [];
       if (!assistantPaused && chunks.length) {
         const type = recorder?.mimeType || "audio/webm";
-        transcribeDishaUtterance(new Blob(chunks, { type }), type.includes("mp4") ? "disha-utterance.mp4" : "disha-utterance.webm");
+        const extension = type.includes("mp4") ? "mp4" : type.includes("ogg") ? "ogg" : type.includes("wav") ? "wav" : "webm";
+        transcribeDishaUtterance(new Blob(chunks, { type }), `disha-utterance.${extension}`);
       }
     };
     assistantMicRecorder.start(250);
@@ -1867,10 +1883,13 @@ async function transcribeDishaUtterance(blob, filename) {
     const message = String(result.text || "").trim();
     if (message) handleDishaUtterance(message);
   } catch (error) {
-    if (!assistantPaused) addAssistantMessage("system", `${error.message || "Voice transcription failed"} Aap type karke chat jaari rakh sakte hain.`);
+    if (!assistantPaused && Date.now() - assistantLastVoiceErrorAt > 20000) {
+      assistantLastVoiceErrorAt = Date.now();
+      addAssistantMessage("system", `${error.message || "Voice transcription failed"} Aap type karke chat jaari rakh sakte hain.`);
+    }
   } finally {
     assistantVoiceProcessing = false;
-    if (!assistantPaused) updateDishaListeningUI("Listening · speak Hindi or English");
+    if (!assistantPaused) updateDishaListeningUI(assistantWakeArmed ? "Mic on · say ‘Hi Disha’" : "Listening · speak Hindi or English");
   }
 }
 
@@ -1890,6 +1909,7 @@ function stopDishaMic() {
   assistantMicStream = null;
   assistantMicStarting = false;
   assistantVoiceProcessing = false;
+  assistantWakeArmed = false;
   assistantMicSpeakingSince = 0;
   assistantMicLastVoiceAt = 0;
 }
@@ -1925,7 +1945,26 @@ function handlePendingAssistantConfirmation(message) {
 
 function handleDishaUtterance(transcript) {
   if (assistantPaused || assistantSpeaking || assistantBusy) return;
-  const message = String(transcript || "").trim();
+  let message = String(transcript || "").trim();
+
+  if (assistantWakeArmed) {
+    const wakeMatch = message.match(/^(?:(?:hey|hi|hello|ok(?:ay)?|arey|अरे|हाय|हेलो)[,\s]+)*(?:disha\b|दिशा(?=\s|$|[,!.।-]))[\s,!.।-]*(.*)$/iu);
+    if (!wakeMatch) {
+      updateDishaListeningUI("Mic on · pehle ‘Hi Disha’ boliye");
+      return;
+    }
+    assistantWakeArmed = false;
+    message = String(wakeMatch[1] || "").trim();
+    if (!message) {
+      const greeting = "Haan ji, main sun rahi hoon. Bataiye, kya help karoon?";
+      assistantHistory.push({ role: "assistant", content: greeting });
+      saveAssistantHistory();
+      addAssistantMessage("assistant", greeting);
+      speakAssistantMessage(greeting);
+      updateDishaListeningUI("Listening · boliye");
+      return;
+    }
+  }
 
   if (assistantConfirmationButton && (isAffirmative(message) || isNegative(message))) {
     sendAssistantMessage(message, null, { fromVoice: true });

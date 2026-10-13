@@ -3,6 +3,7 @@
 The model only extracts what the user asked for. Catalog lookup, current stock,
 authorization to mutate, and all inventory writes remain in the application DB.
 """
+import base64
 import json
 import logging
 import os
@@ -107,12 +108,18 @@ def _audio_provider_error(status: int, feature: str) -> AssistantProviderError:
 
 
 async def transcribe_audio(audio: bytes, filename: str, content_type: str) -> str:
-    """Transcribe a short captured utterance; key remains backend-only."""
+    """Transcribe a short utterance with OpenAI, falling back to Gemini in auto mode."""
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
+    provider = os.getenv("AI_PROVIDER", "auto").strip().lower()
+    if provider == "gemini" and gemini_key:
+        return await _transcribe_with_gemini(audio, content_type, gemini_key)
+    if not api_key and gemini_key and provider == "auto":
+        return await _transcribe_with_gemini(audio, content_type, gemini_key)
     if not api_key:
         raise AssistantProviderError(
-            "OPENAI_API_KEY is required for microphone transcription.",
-            user_message="Voice transcription ke liye Railway/local environment mein OPENAI_API_KEY chahiye. Tab tak type karke baat karein.",
+            "No audio transcription provider key is configured.",
+            user_message="Voice ke liye Railway Variables mein OPENAI_API_KEY ya GEMINI_API_KEY chahiye. Tab tak type karke baat karein.",
         )
     prompt = (
         "Transcribe spoken Hindi, Hinglish, or English exactly in its original script and language. "
@@ -131,13 +138,85 @@ async def transcribe_audio(audio: bytes, filename: str, content_type: str) -> st
             logger.warning("OpenAI transcription returned HTTP %s: %s", response.status_code, response.text[:300])
             raise _audio_provider_error(response.status_code, "transcription")
         body = response.json()
-        return str(body.get("text") or "").strip()[:500]
-    except AssistantProviderError:
-        raise
+        transcript = str(body.get("text") or "").strip()[:500]
+        if transcript:
+            return transcript
+        raise AssistantProviderError("OpenAI transcription returned no speech text.", user_message="Awaaz clear nahi mili. Dobara boliye.")
+    except AssistantProviderError as openai_error:
+        if provider != "auto" or not gemini_key:
+            raise
+        logger.warning("OpenAI transcription failed; trying configured Gemini transcription fallback.")
+        try:
+            return await _transcribe_with_gemini(audio, content_type, gemini_key)
+        except AssistantProviderError as gemini_error:
+            logger.warning("Both configured audio transcription providers failed.")
+            raise AssistantProviderError(
+                "OpenAI and Gemini transcription both failed.",
+                upstream_status=gemini_error.upstream_status,
+                user_message=f"OpenAI voice service unavailable ({openai_error.user_message}); Gemini fallback bhi fail hua ({gemini_error.user_message}). Type karke baat jaari rakhein.",
+            ) from gemini_error
     except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
         logger.warning("OpenAI transcription failed (%s).", type(exc).__name__)
-        raise AssistantProviderError(
+        openai_error = AssistantProviderError(
             "OpenAI transcription request failed.", user_message="Voice ko samajhne mein connection error aaya. Dobara boliye ya type karein."
+        )
+        if provider == "auto" and gemini_key:
+            try:
+                return await _transcribe_with_gemini(audio, content_type, gemini_key)
+            except AssistantProviderError as gemini_error:
+                raise AssistantProviderError(
+                    "OpenAI and Gemini transcription both failed.",
+                    upstream_status=gemini_error.upstream_status,
+                    user_message=f"OpenAI voice connection nahi hua; Gemini fallback bhi fail hua ({gemini_error.user_message}). Type karke baat jaari rakhein.",
+                ) from gemini_error
+        raise openai_error from exc
+
+
+async def _transcribe_with_gemini(audio: bytes, content_type: str, api_key: str) -> str:
+    """Use Gemini's audio input in auto mode when OpenAI transcription is unavailable."""
+    model = os.getenv("GEMINI_TRANSCRIBE_MODEL", os.getenv("GEMINI_MODEL", DEFAULT_MODEL)).strip() or DEFAULT_MODEL
+    mime_type = (content_type or "audio/webm").split(";", 1)[0].strip().lower()
+    payload = {
+        "contents": [{"role": "user", "parts": [
+            {"text": (
+                "Transcribe this speech exactly as spoken in Hindi, Hinglish, or English. "
+                "Keep product names, colours, sizes and quantities. Do not translate, answer, or add commentary. "
+                "Return only the transcript."
+            )},
+            {"inlineData": {"mimeType": mime_type, "data": base64.b64encode(audio).decode("ascii")}},
+        ]}],
+        "generationConfig": {"temperature": 0, "maxOutputTokens": 256},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=7.0)) as client:
+            response = await client.post(
+                GEMINI_API_URL.format(model=quote(model, safe="-._")),
+                headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+                json=payload,
+            )
+        if response.status_code >= 400:
+            logger.warning("Gemini transcription returned HTTP %s: %s", response.status_code, response.text[:300])
+            status = response.status_code
+            advice = "Gemini API key/project access check karein." if status in (401, 403) else "Gemini quota/rate limit check karein." if status == 429 else "Gemini audio service abhi response nahi de paayi."
+            raise AssistantProviderError(
+                f"Gemini transcription returned HTTP {status}.", upstream_status=status,
+                user_message=f"{advice} (Gemini transcription HTTP {status})",
+            )
+        body = response.json()
+        transcript = "".join(
+            str(part.get("text", ""))
+            for part in body["candidates"][0]["content"]["parts"]
+            if isinstance(part, dict) and part.get("text")
+        ).strip()
+        if not transcript:
+            raise AssistantProviderError("Gemini transcription returned no speech text.", user_message="Awaaz clear nahi mili. Dobara boliye.")
+        return transcript[:500]
+    except AssistantProviderError:
+        raise
+    except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc:
+        logger.warning("Gemini transcription failed (%s).", type(exc).__name__)
+        raise AssistantProviderError(
+            "Gemini transcription request failed.", user_message="Gemini se awaaz samajhne mein connection error aaya. Type karke baat jaari rakhein."
         ) from exc
 
 
@@ -150,7 +229,7 @@ async def synthesize_speech(text: str) -> bytes:
         "model": os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts"),
         "voice": os.getenv("OPENAI_TTS_VOICE", "coral"),
         "input": text[:1200],
-        "instructions": "Speak Hindi, Hinglish, or English in a warm, friendly, gently upbeat conversational voice. Use clear Indian pronunciation, natural pauses, and a pleasant expressive tone. Say product names as readable words; do not spell punctuation or SKU separators aloud.",
+        "instructions": "Speak Hindi, Hinglish, or English in a warm, friendly, gently upbeat feminine-sounding conversational voice. Keep it cute and pleasant without sounding childish or exaggerated. Use clear Indian pronunciation, natural pauses, and an expressive but calm tone. Say product names as readable words; do not spell punctuation or SKU separators aloud.",
         "response_format": "mp3",
     }
     try:
