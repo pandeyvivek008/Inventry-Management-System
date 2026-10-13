@@ -69,6 +69,7 @@ def test_verified_match_returns_real_catalog_identity_and_live_stock():
     assert data["score_type"] == "cosine_similarity_not_probability"
     assert len(data["matches"]) == 1
     assert data["matches"][0]["product"]["sku"] == "VISUAL-RED"
+    assert data["matches"][0]["reference_image_path"] == data["matches"][0]["product"]["image_path"]
     assert data["matches"][0]["product"]["variants"][0]["current_stock"] == 7
     assert data["matches"][0]["similarity"] == 1.0
 
@@ -107,6 +108,35 @@ def test_near_tied_designs_are_ambiguous_not_auto_selected():
     payload = result.json()
     assert payload["status"] == "ambiguous"
     assert {match["product"]["sku"] for match in payload["matches"]} == {"VISUAL-TIE-A", "VISUAL-TIE-B"}
+
+
+def test_multiple_reference_images_stay_attached_to_one_product_and_do_not_change_stock():
+    _reset_test_state()
+    client = TestClient(main.app)
+    created = client.post("/api/products", json={
+        "sku": "VISUAL-MULTI", "name": "Multi View Kurta",
+        "variants": [{"size": "M", "initial_stock": 9}],
+    })
+    assert created.status_code == 200
+    front, back, scan = _photo((120, 30, 120)), _photo((120, 40, 120)), _photo((120, 50, 120))
+    mapping = {hashlib.sha256(photo).hexdigest(): _vector(12) for photo in (front, back, scan)}
+    with _set_encoder_for(mapping):
+        primary = client.post("/api/products/VISUAL-MULTI/image", files={"file": ("front.jpg", front, "image/jpeg")})
+        extras = client.post("/api/products/VISUAL-MULTI/images", files=[
+            ("files", ("back.jpg", back, "image/jpeg")),
+            ("files", ("close-up.jpg", scan, "image/jpeg")),
+        ])
+        result = client.post("/api/products/visual-match", files={"file": ("camera.jpg", scan, "image/jpeg")})
+    assert primary.status_code == 200
+    assert extras.status_code == 200 and extras.json()["saved"] == 2
+    assert result.status_code == 200 and result.json()["status"] == "matched"
+    product = result.json()["matches"][0]["product"]
+    assert product["id"] == created.json()["id"]
+    assert product["variants"][0]["current_stock"] == 9
+    with main.SessionLocal() as db:
+        refs = db.query(main.models.ProductImage).filter_by(product_id=product["id"]).all()
+        assert len(refs) == 3
+        assert sum(1 for ref in refs if ref.is_primary) == 1
 
 
 def test_invalid_image_is_rejected_and_empty_catalog_is_no_match():

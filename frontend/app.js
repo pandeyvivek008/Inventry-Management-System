@@ -589,7 +589,7 @@ function renderDetail(product, container, opts = {}) {
 }
 
 // ---------------- Add Product modal ----------------
-let addPhotoFile = null;
+let addPhotoFiles = [];
 let addPhotoPreviewToken = 0;
 function selectAddMode(mode) {
   const bulk = mode === "bulk";
@@ -622,9 +622,15 @@ $("add-product-modal").addEventListener("click", (e) => { if (e.target.id === "a
 
 $("add-photo-box").addEventListener("click", () => $("add-photo-input").click());
 $("add-photo-input").addEventListener("change", () => {
-  const file = $("add-photo-input").files[0];
-  if (!file) return;
-  addPhotoFile = file;
+  const files = Array.from($("add-photo-input").files || []);
+  if (files.length > 8) {
+    $("add-photo-input").value = "";
+    showToast("Choose up to 8 product photos.", "error");
+    return;
+  }
+  if (!files.length) return;
+  addPhotoFiles = files;
+  $("add-photo-placeholder").innerHTML = `<i class="fa-solid fa-images"></i><br><small>${files.length} photo${files.length === 1 ? "" : "s"} selected</small>`;
   const token = ++addPhotoPreviewToken;
   const reader = new FileReader();
   reader.onload = () => {
@@ -633,7 +639,7 @@ $("add-photo-input").addEventListener("change", () => {
     $("add-photo-preview").hidden = false;
     $("add-photo-placeholder").hidden = true;
   };
-  reader.readAsDataURL(file);
+  reader.readAsDataURL(files[0]);
 });
 
 function addSizeRow(size = "") {
@@ -670,7 +676,7 @@ function addSizeRow(size = "") {
 function resetAddForm() {
   $("size-rows").innerHTML = "";
   STANDARD_SIZES.forEach((s) => addSizeRow(s));
-  addPhotoFile = null;
+  addPhotoFiles = [];
   ++addPhotoPreviewToken;
   $("add-photo-preview").src = "";
   $("add-photo-preview").hidden = true;
@@ -704,16 +710,25 @@ $("add-product-form").addEventListener("submit", async (e) => {
       variants,
     });
     let photoWarning = "";
-    if (addPhotoFile) {
-      const fd = new FormData(); fd.append("file", addPhotoFile);
+    if (addPhotoFiles.length) {
       try {
+        const fd = new FormData(); fd.append("file", addPhotoFiles[0]);
         const imageResponse = await fetch(`${API}/products/${encodeURIComponent(data.sku)}/image`, { method: "POST", body: fd });
         if (!imageResponse.ok) {
           const imageError = await imageResponse.json().catch(() => ({}));
           throw new Error(imageError.detail || `Photo upload failed (${imageResponse.status})`);
         }
+        if (addPhotoFiles.length > 1) {
+          const extras = new FormData();
+          addPhotoFiles.slice(1).forEach((file) => extras.append("files", file));
+          const extraResponse = await fetch(`${API}/products/${encodeURIComponent(data.sku)}/images`, { method: "POST", body: extras });
+          if (!extraResponse.ok) {
+            const imageError = await extraResponse.json().catch(() => ({}));
+            throw new Error(imageError.detail || `Additional photo upload failed (${extraResponse.status})`);
+          }
+        }
       } catch (error) {
-        photoWarning = ` Product was added, but its photo was not uploaded: ${error.message || "try again from Edit"}.`;
+        photoWarning = ` Some product photos may not have uploaded: ${error.message || "retry them from Edit"}.`;
       }
     }
     const newSku = data.sku;
@@ -1172,7 +1187,8 @@ async function matchVisualProduct() {
       const product = match.product;
       const stock = (product.variants || []).map((variant) => `<span class="size-chip status-${variant.status}">${esc(variant.size)}: ${variant.status === "UNCOUNTED" ? "—" : esc(variant.current_stock)}</span>`).join("");
       const score = Number(match.similarity);
-      return `<article class="visual-match-card"><div class="visual-match-photo">${product.image_path ? `<img src="${esc(product.image_path)}" alt="${esc(product.name)}">` : ""}</div><div class="visual-match-body"><div><span class="visual-rank">#${index + 1}</span><strong>${esc(product.name)}</strong></div><span class="visual-score">Cosine similarity ${Number.isFinite(score) ? score.toFixed(3) : "—"} · not a probability</span><div class="pcard-sizes">${stock}</div><button type="button" class="btn-secondary visual-open-product" data-sku="${esc(product.sku)}">${ambiguous ? "Review this design" : "Open all sizes"}</button></div></article>`;
+      const matchPhoto = match.reference_image_path || product.image_path;
+      return `<article class="visual-match-card"><div class="visual-match-photo">${matchPhoto ? `<img src="${esc(matchPhoto)}" alt="${esc(product.name)} reference photo">` : ""}</div><div class="visual-match-body"><div><span class="visual-rank">#${index + 1}</span><strong>${esc(product.name)}</strong></div><span class="visual-score">Cosine similarity ${Number.isFinite(score) ? score.toFixed(3) : "—"} · not a probability</span><div class="pcard-sizes">${stock}</div><button type="button" class="btn-secondary visual-open-product" data-sku="${esc(product.sku)}">${ambiguous ? "Review this design" : "Open all sizes"}</button></div></article>`;
     }).join("")}</div>`;
     results.querySelectorAll(".visual-open-product").forEach((button) => button.addEventListener("click", async () => {
       try {

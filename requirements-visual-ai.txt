@@ -1,3 +1,6 @@
-# Optional CPU-only visual design search. Install after CPU torch/torchvision.
-# See RAILWAY_VISUAL_MATCH_SETUP_HI.md for the exact Railway Build Command.
-open_clip_torch>=2.24,<3
+# Install CPU PyTorch first using the official CPU wheel index; see Railway runbook.
+# SigLIP 2 Base is a general multilingual vision-language encoder, not a garment-finetuned model.
+transformers>=4.51.1,<5
+accelerate>=1.2,<2
+safetensors>=0.5,<1
+sentencepiece>=0.2,<1

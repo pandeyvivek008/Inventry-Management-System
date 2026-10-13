@@ -849,8 +849,17 @@ def upload_product_image(sku: str, file: UploadFile = File(...), db: Session = D
     dest = PRODUCT_IMAGE_DIR / fname
     dest.write_bytes(content)
     old_path = product.image_path
+    primary_ref = db.query(models.ProductImage).filter(
+        models.ProductImage.product_id == product.id, models.ProductImage.is_primary == True  # noqa: E712
+    ).first()
     product.image_path = f"/static/product_images/{fname}"
+    if primary_ref:
+        primary_ref.image_path = product.image_path
+    else:
+        primary_ref = models.ProductImage(product_id=product.id, image_path=product.image_path, is_primary=True)
+        db.add(primary_ref)
     try:
+        db.flush()
         db.commit()
     except Exception:
         db.rollback()
@@ -860,13 +869,13 @@ def upload_product_image(sku: str, file: UploadFile = File(...), db: Session = D
     # from being saved. If re-indexing fails, remove the prior vector so it can
     # never point to the replaced photo.
     try:
-        visual_search_service.index_product_image(db, product.id, content)
+        visual_search_service.index_product_image(db, product.id, primary_ref.id, content, dest)
         db.commit()
         visual_search_service.clear_visual_cache()
     except Exception as exc:
         db.rollback()
         try:
-            visual_search_service.remove_product_embedding(db, product.id)
+            visual_search_service.remove_product_embedding(db, product.id, primary_ref.id)
             db.commit()
         except Exception:
             db.rollback()
@@ -879,6 +888,58 @@ def upload_product_image(sku: str, file: UploadFile = File(...), db: Session = D
         except Exception:
             pass
     return {"image_path": product.image_path}
+
+
+@app.post("/api/products/{sku}/images")
+async def upload_product_reference_images(
+    sku: str,
+    files: list[UploadFile] = File(...),
+    db: Session = Depends(get_db),
+):
+    """Attach up to eight genuine extra views to this product, never to stock rows."""
+    product = _get_product_by_sku(db, sku)
+    if not files or len(files) > 8:
+        raise HTTPException(400, "Choose between 1 and 8 reference photos.")
+    saved: list[tuple[models.ProductImage, bytes, Path]] = []
+    try:
+        for file in files:
+            content = await file.read(visual_match_service.MAX_SCAN_BYTES + 1)
+            visual_match_service.validate_image(content)
+            ext = visual_match_service.image_extension(content)
+            fname = f"{product.sku}_{uuid.uuid4().hex[:8]}{ext}"
+            dest = PRODUCT_IMAGE_DIR / fname
+            dest.write_bytes(content)
+            image = models.ProductImage(
+                product_id=product.id,
+                image_path=f"/static/product_images/{fname}",
+                is_primary=False,
+            )
+            db.add(image)
+            saved.append((image, content, dest))
+        db.flush()
+        db.commit()
+    except visual_match_service.InvalidProductImage as exc:
+        db.rollback()
+        for _, _, dest in saved:
+            dest.unlink(missing_ok=True)
+        raise HTTPException(400, str(exc)) from exc
+    except Exception:
+        db.rollback()
+        for _, _, dest in saved:
+            dest.unlink(missing_ok=True)
+        raise
+
+    indexed = 0
+    for image, content, dest in saved:
+        try:
+            visual_search_service.index_product_image(db, product.id, image.id, content, dest)
+            db.commit()
+            indexed += 1
+        except Exception as exc:
+            db.rollback()
+            logger.warning("Reference photo saved but SigLIP indexing failed (%s).", type(exc).__name__)
+    visual_search_service.clear_visual_cache()
+    return {"saved": len(saved), "indexed": indexed, "message": "Photos saved and linked to this product. Search indexing may require a reindex if unavailable."}
 
 
 @app.post("/api/products/visual-match")
@@ -911,11 +972,15 @@ async def visual_product_match(
     for hit in result.matches:
         product = by_id.get(hit.product_id)
         if product:
-            matches.append({"similarity": round(hit.similarity, 4), "product": _product_out(product)})
+            matches.append({
+                "similarity": round(hit.similarity, 4),
+                "reference_image_path": hit.reference_image_path,
+                "product": _product_out(product),
+            })
     status = result.status if matches else "no_match"
     message = result.message if matches else "No active catalog match is available. Check the product photos or try another photo."
     return {
-        "catalog_images": len(product_ids),
+        "ranked_designs": len(product_ids),
         "status": status,
         "matches": matches,
         "message": message,

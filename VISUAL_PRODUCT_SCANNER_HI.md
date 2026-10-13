@@ -1,10 +1,10 @@
 # फोटो से सही product design खोजें
 
-Visual scan uploaded photo ko catalog ke **saved product photos** se CLIP image embeddings ke zariye compare karta hai. SKU/name/rang se score nahi banta. Scan sirf pehchan aur live stock dikhata hai; stock tab tak nahi badalta jab tak staff alag se size count update na kare.
+Visual scan uploaded photo ko catalog ke product-linked reference photos se SigLIP 2 image embeddings ke zariye compare karta hai. SKU/name/rang se score nahi banta. Scan sirf pehchan aur live stock dikhata hai; stock tab tak nahi badalta jab tak staff alag se size count update na kare.
 
 ## Scan kaise karein
 
-1. Products page par har design ki ek saaf, asli photo upload karein. Koshish karein ki garment frame ke beech mein ho, poora design dikhe, blur na ho aur background kam ho.
+1. Add Product mein har design ke liye saaf asli front/back/close-up photos select karein (8 tak). Pehli photo primary catalog image hoti hai; baaki usi product ID ke reference photos hain. Garment frame mein poora dikhe, blur na ho aur background kam ho.
 2. Sidebar se **Visual Product Search** kholen.
 3. Mobile/PC camera se photo lein ya JPG, PNG, WEBP (10 MB tak) upload karein.
 4. `matched` aaye to product photo, name, sizes aur live stock dekhein. Phir design verify karke **इस design के sizes खोलें** chunein.
@@ -52,4 +52,4 @@ har sample ke expected design/status ko spreadsheet mein label karein. Matching 
 
 ## Seemayen
 
-Model general-purpose OpenCLIP ViT-B/32 hai, fashion-specific fine-tune nahi. Garments ke print aur cut mein bahut chhota farq, occlusion, folded clothing, mannequin/background, heavy crop ya multiple garments hone par galat ranking/`no_match` ho sakta hai. Har design ke liye abhi ek reference photo index hoti hai. Zyada reliable recognition ke liye multiple approved angles ya Twins Lady labeled photo set chahiye.
+Model general-purpose SigLIP 2 Base hai, fashion-specific fine-tune nahi. Garments ke print aur cut mein bahut chhota farq, occlusion, folded clothing, mannequin/background, heavy crop ya multiple garments hone par galat ranking/`no_match` ho sakta hai. Multiple genuine views ek design ke saath attach ki ja sakti hain. Twins Lady labeled photos ka held-out benchmark phir bhi chahiye.

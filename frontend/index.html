@@ -271,10 +271,11 @@
           <label class="photo-pick-box" id="add-photo-box">
             <span id="add-photo-placeholder"><i class="fa-solid fa-image"></i><br><small>Add photo</small></span>
             <img id="add-photo-preview" hidden>
-            <input type="file" id="add-photo-input" accept="image/*" hidden>
+            <input type="file" id="add-photo-input" accept="image/jpeg,image/png,image/webp" multiple hidden>
           </label>
         </div>
         <div class="product-fields">
+          <p class="hint">Add front, back, and close-up photos (up to 8) to improve visual product search. The first photo is the main catalog image.</p>
           <label class="field">SKU / Style Code<input name="sku" required placeholder="e.g. STYLE_001" class="input"></label>
           <label class="field">Product Name<input name="name" required placeholder="e.g. Teal Zari Suit" class="input"></label>
           <label class="field">Category<input name="category" placeholder="Kurta Sets / Salwar Suits" class="input"></label>

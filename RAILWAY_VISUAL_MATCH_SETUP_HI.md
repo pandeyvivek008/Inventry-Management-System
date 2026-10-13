@@ -1,90 +1,61 @@
-# Railway par visual AI setup (safe runbook)
+# Railway: SigLIP 2 visual product search
 
-Yeh guide product-photo matching ke liye CPU OpenCLIP ViT-B/32, PostgreSQL pgvector aur persistent product images/model cache set karta hai. Yeh app-service code ko GitHub/Railway par deploy-ready banata hai, lekin live Railway variables ya database ko yahan se nahi badalta.
+This deploy package switches the visual matcher from generic CLIP to Google's public `google/siglip2-base-patch16-224` image-text encoder and stores versioned 768-dimensional vectors for product-linked reference photos. SigLIP 2 is multilingual and supports image retrieval; it is not fine-tuned on Twins Lady's catalog. Use actual catalog photos to set thresholds before treating any match as confirmed. Model weights are downloaded from Hugging Face at first use unless already cached.
 
-## Pehle production data safe karein
+## Before enabling on production
 
-1. Railway project ka **production environment** kholen; web app service aur attached PostgreSQL ko identify karein.
-2. PostgreSQL ka Railway backup/snapshot available ho, aur restore point samajh mein ho tabhi aage badhein. `DATABASE_URL` ko replace na karein.
-3. Pehle Railway ka isolated **staging environment** banayein. Usme staging PostgreSQL use karein; production ke saath staging URL share na karein.
-4. Is code ko GitHub branch par push karne ke baad pehle staging deploy karein.
+1. Deploy first to a staging Railway environment with a copy of the catalog and image volume. Do not run test uploads or index rebuilds against a production database without a restorable backup and an approved maintenance plan.
+2. Give the app persistent storage for product images and model cache. Example volume mount `/data` with:
 
-## 1) Build dependencies
+   ```text
+   PRODUCT_IMAGE_DIR=/data/product_images
+   HF_HOME=/data/huggingface
+   TRANSFORMERS_CACHE=/data/huggingface/transformers
+   ```
 
-Railway → web app service → **Settings → Build → Custom Build Command** mein yeh command set karein:
+3. Install CPU PyTorch and visual dependencies in the Railway Build Command:
 
-```bash
-pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision && pip install -r requirements.txt -r requirements-visual-ai.txt
-```
+   ```sh
+   pip install --index-url https://download.pytorch.org/whl/cpu torch && pip install -r requirements.txt -r requirements-visual-ai.txt
+   ```
 
-Isse CPU PyTorch aur OpenCLIP install hote hain; GPU required nahi. Existing start command/Procfile chalta rahe: `cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT`. Official OpenCLIP package isi model creation API ko document karta hai: ViT-B/32 + `laion2b_s34b_b79k`.
+   Keep the existing app start command. This model package is substantially heavier than the old CLIP encoder; confirm the service can build, start, load the model, and keep enough memory for the rest of the app before rolling it out. The Hugging Face model card lists roughly 1.5 GB of weight files, before Python/PyTorch runtime memory.
 
-## 2) Persistent volume aur variables
+4. Set the existing conservative starting values, then calibrate them on a labeled validation set:
 
-Web app service ko ek Railway Volume attach karein, mount path **`/data`**. Yeh folder product photos aur first-run model cache ko deployments ke beech bachata hai. Railway volumes runtime par mount hote hain (build ke dauran nahi); isliye model runtime par pehli baar download hota hai.
+   ```text
+   VISUAL_MATCH_MIN_SCORE=0.82
+   VISUAL_MATCH_MIN_MARGIN=0.06
+   VISUAL_SEARCH_DEV_MAX_CATALOG=500
+   VISUAL_SEARCH_RPM=30
+   ```
 
-Web app **service** ke variables mein ye add karein:
+   These scores are cosine similarities, not confidence percentages. The values above are provisional; do not lower them just to force a result. Include same-color near-duplicate designs, different colors, alternate camera angles, dark/blurred photos, non-garment images, and products absent from the catalog. Record top-1 accuracy, top-5 recall, false-accept rate, and no-match rate.
 
-```text
-PRODUCT_IMAGE_DIR=/data/product_images
-HF_HOME=/data/huggingface
-TORCH_HOME=/data/torch
-VISUAL_MATCH_MIN_SCORE=0.82
-VISUAL_MATCH_MIN_MARGIN=0.06
-```
+## Index existing catalog photos
 
-`DATABASE_URL` ko current Railway Postgres reference se hi rehne dein. `REDIS_URL` optional hai. Existing production variables jaise Gemini/OpenAI keys ko change karne ki zaroorat nahi.
+After the app deploys with the new `product_images` table and the persistent image volume is mounted, run once from the same Railway service/container environment:
 
-`0.82` aur `0.06` starting guardrails hain, certified accuracy nahi. Real catalog photos par labeled testing ke baad hi inhe badlein. Score probability nahi hai.
-
-## 3) Deploy aur persistent storage verify karein
-
-Staging deploy successful hone par service log mein app startup dekhein. Ek **staging-only** product par photo upload karke confirm karein ki image URL khulti hai. Phir `railway ssh` se `/data/product_images` check karein; deployment ke baad bhi image wahi honi chahiye.
-
-Railway dashboard ke **service variables** aur **volume** app web service par lagen, Postgres service par nahi. Image files abhi isi web service ke `/data/product_images` volume mein rahengi. Volume wali Railway service replicas ke saath horizontally scale nahi hoti; multiple replicas/regions ke liye S3-compatible shared object storage chahiye.
-
-## 4) PostgreSQL image index build/rebuild karein
-
-PostgreSQL ko `vector` extension support karna hoga. Staging web service par Railway CLI se shell kholen (Railway CLI login/project/service link pehle zaroori hai):
-
-```powershell
-railway ssh --service <YOUR-WEB-SERVICE-NAME>
-```
-
-Railway container ke shell mein:
-
-```bash
-cd /app/backend
+```sh
+cd backend
 python scripts/rebuild_visual_index.py
 ```
 
-Yeh command catalog ke current saved product photos padhegi aur table `product_visual_embeddings_clip_v1` mein vectors upsert karegi. Yeh inventory stock, orders ya transactions ko nahi badalti. Script `CREATE EXTENSION vector` par fail ho to baar-baar run na karein: pehle confirm karein ki aapke Railway Postgres image/plan mein pgvector extension installed/allowed hai. Is setup mein extension mandatory hai; use bypass karke nearest color result ko match mat dikhayein.
+The script links legacy `products.image_path` records to their actual product ID, then writes embeddings to `product_visual_embeddings_siglip2_v1`. It does not update stock, orders, or transaction history. If the script skips any photos, fix the file/volume issue and rerun it before relying on visual search.
 
-Photo upload ke baad embedding automatically update hoti hai. Agar index update fail ho to photo save rehti hai aur purana vector hata diya jata hai, taa ki purani photo se galat design return na ho. App log mein “Product photo saved but visual indexing failed” dekhein; database/index theek karke rebuild chalayein.
+Each new product's first photo is the main catalog photo. Add up to seven extra genuine reference views using the Add Product photo picker; they are linked to the same product record and indexed separately. Replacing the main photo refreshes its vector. A failed index leaves the saved image in place, logs the failure, and causes the search to fail closed until reindexing succeeds.
 
-## 5) Staging validation—production catalog se pehle
+## Staging acceptance
 
-Staging par kam-se-kam 20–30 manually labeled samples rakhein:
+- Confirm product images still load after redeploy (persistent volume mounted to the same path).
+- Try several real phone photos of each design and hard negatives. A close candidate must return `ambiguous`; unknown/poor images must return `no_match`.
+- Verify each result shows the product identity and current size-wise stock from the database.
+- Verify the scan endpoint never changes stock or creates products.
+- If the model/index is unavailable, manual product search and recount remain available.
 
-- Wahi product: front/side, phone lighting, thoda distance (positive match).
-- Same color ke alag prints/neckline/sleeves wale garments (hard negative).
-- Alag design ya catalog mein na hone wala garment (no match).
-- Do almost-identical designs (ambiguous; auto-choice nahi).
+## Rollback and limits
 
-Har photo ko Scan & Recount mein upload karein. `matched` SKU actual photo jaisa ho; `ambiguous` kisi size ko update na kare; `no_match` mein wrong top result na aaye. Threshold tune karne se false positives badh rahe hon to threshold ya margin badhayein, ya `no_match` rakhein. Manual count/stock flows ko staging mein alag se verify karein; image scan khud stock nahi badalta.
-
-Real photos se measured precision/false-positive rate note kiye bina production rollout ya “perfect/accurate” claim na karein. Current automated regression tests mocked embeddings par decision rules verify karte hain; woh fashion accuracy benchmark nahi.
-
-## Rollback
-
-- Matching logic ko rollback karte waqt product database/stock data ko rollback na karein.
-- Purana color-vector table `product_visual_embeddings` delete nahi hota; naya version `product_visual_embeddings_clip_v1` alag hai.
-- Agar model package/Railway build memory fail kare, visual matcher 503 safe response dega; manual SKU/name search aur recount available rehna chahiye.
-- Image volume ko detach/delete mat karein. Volume delete karne se product photo files kho sakti hain.
-
-## Current deployment limitations
-
-- CLIP is a general photo-image encoder, fashion-specific fine-tune nahi; subtle print/cut differences can still be confused.
-- First image search downloads/loads model if cache is cold; first request can take longer. Later requests reuse the process model/cache.
-- One product currently has one indexed image; multiple-angle references and garment cropping are not implemented.
-- Railway/PostgreSQL extension availability and actual service RAM/build capacity must be confirmed in your own staging project. This repository does not have access to those project settings.
+- The prior `product_visual_embeddings_clip_v1` table and product images are retained; this version creates a separate SigLIP 2 index. No existing inventory rows are migrated or deleted by index rebuild.
+- Roll back the app build if model loading causes memory/startup problems; visual search will be unavailable on that version, but manual inventory workflows remain.
+- Visual search is a candidate retrieval feature, not a guarantee of exact identification. A Twins Lady photo benchmark and calibrated thresholds are still required before claiming production accuracy.
+- The service requires outbound access to download the public Hugging Face model on first use. No Hugging Face token is required for this public checkpoint.

@@ -38,7 +38,7 @@ SERVICE LAYER  backend/services/
                        sizes together
   assistant_service      Gemini/OpenAI intent parsing or optional self-hosted Ollama,
                          Hindi transcription fallback and local Piper speech output
-  visual_search_service  cached CPU CLIP embeddings + versioned PostgreSQL/pgvector index
+  visual_search_service  SigLIP 2 embeddings for product-linked reference images + versioned pgvector index
         |  SQLAlchemy ORM
 DATA LAYER  backend/models.py
   SQLite file today (inventory.db) -> PostgreSQL later via one env var
@@ -238,11 +238,13 @@ store sales prices or revenue.
 Hindi examples, confirmation steps, photo controls, microphone and earbud setup,
 and troubleshooting are in [VOICE_AUTOMATION_HI.md](VOICE_AUTOMATION_HI.md).
 
-The Scan & Recount page also includes a basic local image matching shortlist:
-it uses CPU OpenCLIP ViT-B/32 embeddings over the actual saved product photos,
-then fails closed as `no_match` or `ambiguous` when evidence is weak or close.
-The model is general purpose, not fashion fine-tuned, and its cosine similarity
-is not a probability. People still confirm the design before changing stock.
+The app also includes visual product search using the multilingual SigLIP 2
+image-language encoder over saved product reference photos. Add up to eight
+genuine views to one product from Add Product; the first remains the main image.
+The matcher aggregates multiple views by product and fails closed as `no_match`
+or `ambiguous` when the evidence is weak or close. SigLIP 2 is not fine-tuned on
+Twins Lady designs, its cosine score is not a probability, and no accuracy claim
+is made without a labeled catalog benchmark. Visual search never changes stock.
 The optional model/index and persistent Railway image-volume setup are in
 [VISUAL_PRODUCT_SCANNER_HI.md](VISUAL_PRODUCT_SCANNER_HI.md) and
 [RAILWAY_VISUAL_MATCH_SETUP_HI.md](RAILWAY_VISUAL_MATCH_SETUP_HI.md). The complete

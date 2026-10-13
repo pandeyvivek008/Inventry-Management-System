@@ -76,6 +76,19 @@ class Product(Base):
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
     variants = relationship("Variant", back_populates="product", cascade="all, delete-orphan")
+    reference_images = relationship("ProductImage", back_populates="product", cascade="all, delete-orphan")
+
+
+class ProductImage(Base):
+    """A genuine reference photo belonging to one catalog design."""
+    __tablename__ = "product_images"
+    id = Column(Integer, primary_key=True)
+    product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
+    image_path = Column(String(500), nullable=False, unique=True)
+    is_primary = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
+    product = relationship("Product", back_populates="reference_images")
 
 
 class Variant(Base):

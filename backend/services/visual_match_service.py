@@ -1,4 +1,4 @@
-"""CLIP image embedding helpers for the product-photo matcher.
+"""SigLIP 2 image embeddings for product-photo retrieval.
 
 The encoder is loaded lazily on CPU. No SKU, product-name, filename, or colour
 heuristic participates in the visual score. If the optional model runtime or
@@ -7,17 +7,20 @@ nearest product.
 """
 from __future__ import annotations
 
-from functools import lru_cache
 from io import BytesIO
+from threading import Lock
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 
 MAX_SCAN_BYTES = 10 * 1024 * 1024
 MAX_IMAGE_DIMENSION = 8000
-MODEL_ARCH = "ViT-B-32"
-MODEL_PRETRAINED = "laion2b_s34b_b79k"
-VECTOR_DIMENSIONS = 512
+MODEL_ID = "google/siglip2-base-patch16-224"
+MODEL_VERSION = "siglip2-base-patch16-224:v1"
+VECTOR_DIMENSIONS = 768
+_encoder = None
+_encoder_lock = Lock()
+_inference_lock = Lock()
 
 
 class InvalidProductImage(ValueError):
@@ -62,40 +65,44 @@ def image_extension(content: bytes) -> str:
         raise InvalidProductImage("Only JPG, PNG, and WEBP images are supported.") from exc
 
 
-@lru_cache(maxsize=1)
 def _load_encoder():
-    try:
-        import open_clip
-        import torch
-    except ImportError as exc:
-        raise ImageModelUnavailable(
-            "Visual AI is not installed on this service. Install requirements-visual-ai.txt, "
-            "then rebuild the product image index."
-        ) from exc
-    try:
-        model, _, preprocess = open_clip.create_model_and_transforms(
-            MODEL_ARCH,
-            pretrained=MODEL_PRETRAINED,
-            device="cpu",
-        )
-        model.eval()
-        return torch, model, preprocess
-    except Exception as exc:
-        raise ImageModelUnavailable(
-            "CLIP could not load its model weights. Check Railway memory, outbound access, "
-            "and the configured Hugging Face cache volume."
-        ) from exc
+    global _encoder
+    if _encoder is not None:
+        return _encoder
+    with _encoder_lock:
+        if _encoder is not None:
+            return _encoder
+        try:
+            import torch
+            from transformers import AutoModel, AutoProcessor
+        except ImportError as exc:
+            raise ImageModelUnavailable(
+                "SigLIP 2 visual AI is not installed on this service. Install requirements-visual-ai.txt, "
+                "then rebuild the product image index."
+            ) from exc
+        try:
+            processor = AutoProcessor.from_pretrained(MODEL_ID)
+            model = AutoModel.from_pretrained(MODEL_ID, low_cpu_mem_usage=True).to("cpu")
+            model.eval()
+            _encoder = (torch, model, processor)
+            return _encoder
+        except Exception as exc:
+            raise ImageModelUnavailable(
+                "SigLIP 2 could not load its model weights. Check Railway memory, outbound access, "
+                "and the configured Hugging Face cache volume."
+            ) from exc
 
 
 def image_embedding(content: bytes) -> tuple[float, ...]:
-    """Return a normalized 512-dimensional CLIP image embedding on CPU."""
+    """Return a normalized 768-dimensional SigLIP 2 image embedding on CPU."""
     image = _open_image(content)
-    torch, model, preprocess = _load_encoder()
+    torch, model, processor = _load_encoder()
     try:
-        tensor = preprocess(image).unsqueeze(0)
-        with torch.inference_mode():
-            embedding = model.encode_image(tensor).float()
+        inputs = processor(images=image, return_tensors="pt")
+        with _inference_lock, torch.inference_mode():
+            embedding = model.get_image_features(**inputs).float()
             embedding = embedding / embedding.norm(dim=-1, keepdim=True).clamp(min=1e-12)
-        return tuple(float(value) for value in embedding[0].tolist())
+            values = embedding[0].tolist()
+        return tuple(float(value) for value in values)
     except Exception as exc:
-        raise ImageModelUnavailable("CLIP could not create an image embedding.") from exc
+        raise ImageModelUnavailable("SigLIP 2 could not create an image embedding.") from exc

@@ -1,4 +1,4 @@
-"""CLIP-backed product-photo indexing with fail-closed match decisions."""
+"""SigLIP 2 product-photo indexing with fail-closed visual match decisions."""
 from __future__ import annotations
 
 import hashlib
@@ -14,12 +14,13 @@ from sqlalchemy import text
 from services import visual_match_service
 
 
-MODEL_NAME = f"{visual_match_service.MODEL_ARCH}:{visual_match_service.MODEL_PRETRAINED}:v1"
+MODEL_NAME = visual_match_service.MODEL_VERSION
 VECTOR_DIMENSIONS = visual_match_service.VECTOR_DIMENSIONS
-TABLE_NAME = "product_visual_embeddings_clip_v1"
+TABLE_NAME = "product_visual_embeddings_siglip2_v1"
 DEV_MAX_CATALOG = int(os.getenv("VISUAL_SEARCH_DEV_MAX_CATALOG", "500"))
 RATE_LIMIT_PER_MINUTE = int(os.getenv("VISUAL_SEARCH_RPM", "30"))
 CACHE_TTL_SECONDS = int(os.getenv("VISUAL_SEARCH_CACHE_SECONDS", "60"))
+REFERENCE_SHORTLIST_SIZE = max(25, int(os.getenv("VISUAL_SEARCH_REFERENCE_SHORTLIST", "100")))
 
 
 def _setting(name: str, default: float, lower: float, upper: float) -> float:
@@ -29,20 +30,21 @@ def _setting(name: str, default: float, lower: float, upper: float) -> float:
         return default
 
 
-# These are conservative starting values, not calibrated probabilities. Tune
-# them with labeled positive and hard-negative garment photos from the catalog.
+# These are conservative starting values, not calibrated probabilities. The
+# actual Twins Lady photo benchmark is needed before claiming production accuracy.
 MIN_SIMILARITY = _setting("VISUAL_MATCH_MIN_SCORE", 0.82, -1.0, 1.0)
 MIN_MARGIN = _setting("VISUAL_MATCH_MIN_MARGIN", 0.06, 0.0, 1.0)
 
 
 class VisualSearchUnavailable(RuntimeError):
-    """The app intentionally refused to guess while visual search is unsafe."""
+    """The app refused to guess because its model or index is not ready."""
 
 
 @dataclass(frozen=True)
 class SearchHit:
     product_id: int
     similarity: float
+    reference_image_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -107,7 +109,7 @@ def allow_scan(client_key: str) -> bool:
         if len(entries) >= RATE_LIMIT_PER_MINUTE:
             return False
         entries.append(now)
-        return True
+    return True
 
 
 def _cached_hits(content: bytes) -> list[SearchHit] | None:
@@ -136,33 +138,33 @@ def _cache_hits(content: bytes, hits: list[SearchHit]) -> None:
 
 
 def clear_visual_cache() -> None:
-    """Clear cached rankings after an image is replaced or re-indexed."""
     client = _redis()
     if not client:
         return
     try:
-        keys = client.scan_iter(match=f"visual-search:match:{MODEL_NAME}:*", count=200)
-        for key in keys:
+        for key in client.scan_iter(match="visual-search:match:*", count=200):
             client.delete(key)
     except Exception:
         pass
 
 
 def ensure_postgres_index(engine) -> None:
-    """Create the versioned pgvector table/index; old color vectors stay untouched."""
+    """Create a new model-versioned reference-image index, retaining old vectors."""
     if engine.dialect.name != "postgresql":
         return
     with engine.begin() as connection:
         connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         connection.execute(text(f"""
             CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
-                product_id INTEGER PRIMARY KEY REFERENCES products(id) ON DELETE CASCADE,
+                image_id INTEGER PRIMARY KEY REFERENCES product_images(id) ON DELETE CASCADE,
+                product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
                 model_name VARCHAR(160) NOT NULL,
                 embedding vector({VECTOR_DIMENSIONS}) NOT NULL,
                 indexed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """))
         connection.execute(text(f"CREATE INDEX IF NOT EXISTS ix_{TABLE_NAME}_model ON {TABLE_NAME} (model_name)"))
+        connection.execute(text(f"CREATE INDEX IF NOT EXISTS ix_{TABLE_NAME}_product ON {TABLE_NAME} (product_id)"))
         connection.execute(text(f"""
             CREATE INDEX IF NOT EXISTS ix_{TABLE_NAME}_hnsw
             ON {TABLE_NAME} USING hnsw (embedding vector_cosine_ops)
@@ -170,98 +172,124 @@ def ensure_postgres_index(engine) -> None:
         """))
 
 
-def index_product_image(db, product_id: int, content: bytes) -> None:
-    """Upsert CLIP embedding after image save; callers keep photo save independent."""
-    if not _database_is_postgres(db):
-        return
-    embedding = _vector_literal(visual_match_service.image_embedding(content))
-    db.execute(text(f"""
-        INSERT INTO {TABLE_NAME} (product_id, model_name, embedding, indexed_at)
-        VALUES (:product_id, :model_name, CAST(:embedding AS vector), CURRENT_TIMESTAMP)
-        ON CONFLICT (product_id) DO UPDATE
-        SET model_name = EXCLUDED.model_name, embedding = EXCLUDED.embedding, indexed_at = CURRENT_TIMESTAMP
-    """), {"product_id": product_id, "model_name": MODEL_NAME, "embedding": embedding})
-def remove_product_embedding(db, product_id: int) -> None:
-    """Remove any old vector after a replacement image could not be indexed."""
+def index_product_image(db, product_id: int, image_id: int, content: bytes, image_path: Path | None = None) -> None:
+    """Index one saved reference image; called after its DB row is created."""
+    values = visual_match_service.image_embedding(content)
     if _database_is_postgres(db):
-        db.execute(text(f"DELETE FROM {TABLE_NAME} WHERE product_id = :product_id"), {"product_id": product_id})
+        embedding = _vector_literal(values)
+        db.execute(text(f"""
+            INSERT INTO {TABLE_NAME} (image_id, product_id, model_name, embedding, indexed_at)
+            VALUES (:image_id, :product_id, :model_name, CAST(:embedding AS vector), CURRENT_TIMESTAMP)
+            ON CONFLICT (image_id) DO UPDATE
+            SET product_id = EXCLUDED.product_id, model_name = EXCLUDED.model_name,
+                embedding = EXCLUDED.embedding, indexed_at = CURRENT_TIMESTAMP
+        """), {"image_id": image_id, "product_id": product_id, "model_name": MODEL_NAME, "embedding": embedding})
+    else:
+        signature = ("inline", 0, len(content))
+        if image_path:
+            stat = image_path.stat()
+            signature = (str(image_path.resolve()), stat.st_mtime_ns, stat.st_size)
+        with _local_embedding_lock:
+            _local_embeddings[image_id] = (signature, values)
+
+
+def remove_product_embedding(db, product_id: int, image_id: int | None = None) -> None:
+    if _database_is_postgres(db):
+        if image_id is None:
+            db.execute(text(f"DELETE FROM {TABLE_NAME} WHERE product_id = :product_id"), {"product_id": product_id})
+        else:
+            db.execute(text(f"DELETE FROM {TABLE_NAME} WHERE image_id = :image_id"), {"image_id": image_id})
     with _local_embedding_lock:
-        _local_embeddings.pop(product_id, None)
+        if image_id is None:
+            for key in [key for key in _local_embeddings if key < 0]:
+                _local_embeddings.pop(key, None)
+        else:
+            _local_embeddings.pop(image_id, None)
     clear_visual_cache()
 
 
 def _postgres_search(db, embedding: tuple[float, ...], limit: int) -> list[SearchHit]:
     vector = _vector_literal(embedding)
     rows = db.execute(text(f"""
-        SELECT e.product_id, 1 - (e.embedding <=> CAST(:embedding AS vector)) AS similarity
-        FROM {TABLE_NAME} AS e
-        JOIN products AS p ON p.id = e.product_id
-        WHERE e.model_name = :model_name AND p.is_deleted = FALSE AND p.image_path IS NOT NULL
-        ORDER BY e.embedding <=> CAST(:embedding AS vector)
+        WITH nearest_references AS (
+            SELECT e.product_id, e.image_id,
+                   1 - (e.embedding <=> CAST(:embedding AS vector)) AS similarity
+            FROM {TABLE_NAME} AS e
+            JOIN products AS p ON p.id = e.product_id
+            JOIN product_images AS i ON i.id = e.image_id AND i.product_id = e.product_id
+            WHERE e.model_name = :model_name AND p.is_deleted = FALSE
+            ORDER BY e.embedding <=> CAST(:embedding AS vector)
+            LIMIT :shortlist
+        )
+        ), best_reference_per_product AS (
+            SELECT product_id, image_id, similarity,
+                   ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY similarity DESC) AS rank
+            FROM nearest_references
+        )
+        SELECT b.product_id, b.similarity, i.image_path
+        FROM best_reference_per_product AS b
+        JOIN product_images AS i ON i.id = b.image_id
+        WHERE b.rank = 1
+        ORDER BY b.similarity DESC
         LIMIT :limit
-    """), {"embedding": vector, "model_name": MODEL_NAME, "limit": limit}).all()
-    return [SearchHit(int(row.product_id), float(row.similarity)) for row in rows]
+    """), {"embedding": vector, "model_name": MODEL_NAME, "shortlist": REFERENCE_SHORTLIST_SIZE, "limit": limit}).all()
+    return [SearchHit(int(row.product_id), float(row.similarity), str(row.image_path)) for row in rows]
 
 
 def _development_search(db, embedding: tuple[float, ...], image_dir: Path, limit: int) -> list[SearchHit]:
-    from models import Product
-    products = db.query(Product).filter(Product.is_deleted == False, Product.image_path.isnot(None)).all()  # noqa: E712
+    from models import Product, ProductImage
+    products = db.query(Product).filter(Product.is_deleted == False).all()  # noqa: E712
     if len(products) > DEV_MAX_CATALOG:
-        raise VisualSearchUnavailable(
-            "Visual search is disabled above the local development limit. Use PostgreSQL with pgvector and build its CLIP index."
-        )
-    hits: list[SearchHit] = []
-    active_ids = {product.id for product in products}
-    with _local_embedding_lock:
-        for stale_id in set(_local_embeddings) - active_ids:
-            _local_embeddings.pop(stale_id, None)
+        raise VisualSearchUnavailable("Local visual search is limited above the development catalog limit. Use PostgreSQL with pgvector.")
+    product_ids = {product.id for product in products}
+    images = db.query(ProductImage).filter(ProductImage.product_id.in_(product_ids)).all() if product_ids else []
+    images_by_product: dict[int, list[ProductImage]] = {}
+    for image in images:
+        images_by_product.setdefault(image.product_id, []).append(image)
+    product_scores: dict[int, tuple[float, str]] = {}
     for product in products:
-        candidate = (image_dir / Path(str(product.image_path or "")).name).resolve()
-        try:
-            candidate.relative_to(image_dir.resolve())
-            stat = candidate.stat()
-            signature = (str(candidate), stat.st_mtime_ns, stat.st_size)
-            cached = _local_embeddings.get(product.id)
-            if not cached or cached[0] != signature:
-                ref_embedding = visual_match_service.image_embedding(candidate.read_bytes())
+        for image in images_by_product.get(product.id, []):
+            candidate = (image_dir / Path(str(image.image_path)).name).resolve()
+            try:
+                candidate.relative_to(image_dir.resolve())
+                stat = candidate.stat()
+                signature = (str(candidate), stat.st_mtime_ns, stat.st_size)
                 with _local_embedding_lock:
-                    _local_embeddings[product.id] = (signature, ref_embedding)
-            else:
-                ref_embedding = cached[1]
-            similarity = sum(left * right for left, right in zip(embedding, ref_embedding))
-            hits.append(SearchHit(product.id, similarity))
-        except (OSError, ValueError, visual_match_service.InvalidProductImage):
-            continue
-    return sorted(hits, key=lambda item: item.similarity, reverse=True)[:limit]
+                    cached = _local_embeddings.get(image.id)
+                if not cached or cached[0] != signature:
+                    ref_embedding = visual_match_service.image_embedding(candidate.read_bytes())
+                    with _local_embedding_lock:
+                        _local_embeddings[image.id] = (signature, ref_embedding)
+                else:
+                    ref_embedding = cached[1]
+                score = sum(left * right for left, right in zip(embedding, ref_embedding))
+                if score > product_scores.get(product.id, (-1.0, ""))[0]:
+                    product_scores[product.id] = (score, f"/static/product_images/{candidate.name}")
+            except (OSError, ValueError, visual_match_service.InvalidProductImage):
+                continue
+    return [SearchHit(product_id, score, image_path) for product_id, (score, image_path) in sorted(product_scores.items(), key=lambda item: item[1][0], reverse=True)[:limit]]
 
 
 def _decide(hits: list[SearchHit]) -> SearchResult:
     if not hits:
-        return SearchResult("no_match", (), "No usable product photos are available in the catalog.")
+        return SearchResult("no_match", (), "No usable product reference photos are indexed.")
     top = hits[0]
     if top.similarity < MIN_SIMILARITY:
         return SearchResult("no_match", (), "No catalog design was similar enough. Try a clear, front-facing photo.")
     margin = top.similarity - hits[1].similarity if len(hits) > 1 else 1.0
     if margin < MIN_MARGIN:
         return SearchResult("ambiguous", tuple(hits[:3]), "Several designs look similar. Review the photos before choosing a product.")
-    return SearchResult("matched", (top,), "A strong visual match was found. Sizes and stock are read from the database.")
+    return SearchResult("matched", (top,), "A strong visual match was found. Sizes and stock are read live from the database.")
 
 
 def search(db, content: bytes, image_dir: Path, limit: int) -> SearchResult:
-    """Rank genuine product photos and return only a verified/uncertain/no-match state."""
-    cached = _cached_hits(content)
-    if cached is None:
-        embedding = visual_match_service.image_embedding(content)
-        if _database_is_postgres(db):
-            try:
-                hits = _postgres_search(db, embedding, max(limit, 5))
-            except Exception as exc:
-                raise VisualSearchUnavailable(
-                    "PostgreSQL CLIP index unavailable. Build product_visual_embeddings_clip_v1 and retry."
-                ) from exc
-        else:
-            hits = _development_search(db, embedding, image_dir, max(limit, 5))
-        _cache_hits(content, hits)
+    """Rank saved design reference photos. Recognition never modifies inventory."""
+    embedding = visual_match_service.image_embedding(content)
+    if _database_is_postgres(db):
+        try:
+            hits = _postgres_search(db, embedding, max(limit, 5))
+        except Exception as exc:
+            raise VisualSearchUnavailable(f"SigLIP 2 PostgreSQL index unavailable. Build {TABLE_NAME} and retry.") from exc
     else:
-        hits = cached[:max(limit, 5)]
+        hits = _development_search(db, embedding, image_dir, max(limit, 5))
     return _decide(hits)
