@@ -336,7 +336,9 @@ img { max-width: 100%; display: block; }
 .detail-info .input { margin-bottom: 8px; }
 .detail-info-row { display: flex; gap: 8px; }
 .detail-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
-.product-qr-link,.product-qr-download { display:inline-flex; align-items:center; gap:7px; }
+.product-label-actions { display:inline-flex; align-items:center; gap:6px; }
+.product-label-link { display:inline-flex; align-items:center; justify-content:center; gap:6px; min-height:34px; padding:6px 10px; font-size:12px; line-height:1; white-space:nowrap; }
+.product-qr-download { display:inline-flex; align-items:center; gap:7px; }
 .product-qr-download { margin:10px 0 4px; }
 
 .seat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }

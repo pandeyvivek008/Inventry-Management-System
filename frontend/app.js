@@ -493,9 +493,12 @@ function renderDetail(product, container, opts = {}) {
           <input class="input" id="detail-sku" value="${esc(product.sku)}" placeholder="Canonical SKU">
           <input class="input" id="detail-category" placeholder="Category" value="${esc(product.category || "")}">
         </div>
-      <div class="detail-actions">
+        <div class="detail-actions">
           <button class="btn-secondary" id="detail-save" type="button"><i class="fa-solid fa-floppy-disk"></i> Save Changes</button>
-        <a class="btn-ghost product-qr-link" href="${API}/products/${encodeURIComponent(product.sku)}/barcode" target="_blank" rel="noopener"><i class="fa-solid fa-barcode"></i> Product barcode (all sizes)</a>
+          <div class="product-label-actions" aria-label="Product labels">
+            <a class="btn-ghost product-label-link" href="${API}/products/${encodeURIComponent(product.sku)}/barcode" target="_blank" rel="noopener" title="Open product barcode label"><i class="fa-solid fa-barcode"></i><span>Barcode</span></a>
+            <a class="btn-ghost product-label-link" href="${API}/products/${encodeURIComponent(product.sku)}/qr" target="_blank" rel="noopener" title="Open product QR label"><i class="fa-solid fa-qrcode"></i><span>QR code</span></a>
+          </div>
           <span class="sku-tag" style="align-self:center;">${esc(product.sku)}</span>
           ${opts.showDelete ? `<button class="btn-danger" id="detail-delete" type="button" style="margin-left:auto;"><i class="fa-solid fa-trash-can"></i> Delete Product</button>` : ""}
         </div>
@@ -1246,7 +1249,9 @@ async function loadVisualSearchStatus() {
       `Database: ${status.database}${status.database_url_configured ? " (DATABASE_URL configured)" : " (SQLite fallback; DATABASE_URL missing)"}`,
       `PostgreSQL connected: ${status.postgres_connected ? "yes" : "no"}`,
       `pgvector extension: ${status.pgvector_extension_installed ? "installed" : "missing"}`,
-      `Photo index: ${status.indexed_photos} / ${status.catalog_photos}${status.index_ready ? " (ready)" : " (not ready)"}`,
+      status.database === "postgresql"
+        ? `Photo index: ${status.indexed_photos} / ${status.catalog_photos}${status.index_ready ? " (ready)" : " (not ready)"}`
+        : `Local photo matcher: ${status.index_ready ? `ready; ${status.catalog_photos} reference photos` : "no usable photos or development catalog limit exceeded"}`,
       `Model runtime: ${status.runtime_installed ? "installed" : "missing"}; weights loaded: ${status.model_weights_loaded ? "yes" : "no"}`,
       `Private model service: ${status.external_model_service_configured ? "configured" : "not configured"}`,
     ].join("\n");

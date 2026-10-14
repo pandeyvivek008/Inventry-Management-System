@@ -6,10 +6,10 @@ The current setup runs the inventory API and SigLIP 2 in the **same Railway Inve
 
 1. Keep the existing Inventory service's `DATABASE_URL` and product-image volume unchanged. Do not point it at a new empty PostgreSQL database: SQLite rows and uploaded photos do not move automatically. Back up and migrate catalog, variants, orders, history, and image files before any database change.
 2. Set Railway **Root Directory** to blank (repository root). Mount a persistent volume at `/data`, set `HF_HOME=/data/huggingface`, and keep the existing product-photo volume mounted at its current path.
-3. Set **Build Command**:
+3. Use the repository root as **Root Directory**. The root `requirements.txt` installs the CPU PyTorch wheel and SigLIP runtime dependencies during the normal Railway Python build. If you have a custom Build Command, use:
 
    ```sh
-   pip install -r requirements.txt && pip install --index-url https://download.pytorch.org/whl/cpu torch && pip install -r backend/requirements-visual-ai.txt
+   pip install -r requirements.txt
    ```
 
 4. Set **Start Command**:
@@ -18,7 +18,7 @@ The current setup runs the inventory API and SigLIP 2 in the **same Railway Inve
    cd backend && python -m uvicorn main:app --host 0.0.0.0 --port $PORT
    ```
 
-   Do not use `visual_model_service:app` as this service's start command; that would run only the model API and hide the inventory UI/API. Leave `VISUAL_AI_URL` unset to use the in-process model. The first image search downloads weights and can take several minutes. PyTorch uses additional CPU/RAM.
+   Do not use `visual_model_service:app` as this service's start command; that would run only the model API and hide the inventory UI/API. Leave `VISUAL_AI_URL` unset to use the in-process model. The first image search downloads weights and can take several minutes. PyTorch uses additional CPU/RAM. Mount a persistent volume at `/data` and set `HF_HOME=/data/huggingface` to cache weights across deploys.
 5. Deploy, open **Visual Product Search**, and read the setup status shown above the photo-search message. If the status says old catalog photos are not indexed, run from this same Inventory service:
 
    ```sh

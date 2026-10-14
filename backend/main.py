@@ -1120,18 +1120,23 @@ def visual_search_status(db: Session = Depends(get_db)):
         not pgvector_index_exists or indexed_photo_count < photo_count
     )
     model_available = runtime_installed or external_model_service
-    index_ready = (
-        dialect == "postgresql"
-        and pgvector_extension_installed
-        and pgvector_index_exists
-        and photo_count > 0
-        and indexed_photo_count >= photo_count
-    )
+    if dialect == "postgresql":
+        index_ready = (
+            postgres_connected
+            and pgvector_extension_installed
+            and pgvector_index_exists
+            and photo_count > 0
+            and indexed_photo_count >= photo_count
+        )
+    else:
+        # SQLite uses the bounded local matcher and does not have a persistent
+        # pgvector index. The matcher itself checks the catalog-size limit.
+        index_ready = 0 < photo_count <= visual_search_service.DEV_MAX_CATALOG
     if dialect != "postgresql":
         if not os.getenv("DATABASE_URL", "").strip():
-            message = f"Database: SQLite (DATABASE_URL is not set). Visual search requires PostgreSQL with pgvector. Catalog photos: {photo_count}."
+            message = f"Database: SQLite local mode. Photo search can compare up to {visual_search_service.DEV_MAX_CATALOG} designs without a pgvector index. Catalog photos: {photo_count}."
         else:
-            message = f"Database: {dialect}. Visual search requires PostgreSQL with pgvector; check the app service DATABASE_URL."
+            message = f"Database: {dialect}. Local photo matching is limited to {visual_search_service.DEV_MAX_CATALOG} designs; use PostgreSQL with pgvector for larger catalogs. Catalog photos: {photo_count}."
     elif not postgres_connected:
         message = "Database URL is PostgreSQL, but the app cannot connect to it. Check the Railway PostgreSQL service and DATABASE_URL reference."
     elif not pgvector_extension_installed:
