@@ -5,6 +5,7 @@ import uuid
 import re
 import time
 import logging
+from importlib.util import find_spec
 from difflib import SequenceMatcher
 from collections import defaultdict, deque
 from threading import Lock
@@ -996,6 +997,67 @@ async def visual_product_match(
     }
 
 
+@app.get("/api/visual-search/status")
+def visual_search_status(db: Session = Depends(get_db)):
+    """Report safe setup diagnostics for photo search without exposing secrets."""
+    dialect = engine.dialect.name
+    try:
+        photo_count = db.query(models.ProductImage).join(models.Product).filter(
+            models.Product.is_deleted == False  # noqa: E712
+        ).count()
+    except Exception:
+        photo_count = 0
+
+    pgvector_index_exists = False
+    indexed_photo_count = 0
+    if dialect == "postgresql":
+        try:
+            pgvector_index_exists = bool(db.execute(
+                text("SELECT to_regclass(:table_name) IS NOT NULL"),
+                {"table_name": visual_search_service.TABLE_NAME},
+            ).scalar())
+            if pgvector_index_exists:
+                indexed_photo_count = int(db.execute(
+                    text(f"SELECT count(*) FROM {visual_search_service.TABLE_NAME} WHERE model_name = :model"),
+                    {"model": visual_search_service.MODEL_NAME},
+                ).scalar() or 0)
+        except Exception:
+            db.rollback()
+            pgvector_index_exists = False
+
+    runtime_installed = bool(find_spec("torch") and find_spec("transformers"))
+    model_weights_loaded = visual_match_service._encoder is not None
+    external_model_service = bool(os.getenv("VISUAL_AI_URL", "").strip())
+    needs_rebuild = dialect == "postgresql" and (
+        not pgvector_index_exists or indexed_photo_count < photo_count
+    )
+    if not runtime_installed and not external_model_service:
+        message = "SigLIP runtime is missing from this app service build."
+    elif dialect != "postgresql":
+        message = "Visual search on Railway needs the app connected to PostgreSQL with pgvector."
+    elif photo_count == 0:
+        message = "No product reference photos are saved yet. Add clear product photos first."
+    elif needs_rebuild:
+        message = "Some saved catalog photos are not indexed. Run the visual index rebuild from this app service."
+    elif not model_weights_loaded and not external_model_service:
+        message = "Catalog photo index is ready. SigLIP weights will load the first time you search a photo."
+    else:
+        message = "Visual model runtime and catalog photo index are ready."
+
+    return {
+        "status": "ready" if runtime_installed or external_model_service else "unavailable",
+        "database": dialect,
+        "runtime_installed": runtime_installed,
+        "model_weights_loaded": model_weights_loaded,
+        "external_model_service_configured": external_model_service,
+        "pgvector_index_exists": pgvector_index_exists,
+        "catalog_photos": photo_count,
+        "indexed_photos": indexed_photo_count,
+        "needs_rebuild": needs_rebuild,
+        "message": message,
+    }
+
+
 # ------------------------------------------------------------------ #
 # Trash: soft delete + restore
 # ------------------------------------------------------------------ #
@@ -1462,6 +1524,17 @@ def product_barcode_label(sku: str, db: Session = Depends(get_db)):
     return StreamingResponse(
         BytesIO(png_bytes), media_type="image/png",
         headers={"Content-Disposition": f'inline; filename="{product.sku}_product_barcode.png"'},
+    )
+
+
+@app.get("/api/products/{sku}/label")
+def product_combo_label(sku: str, db: Session = Depends(get_db)):
+    """One compact product label containing both QR and Code128 symbols."""
+    product = _get_product_by_sku(db, sku)
+    png_bytes = barcode_service.generate_product_combo_label(product.sku, product.name)
+    return StreamingResponse(
+        BytesIO(png_bytes), media_type="image/png",
+        headers={"Content-Disposition": f'inline; filename="{product.sku}_product_label.png"'},
     )
 
 

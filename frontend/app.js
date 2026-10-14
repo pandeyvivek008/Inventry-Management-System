@@ -281,6 +281,7 @@ function switchView(name) {
   if (name === "reorder") loadReorderList();
   if (name === "alerts") loadAlerts();
   if (name === "trash") loadTrash();
+  if (name === "visual") loadVisualSearchStatus();
   if (name === "history") { history.offset = 0; loadHistory(true); }
 }
 
@@ -1183,12 +1184,12 @@ async function lookupProduct(sku) {
   const msg = $("scan-msg"), box = $("scan-result");
   try {
     const product = await getJSON(`${API}/products/${encodeURIComponent(sku)}`);
-    msg.textContent = `Design QR scanned: ${product.name} · ${product.variants.length} sizes`;
+    msg.textContent = `Product code scanned: ${product.name} · ${product.variants.length} sizes`;
     msg.className = "msg success";
     renderScanProduct(product);
   } catch (error) {
     box.hidden = true;
-    msg.textContent = `Design QR “${sku}” not found. Check that the design is active.`;
+    msg.textContent = `Product code “${sku}” not found. Check that the design is active.`;
     msg.className = "msg error";
   }
 }
@@ -1198,7 +1199,7 @@ function renderScanProduct(product, onlyVariantCode = null) {
   const normalizedVariantCode = String(onlyVariantCode || "").toUpperCase();
   const variants = (product.variants || []).filter((variant) => !normalizedVariantCode || String(variant.variant_code || "").toUpperCase() === normalizedVariantCode);
   box.hidden = false;
-  box.innerHTML = `<div class="scan-result-head"><div><h2>${esc(product.name)}</h2><span class="sku-tag">${esc(product.sku)}</span></div><span class="hint">${onlyVariantCode ? "Barcode · one size" : "Product QR · all sizes"}</span></div>${scanStockCard({ ...product, variants }, null, false)}`;
+  box.innerHTML = `<div class="scan-result-head"><div><h2>${esc(product.name)}</h2><span class="sku-tag">${esc(product.sku)}</span></div><span class="hint">${onlyVariantCode ? "Size barcode · one size" : "Product QR/barcode · all sizes"}</span></div>${scanStockCard({ ...product, variants }, null, false)}`;
   attachScanStockForms(box);
   box.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
@@ -1209,6 +1210,26 @@ function renderScanProduct(product, onlyVariantCode = null) {
 let visualCameraStream = null;
 let visualSelectedFile = null;
 let visualPreviewUrl = null;
+
+async function loadVisualSearchStatus() {
+  const el = $("visual-runtime-status");
+  if (!el) return;
+  el.textContent = "Checking photo search setup…";
+  el.className = "visual-runtime-status";
+  try {
+    const status = await getJSON(`${API}/visual-search/status`);
+    el.textContent = status.message;
+    const ready = !status.needs_rebuild && status.database === "postgresql" && status.catalog_photos > 0 && status.status === "ready";
+    el.classList.toggle("is-ready", ready);
+    el.classList.toggle("is-warning", !ready);
+    if (status.database === "postgresql" && status.catalog_photos) {
+      el.title = `${status.indexed_photos} of ${status.catalog_photos} catalog photos indexed`;
+    }
+  } catch (_) {
+    el.textContent = "Could not check photo search setup. The app API may still be starting; try again shortly.";
+    el.classList.add("is-warning");
+  }
+}
 
 function setVisualMessage(message = "", kind = "") {
   const el = $("visual-scan-msg");
@@ -1278,7 +1299,13 @@ async function matchVisualProduct() {
     const data = new FormData(); data.append("file", visualSelectedFile);
     const response = await fetch(`${API}/products/visual-match?limit=5`, { method: "POST", body: data });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.detail || "Photo search could not be completed.");
+    if (!response.ok) {
+      const details = typeof payload.detail === "string" ? payload.detail : "";
+      const statusHint = response.status === 502 || response.status === 503
+        ? " Check the app's Railway runtime logs and the photo-search setup status above."
+        : "";
+      throw new Error(`${details || `Photo search returned HTTP ${response.status}.`}${statusHint}`);
+    }
     if (payload.status === "no_match" || !payload.matches?.length) {
       results.hidden = true;
       setVisualMessage(payload.message || "No catalog photo was similar enough. Try a clear, front-facing photo.", "error");
@@ -1305,6 +1332,7 @@ async function matchVisualProduct() {
     setVisualMessage(payload.message || (ambiguous ? "Review the candidates before opening sizes." : "Review the match before updating stock."), ambiguous ? "error" : "success");
   } catch (error) {
     results.hidden = true;
+    loadVisualSearchStatus();
     setVisualMessage(error.message || "Photo search failed. Try another clear photo.", "error");
   }
 }
@@ -2432,8 +2460,8 @@ function selectLabelProduct(product) {
   $("label-results").innerHTML = "";
   $("label-selected").hidden = false;
   $("label-selected-name").textContent = `${product.sku} — ${product.name}`;
-  $("label-size-summary").textContent = `${product.variants.length} size${product.variants.length === 1 ? "" : "s"} · one barcode opens the complete design`;
-  $("product-qr-download").href = `${API}/products/${encodeURIComponent(product.sku)}/barcode`;
+  $("label-size-summary").textContent = `${product.variants.length} size${product.variants.length === 1 ? "" : "s"} · either code opens the complete design`;
+  $("product-qr-download").href = `${API}/products/${encodeURIComponent(product.sku)}/label`;
 }
 
 // ================================================================ //

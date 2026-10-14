@@ -1,5 +1,38 @@
 # Railway: SigLIP 2 visual product search
 
+## Current deployment: one Inventory service
+
+The current setup runs the inventory API and SigLIP 2 in the **same Railway Inventory service**. This section supersedes the older separate-model-service steps below.
+
+1. Keep the existing Inventory service's `DATABASE_URL` and product-image volume unchanged. Do not point it at a new empty PostgreSQL database: SQLite rows and uploaded photos do not move automatically. Back up and migrate catalog, variants, orders, history, and image files before any database change.
+2. Set Railway **Root Directory** to blank (repository root). Mount a persistent volume at `/data`, set `HF_HOME=/data/huggingface`, and keep the existing product-photo volume mounted at its current path.
+3. Set **Build Command**:
+
+   ```sh
+   pip install -r requirements.txt && pip install --index-url https://download.pytorch.org/whl/cpu torch && pip install -r backend/requirements-visual-ai.txt
+   ```
+
+4. Set **Start Command**:
+
+   ```sh
+   cd backend && python -m uvicorn main:app --host 0.0.0.0 --port $PORT
+   ```
+
+   Do not use `visual_model_service:app` as this service's start command; that would run only the model API and hide the inventory UI/API. Leave `VISUAL_AI_URL` unset to use the in-process model. The first image search downloads weights and can take several minutes. PyTorch uses additional CPU/RAM.
+5. Deploy, open **Visual Product Search**, and read the setup status shown above the photo-search message. If the status says old catalog photos are not indexed, run from this same Inventory service:
+
+   ```sh
+   cd /app/backend && python scripts/rebuild_visual_index.py
+   ```
+
+   This script must see the app's existing PostgreSQL database and mounted product photos. It only builds photo embeddings; it does not change stock or orders. Newly uploaded photos are indexed in the background automatically.
+
+The model downloads from the public Hugging Face checkpoint; no token/API key is needed. The model is general-purpose, not fine-tuned on Twins Lady photos.
+
+---
+
+## Legacy split-service instructions (do not use for the current single-service deployment)
+
 The app calls a separate, private Railway service for Google's public `google/siglip2-base-patch16-224` image encoder. The app remains on its small core dependency set, so model startup/inference does not block stock and order requests. The service downloads public model weights automatically at startup; no Hugging Face token is needed. Model files persist in a Railway volume. The model is general-purpose, not fine-tuned on Twins Lady photos.
 
 ## Before enabling on production

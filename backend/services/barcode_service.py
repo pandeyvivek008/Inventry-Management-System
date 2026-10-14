@@ -19,18 +19,25 @@ def _font(size=18):
     return ImageFont.load_default()
 
 
-def _code128_image(value: str) -> Image.Image:
-    """Render a large Code128 barcode; scanners/guns can read the raw value."""
+def _code128_image(
+    value: str,
+    *,
+    module_width: float = 0.45,
+    module_height: float = 22,
+    quiet_zone: float = 8,
+    dpi: int = 300,
+) -> Image.Image:
+    """Render a high-contrast Code128 barcode at a chosen compactness."""
     buf = BytesIO()
     code = barcode.get("code128", value, writer=ImageWriter())
     code.write(buf, options={
-        "module_width": 0.45,
-        "module_height": 22,
-        "quiet_zone": 8,
+        "module_width": module_width,
+        "module_height": module_height,
+        "quiet_zone": quiet_zone,
         "font_size": 0,
         "text_distance": 2,
         "write_text": False,
-        "dpi": 300,
+        "dpi": dpi,
     })
     buf.seek(0)
     return Image.open(buf).convert("RGB")
@@ -74,6 +81,60 @@ def generate_product_barcode_label(sku: str, product_name: str) -> bytes:
         draw.text(((width - (bbox[2] - bbox[0])) / 2, y), text, fill="black", font=font)
     out = BytesIO()
     canvas.save(out, format="PNG", optimize=True)
+    return out.getvalue()
+
+
+def generate_product_combo_label(sku: str, product_name: str) -> bytes:
+    """Create one compact product label with scannable QR and Code128 codes.
+
+    Both symbols contain the same PRODUCT:SKU value, so either one opens the
+    full design in the existing camera scanner.
+    """
+    value = f"PRODUCT:{sku.strip().upper()}"
+    barcode_img = _code128_image(
+        value, module_width=0.22, module_height=13, quiet_zone=2, dpi=150
+    )
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=5,
+        border=2,
+    )
+    qr.add_data(value)
+    qr.make(fit=True)
+    qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+    qr_size = 140
+    qr_img.thumbnail((qr_size, qr_size), Image.Resampling.LANCZOS)
+
+    pad = 16
+    width = max(520, barcode_img.width + qr_img.width + pad * 4)
+    height = 226
+    canvas = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(canvas)
+    title_font, detail_font = _font(17), _font(13)
+    title = product_name.strip()[:56] or sku.upper()
+    draw.text((pad, 10), title, fill="black", font=title_font)
+
+    # Keep the barcode's native aspect ratio, while fitting the compact label.
+    code_max_w = width - qr_img.width - pad * 4
+    code_max_h = 112
+    scale = min(code_max_w / barcode_img.width, code_max_h / barcode_img.height, 1.0)
+    if scale < 1.0:
+        barcode_img = barcode_img.resize(
+            (max(1, round(barcode_img.width * scale)), max(1, round(barcode_img.height * scale))),
+            Image.Resampling.LANCZOS,
+        )
+    code_y = 48 + max(0, (code_max_h - barcode_img.height) // 2)
+    canvas.paste(barcode_img, (pad, code_y))
+    qr_x = width - qr_img.width - pad
+    qr_y = 48 + max(0, (code_max_h - qr_img.height) // 2)
+    canvas.paste(qr_img, (qr_x, qr_y))
+
+    draw = ImageDraw.Draw(canvas)
+    draw.text((pad, height - 36), sku.strip().upper()[:58], fill="black", font=detail_font)
+    draw.text((qr_x, height - 36), "QR · PRODUCT", fill="black", font=detail_font)
+    out = BytesIO()
+    canvas.save(out, format="PNG", optimize=True, dpi=(220, 220))
     return out.getvalue()
 
 

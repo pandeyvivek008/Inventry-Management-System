@@ -216,6 +216,9 @@ def index_product_image(db, product_id: int, image_id: int, content: bytes, imag
     """Index one saved reference image; called after its DB row is created."""
     values = _image_embedding(content)
     if _database_is_postgres(db):
+        # New uploads should be indexable without a separate schema setup step.
+        # Existing catalog photos still need the one-off rebuild script.
+        ensure_postgres_index(db.get_bind())
         embedding = _vector_literal(values)
         db.execute(text(f"""
             INSERT INTO {TABLE_NAME} (image_id, product_id, model_name, embedding, indexed_at)

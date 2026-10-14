@@ -91,9 +91,9 @@
         </table>
       </div>
       <div class="pager">
-        <button id="pg-prev" class="link-btn" type="button">← Previous</button>
+        <button id="pg-prev" class="btn-secondary pager-btn" type="button">← Previous</button>
         <span id="pg-info"></span>
-        <button id="pg-next" class="link-btn" type="button">Next →</button>
+        <button id="pg-next" class="btn-secondary pager-btn" type="button">Next →</button>
       </div>
     </section>
 
@@ -106,7 +106,7 @@
       <input id="product-search" type="text" placeholder="Search by SKU or product name…" class="input" style="margin-bottom:16px;">
       <div id="product-result-count" class="hint" style="margin:-4px 0 12px 2px;"></div>
       <div id="product-cards" class="card-grid"></div>
-      <div class="pager"><button id="products-prev" class="link-btn" type="button">← Previous</button><span id="products-page-info"></span><button id="products-next" class="link-btn" type="button">Next →</button></div>
+      <div class="pager"><button id="products-prev" class="btn-secondary pager-btn" type="button">← Previous</button><span id="products-page-info"></span><button id="products-next" class="btn-secondary pager-btn" type="button">Next →</button></div>
       <p id="product-search-hint" class="hint center">Type at least 2 characters to search your catalog.</p>
     </section>
 
@@ -118,7 +118,7 @@
 
     <!-- ================= SCAN & RECOUNT ================= -->
     <section id="view-scan" class="view">
-      <header class="view-head"><div><h1>Scan &amp; Recount</h1><p class="sub">A product QR opens every size. A barcode opens only its size. Search a design to update its size-wise stock.</p></div></header>
+      <header class="view-head"><div><h1>Scan &amp; Recount</h1><p class="sub">A product QR or product barcode opens every size. A size barcode opens only that size. Search a design to update its size-wise stock.</p></div></header>
 
       <div class="two-col">
         <div class="panel">
@@ -150,6 +150,7 @@
         </div>
         <div id="visual-camera-wrap" class="visual-camera-wrap" hidden><video id="visual-camera" playsinline muted></video></div>
         <div id="visual-preview-wrap" class="visual-preview-wrap" hidden><img id="visual-preview" alt="Selected product search photo"><button id="visual-clear" type="button" class="btn-ghost">Choose another photo</button></div>
+        <div id="visual-runtime-status" class="visual-runtime-status" role="status" aria-live="polite">Checking photo search setup…</div>
         <div id="visual-scan-msg" class="msg" role="status"></div>
         <div id="visual-results" class="visual-results" hidden></div>
       </section>
@@ -188,7 +189,7 @@
         </label>
       </div>
       <div id="order-history" style="margin-top:16px;"></div>
-      <div class="pager"><button id="orders-prev" class="link-btn" type="button">← Previous</button><span id="orders-page-info"></span><button id="orders-next" class="link-btn" type="button">Next →</button></div>
+      <div class="pager"><button id="orders-prev" class="btn-secondary pager-btn" type="button">← Previous</button><span id="orders-page-info"></span><button id="orders-next" class="btn-secondary pager-btn" type="button">Next →</button></div>
       <div id="upload-result" style="margin-top:16px;"></div>
     </section>
 
@@ -205,7 +206,7 @@
           <tbody id="reorder-body"></tbody>
         </table>
       </div>
-      <div class="pager"><button id="reorder-prev" class="link-btn" type="button">← Previous</button><span id="reorder-page-info"></span><button id="reorder-next" class="link-btn" type="button">Next →</button></div>
+      <div class="pager"><button id="reorder-prev" class="btn-secondary pager-btn" type="button">← Previous</button><span id="reorder-page-info"></span><button id="reorder-next" class="btn-secondary pager-btn" type="button">Next →</button></div>
     </section>
 
     <!-- ================= ALERTS ================= -->
@@ -228,20 +229,20 @@
           <tbody id="history-body"></tbody>
         </table>
       </div>
-      <div class="pager"><button id="hist-prev" class="link-btn" type="button">← Previous</button><span id="hist-page-info"></span><button id="hist-next" class="link-btn" type="button">Next →</button></div>
+      <div class="pager"><button id="hist-prev" class="btn-secondary pager-btn" type="button">← Previous</button><span id="hist-page-info"></span><button id="hist-next" class="btn-secondary pager-btn" type="button">Next →</button></div>
     </section>
 
     <!-- ================= PRINT LABELS ================= -->
     <section id="view-labels" class="view">
-      <header class="view-head"><div><h1>Print Labels</h1><p class="sub">Print one product barcode per design. Scanning it opens every size together.</p></div></header>
+      <header class="view-head"><div><h1>Print Labels</h1><p class="sub">Download one compact label per design with both a QR code and barcode. Either scan opens every size together.</p></div></header>
       <div class="panel" style="max-width:520px;">
         <label class="field">Find a design<input id="label-search" type="text" placeholder="Type a SKU or product name…" class="input"></label>
         <div id="label-results" class="stack-list" style="margin-top:8px;"></div>
-        <div id="labels-pager" class="pager" hidden><button id="labels-prev" class="link-btn" type="button">← Previous</button><span id="labels-page-info"></span><button id="labels-next" class="link-btn" type="button">Next →</button></div>
+        <div id="labels-pager" class="pager" hidden><button id="labels-prev" class="btn-secondary pager-btn" type="button">← Previous</button><span id="labels-page-info"></span><button id="labels-next" class="btn-secondary pager-btn" type="button">Next →</button></div>
         <div id="label-selected" hidden style="margin-top:12px; padding-top:12px; border-top:1px solid var(--line);">
           <div id="label-selected-name" class="bold"></div>
           <p id="label-size-summary" class="hint"></p>
-          <a id="product-qr-download" href="#" target="_blank" rel="noopener" class="btn-primary product-qr-download"><i class="fa-solid fa-barcode"></i> Download product barcode · all sizes</a>
+          <a id="product-qr-download" href="#" download class="btn-primary product-qr-download"><i class="fa-solid fa-qrcode"></i><i class="fa-solid fa-barcode"></i> Download compact QR + barcode label</a>
         </div>
       </div>
     </section>
@@ -251,7 +252,7 @@
       <header class="view-head"><div><h1>Trash</h1><p class="sub">Deleted designs stay here until restored or removed for good.</p></div></header>
       <div id="trash-list" class="card-grid"></div>
       <p id="trash-empty" class="hint center" hidden>Trash is empty.</p>
-      <div class="pager"><button id="trash-prev" class="link-btn" type="button">← Previous</button><span id="trash-page-info"></span><button id="trash-next" class="link-btn" type="button">Next →</button></div>
+      <div class="pager"><button id="trash-prev" class="btn-secondary pager-btn" type="button">← Previous</button><span id="trash-page-info"></span><button id="trash-next" class="btn-secondary pager-btn" type="button">Next →</button></div>
     </section>
 
   </main>
