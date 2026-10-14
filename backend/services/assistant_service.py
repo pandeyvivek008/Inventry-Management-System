@@ -9,8 +9,9 @@ import json
 import logging
 import os
 import time
+import ipaddress
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 from dotenv import load_dotenv
@@ -30,7 +31,49 @@ OPENAI_SPEECH_URL = "https://api.openai.com/v1/audio/speech"
 GEMINI_INTERACTIONS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
 GEMINI_VOICES_URL = "https://generativelanguage.googleapis.com/v1beta/voices"
 OLLAMA_CHAT_URL = "/api/chat"
+OPENAI_COMPATIBLE_CHAT_PATH = "/chat/completions"
 _female_voice_cache: tuple[float, str] | None = None
+
+
+def _setting(name: str, legacy_name: str | None = None, default: str = "") -> str:
+    """Read the Disha-specific setting first, then its legacy equivalent."""
+    value = os.getenv(name)
+    if (value is None or not value.strip()) and legacy_name:
+        value = os.getenv(legacy_name)
+    return (value if value is not None else default).strip()
+
+
+def _disha_ai_enabled() -> bool:
+    return _setting("DISHA_AI_ENABLED", default="true").lower() not in {"0", "false", "no", "off"}
+
+
+def _custom_provider_requested() -> bool:
+    return bool(os.getenv("DISHA_AI_PROVIDER", "").strip())
+
+
+def _external_inference_allowed() -> bool:
+    return _setting("DISHA_AI_ALLOW_EXTERNAL_INFERENCE", default="false").lower() in {"1", "true", "yes", "on"}
+
+
+def _external_fallback_allowed() -> bool:
+    return not _custom_provider_requested() or _external_inference_allowed()
+
+
+def _is_local_or_private_endpoint(url: str) -> bool:
+    try:
+        parsed = urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return False
+        hostname = parsed.hostname.lower().rstrip(".")
+        if hostname == "localhost" or hostname.endswith((".localhost", ".local", ".internal")) or "." not in hostname:
+            return True
+        try:
+            address = ipaddress.ip_address(hostname)
+            return address.is_private or address.is_loopback or address.is_link_local
+        except ValueError:
+            return False
+    except ValueError:
+        return False
 
 
 def _local_service_headers(key_name: str) -> dict[str, str]:
@@ -40,7 +83,65 @@ def _local_service_headers(key_name: str) -> dict[str, str]:
 
 
 def _is_local_provider(provider: str | None = None) -> bool:
-    return (provider or os.getenv("AI_PROVIDER", "gemini")).strip().lower() in {"local", "ollama"}
+    return (provider or _setting("DISHA_AI_PROVIDER", "AI_PROVIDER", "gemini")).strip().lower() in {"local", "ollama"}
+
+
+def _compatible_provider_configured() -> bool:
+    base_url = _setting("DISHA_AI_BASE_URL", "OPENAI_COMPATIBLE_BASE_URL")
+    model = _setting("DISHA_AI_MODEL", "OPENAI_COMPATIBLE_MODEL")
+    if not base_url or not model:
+        return False
+    try:
+        parsed = urlsplit(base_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+            return False
+        if parsed.scheme != "https" and not _is_local_or_private_endpoint(base_url):
+            return False
+    except ValueError:
+        return False
+    if _custom_provider_requested() and not _external_inference_allowed():
+        if not _is_local_or_private_endpoint(base_url):
+            return False
+    return True
+
+
+def _compatible_chat_url() -> str:
+    base_url = _setting("DISHA_AI_BASE_URL", "OPENAI_COMPATIBLE_BASE_URL").rstrip("/")
+    if base_url.endswith(OPENAI_COMPATIBLE_CHAT_PATH):
+        return base_url
+    return f"{base_url}{OPENAI_COMPATIBLE_CHAT_PATH}"
+
+
+def _compatible_generation_limits() -> tuple[int, float]:
+    try:
+        max_tokens = int(_setting("DISHA_AI_MAX_OUTPUT_TOKENS", "OPENAI_COMPATIBLE_MAX_TOKENS", "1200"))
+    except ValueError:
+        max_tokens = 1200
+    try:
+        timeout_seconds = float(_setting("DISHA_AI_TIMEOUT_SECONDS", "OPENAI_COMPATIBLE_TIMEOUT_SECONDS", "60"))
+    except ValueError:
+        timeout_seconds = 60.0
+    return min(4000, max(128, max_tokens)), min(180.0, max(1.0, timeout_seconds))
+
+
+def _compatible_temperature() -> float:
+    try:
+        temperature = float(_setting("DISHA_AI_TEMPERATURE", default="0.2"))
+    except ValueError:
+        temperature = 0.2
+    return min(2.0, max(0.0, temperature))
+
+
+def _provider_configured(provider: str) -> bool:
+    if provider == "openai":
+        return bool(os.getenv("OPENAI_API_KEY", "").strip())
+    if provider == "gemini":
+        return bool(os.getenv("GEMINI_API_KEY", "").strip())
+    if provider == "compatible":
+        return _compatible_provider_configured()
+    if provider == "local":
+        return bool(os.getenv("LOCAL_AI_URL", "").strip())
+    return False
 
 INTENT_SCHEMA = {
     "type": "object",
@@ -64,7 +165,7 @@ INTENT_SCHEMA = {
     "additionalProperties": False,
 }
 
-SYSTEM_PROMPT = """You are Disha, a warm, capable Hindi-only conversational assistant. Understand natural spoken Hindi, Devanagari Hindi, and Romanized Hindi/Hinglish, but always answer in natural Hindi using Devanagari script. Do not answer in English. Keep actual catalog product names and SKU identifiers exactly as stored when needed for an unambiguous inventory result.
+SYSTEM_PROMPT = """You are Disha, a warm, capable multilingual inventory assistant. Understand Hindi, Devanagari Hindi, Romanized Hindi/Hinglish, and English. Reply in the language and script the user used most recently; for mixed messages, natural Hinglish is fine. Keep actual catalog product names and SKU identifiers exactly as stored when needed for an unambiguous inventory result.
 Return only the required JSON object. Never invent a product, SKU, size, or stock value.
 Allowed intent: stock_add, stock_set, stock_check, product_search, alerts_summary, reorder_summary, pending_orders, recent_activity, product_create, product_update, product_archive, product_restore, order_dispatch, daily_sales, app_status, conversation, help, other.
 Examples:
@@ -99,7 +200,7 @@ For stock_add, quantity means units to add. For stock_set, it means the final ph
 Do not put the product's size, quantity, action words, or generic words like 'design', 'product', 'stock' in product_query.
 
 Also return `reply`:
-- For conversation, help, or other, write a natural, useful answer as Disha in Hindi (Devanagari) only, whatever language/script the user used. Use recent chat history so follow-up conversation makes sense. Be friendly and conversational like a general chat assistant, not a fixed FAQ. Answer ordinary non-inventory questions directly when you can; be honest when unsure. Keep most replies to 1–3 short sentences and ask one clear follow-up only when it helps. Do not repeat an earlier greeting, recap, or answer unless the user asks; don't steer every topic back to inventory.
+- For conversation, help, or other, write a natural, useful answer in the user's latest language, including English when they use English. Use recent chat history so follow-up conversation makes sense. Be friendly and conversational like a general chat assistant, not a fixed FAQ. Answer ordinary non-inventory questions directly when you can; be honest when unsure. Keep most replies to 1–3 short sentences and ask one clear follow-up only when it helps. Do not repeat an earlier greeting, recap, or answer unless the user asks; don't steer every topic back to inventory.
 - For app_status and data/action intents (stock_add, stock_set, stock_check, product_search, alerts_summary, reorder_summary, pending_orders, recent_activity, product_create, product_update, product_archive, product_restore, order_dispatch, daily_sales), leave reply empty; the application will validate against live data and present a confirmation proposal.
 - Never claim you changed stock. The application handles stock actions separately and requires confirmation.
 - Disha can answer from the live app catalog, size-level inventory, alerts, reorder shortages, pending orders, stock history, daily dispatched sales, and overall dashboard status. Stock changes, product create/edit/archive/restore, and order dispatch are performed only through an app-provided action card after explicit user confirmation. Never say an action succeeded before the app confirms it. Do not claim arbitrary database, file-upload, settings, or code access.
@@ -130,11 +231,24 @@ def _audio_provider_error(status: int, feature: str) -> AssistantProviderError:
 
 async def transcribe_audio(audio: bytes, filename: str, content_type: str) -> str:
     """Transcribe a short Hindi utterance using the configured provider."""
+    if not _disha_ai_enabled():
+        raise AssistantProviderError("Disha is disabled.", user_message="Disha AI is disabled. You can keep using typed inventory search.")
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
-    provider = os.getenv("AI_PROVIDER", "gemini").strip().lower()
+    provider = _setting("DISHA_AI_PROVIDER", "AI_PROVIDER", "gemini").lower()
+    if _custom_provider_requested() and not _external_inference_allowed() and provider in {"gemini", "openai"}:
+        raise AssistantProviderError("External inference is disabled.", user_message="Voice transcription needs an approved local service or explicit external-inference permission.")
     if provider in {"local", "ollama"}:
         return await _transcribe_with_local(audio, filename, content_type)
+    if provider in {"compatible", "openai-compatible", "openai_compatible", "strata", "free-api", "free_api"}:
+        if os.getenv("LOCAL_STT_URL", "").strip():
+            return await _transcribe_with_local(audio, filename, content_type)
+        if gemini_key and _external_fallback_allowed():
+            return await _transcribe_with_gemini_or_local(audio, filename, content_type, gemini_key)
+        raise AssistantProviderError(
+            "The configured chat endpoint does not provide speech transcription.",
+            user_message="इस LLM सेवा में voice transcription नहीं है। Gemini API key या LOCAL_STT_URL सेट करें, या text से बात करें।",
+        )
     if provider == "gemini" and not gemini_key:
         raise AssistantProviderError(
             "GEMINI_API_KEY is required for Hindi voice transcription.",
@@ -163,7 +277,7 @@ async def transcribe_audio(audio: bytes, filename: str, content_type: str) -> st
                 files={"file": (filename, audio, content_type)},
             )
         if response.status_code >= 400:
-            logger.warning("OpenAI transcription returned HTTP %s: %s", response.status_code, response.text[:300])
+            logger.warning("OpenAI transcription returned HTTP %s.", response.status_code)
             raise _audio_provider_error(response.status_code, "transcription")
         body = response.json()
         transcript = str(body.get("text") or "").strip()[:500]
@@ -231,7 +345,7 @@ async def _transcribe_with_local(audio: bytes, filename: str, content_type: str)
                 files={"file": (filename, audio, content_type or "audio/webm")},
             )
         if response.status_code >= 400:
-            logger.warning("Local transcription returned HTTP %s: %s", response.status_code, response.text[:300])
+            logger.warning("Local transcription returned HTTP %s.", response.status_code)
             raise AssistantProviderError(
                 f"Local transcription returned HTTP {response.status_code}.", upstream_status=response.status_code,
                 user_message=f"स्थानीय आवाज़ सेवा ने जवाब नहीं दिया (HTTP {response.status_code})। टेक्स्ट से बात जारी रखें।",
@@ -284,7 +398,7 @@ async def _transcribe_with_gemini(audio: bytes, content_type: str, api_key: str)
             logger.warning("Gemini transcription temporarily returned HTTP %s; retry %s/2.", response.status_code, attempt + 1)
             await asyncio.sleep(0.3 * (attempt + 1))
         if response.status_code >= 400:
-            logger.warning("Gemini transcription returned HTTP %s: %s", response.status_code, response.text[:300])
+            logger.warning("Gemini transcription returned HTTP %s.", response.status_code)
             status = response.status_code
             advice = "Gemini API key/project access check karein." if status in (401, 403) else "Gemini quota/rate limit check karein." if status == 429 else "Gemini audio service abhi response nahi de paayi."
             raise AssistantProviderError(
@@ -340,7 +454,13 @@ async def _gemini_female_hindi_voice(api_key: str) -> str:
 
 async def synthesize_speech(text: str) -> bytes:
     """Render Hindi speech with Gemini TTS and a Hindi female voice."""
-    if _is_local_provider():
+    if not _disha_ai_enabled():
+        raise AssistantProviderError("Disha is disabled.", user_message="Disha AI is disabled. The text response is still available.")
+    configured_provider = _setting("DISHA_AI_PROVIDER", "AI_PROVIDER", "gemini").lower()
+    if _custom_provider_requested() and not _external_inference_allowed() and configured_provider in {"gemini", "openai"}:
+        raise AssistantProviderError("External inference is disabled.", user_message="Voice output needs an approved local service or explicit external-inference permission.")
+    compatible_provider = configured_provider in {"compatible", "openai-compatible", "openai_compatible", "strata", "free-api", "free_api"}
+    if _is_local_provider() or (compatible_provider and os.getenv("LOCAL_TTS_URL", "").strip()):
         endpoint = os.getenv("LOCAL_TTS_URL", "").strip()
         if not endpoint:
             raise AssistantProviderError(
@@ -355,7 +475,7 @@ async def synthesize_speech(text: str) -> bytes:
                     json={"text": text[:1200], **({"voice": os.getenv("LOCAL_TTS_VOICE", "").strip()} if os.getenv("LOCAL_TTS_VOICE", "").strip() else {})},
                 )
             if response.status_code >= 400:
-                logger.warning("Local speech returned HTTP %s: %s", response.status_code, response.text[:300])
+                logger.warning("Local speech returned HTTP %s.", response.status_code)
                 raise AssistantProviderError(
                     f"Local speech returned HTTP {response.status_code}.", upstream_status=response.status_code,
                     user_message="स्थानीय आवाज़ सेवा अभी जवाब नहीं दे पाई। जवाब टेक्स्ट में उपलब्ध है।",
@@ -369,6 +489,11 @@ async def synthesize_speech(text: str) -> bytes:
         except httpx.HTTPError as exc:
             logger.warning("Local speech failed (%s).", type(exc).__name__)
             raise AssistantProviderError("Local speech request failed.", user_message="स्थानीय आवाज़ सेवा से संपर्क नहीं हो पाया। जवाब टेक्स्ट में उपलब्ध है।") from exc
+    if compatible_provider and not _external_fallback_allowed():
+        raise AssistantProviderError(
+            "The configured compatible chat model does not provide speech synthesis.",
+            user_message="इस LLM सेवा में voice output नहीं है। सुरक्षित local TTS सेवा सेट करें, या external inference की अनुमति के बाद ही Gemini voice configure करें।",
+        )
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
         raise AssistantProviderError("GEMINI_API_KEY is required for generated Hindi speech.", user_message="हिंदी आवाज़ के लिए Railway Variables में GEMINI_API_KEY जोड़ें।")
@@ -390,7 +515,7 @@ async def synthesize_speech(text: str) -> bytes:
                 json=payload,
             )
         if response.status_code >= 400:
-            logger.warning("Gemini speech returned HTTP %s: %s", response.status_code, response.text[:300])
+            logger.warning("Gemini speech returned HTTP %s.", response.status_code)
             status = response.status_code
             advice = "Gemini API key/model access check karein." if status in (401, 403, 404) else "Gemini quota/rate limit check karein." if status == 429 else "Gemini voice service abhi response nahi de paayi."
             raise AssistantProviderError(f"Gemini speech returned HTTP {status}.", upstream_status=status, user_message=f"{advice} (Gemini TTS HTTP {status})")
@@ -412,16 +537,29 @@ async def synthesize_speech(text: str) -> bytes:
 
 
 def active_provider() -> str | None:
-    requested = os.getenv("AI_PROVIDER", "gemini").strip().lower()
-    has_openai = bool(os.getenv("OPENAI_API_KEY", "").strip())
-    has_gemini = bool(os.getenv("GEMINI_API_KEY", "").strip())
+    if not _disha_ai_enabled():
+        return None
+    requested = _setting("DISHA_AI_PROVIDER", "AI_PROVIDER", "gemini").lower()
+    # A Disha-specific provider choice is explicit. Remote/cloud inference
+    # stays off until the operator opts in; loopback/private Strata is allowed.
+    if _custom_provider_requested() and not _external_inference_allowed():
+        if requested in {"gemini", "openai"}:
+            return None
+        if requested in {"auto"}:
+            return "local" if _provider_configured("local") else None
+    aliases = {"compatible", "openai-compatible", "openai_compatible", "strata", "free-api", "free_api"}
+    if requested in aliases:
+        return "compatible" if _compatible_provider_configured() else None
     if requested in {"local", "ollama"}:
-        return "local" if os.getenv("LOCAL_AI_URL", "").strip() else None
+        return "local" if _provider_configured("local") else None
     if requested == "openai":
-        return "openai" if has_openai else None
+        return "openai" if _provider_configured("openai") else None
     if requested == "gemini":
-        return "gemini" if has_gemini else None
-    return "openai" if has_openai else ("gemini" if has_gemini else None)
+        return "gemini" if _provider_configured("gemini") else None
+    for provider in ("openai", "gemini", "compatible"):
+        if _provider_configured(provider):
+            return provider
+    return None
 
 
 def api_key_configured() -> bool:
@@ -491,7 +629,9 @@ async def parse_inventory_request(message: str, history: list[dict], *, _provide
     try:
         # Keep the response latency bounded; full app work is performed by the
         # database-backed routes after the model returns a structured intent.
-        async with httpx.AsyncClient(timeout=httpx.Timeout(25.0, connect=7.0)) as client:
+        compatible_max_tokens, compatible_timeout = _compatible_generation_limits()
+        request_timeout = compatible_timeout if provider == "compatible" else 25.0
+        async with httpx.AsyncClient(timeout=httpx.Timeout(request_timeout, connect=10.0 if provider == "compatible" else 7.0)) as client:
             if provider == "local":
                 local_url = os.getenv("LOCAL_AI_URL", "").strip().rstrip("/")
                 local_model = os.getenv("LOCAL_AI_MODEL", "qwen2.5:3b").strip() or "qwen2.5:3b"
@@ -500,6 +640,23 @@ async def parse_inventory_request(message: str, history: list[dict], *, _provide
                     f"{local_url}{OLLAMA_CHAT_URL}",
                     headers={**_local_service_headers("LOCAL_AI_API_KEY"), "Content-Type": "application/json"},
                     json={"model": local_model, "messages": local_messages, "stream": False, "format": INTENT_SCHEMA, "options": {"temperature": 0.15}},
+                )
+            elif provider == "compatible":
+                api_key = _setting("DISHA_AI_API_KEY", "OPENAI_COMPATIBLE_API_KEY")
+                model = _setting("DISHA_AI_MODEL", "OPENAI_COMPATIBLE_MODEL")
+                headers = {"Content-Type": "application/json"}
+                if api_key:
+                    headers["Authorization"] = f"Bearer {api_key}"
+                response = await client.post(
+                    _compatible_chat_url(),
+                    headers=headers,
+                    json={
+                        "model": model,
+                        "messages": [{"role": "system", "content": SYSTEM_PROMPT}, *conversation],
+                        "temperature": _compatible_temperature(),
+                        "max_tokens": compatible_max_tokens,
+                        "response_format": {"type": "json_object"},
+                    },
                 )
             elif provider == "openai":
                 api_key = os.getenv("OPENAI_API_KEY", "").strip()
@@ -536,15 +693,17 @@ async def parse_inventory_request(message: str, history: list[dict], *, _provide
                 )
         if response.status_code >= 400:
             # Keep provider keys private; only log the upstream status and safe error body.
-            logger.warning("%s assistant request returned HTTP %s: %s", provider, response.status_code, response.text[:500])
+            # Upstream bodies are untrusted and may echo request details; keep
+            # API keys, prompts, and provider payloads out of application logs.
+            logger.warning("%s assistant request returned HTTP %s.", provider, response.status_code)
             status = response.status_code
-            model_variable = "LOCAL_AI_MODEL" if provider == "local" else "OPENAI_MODEL" if provider == "openai" else "GEMINI_MODEL"
-            key_label = "स्थानीय AI सेवा" if provider == "local" else "OpenAI API key" if provider == "openai" else "Gemini API key"
+            model_variable = "LOCAL_AI_MODEL" if provider == "local" else "OPENAI_MODEL" if provider == "openai" else "DISHA_AI_MODEL / OPENAI_COMPATIBLE_MODEL" if provider == "compatible" else "GEMINI_MODEL"
+            key_label = "स्थानीय AI सेवा" if provider == "local" else "OpenAI API key" if provider == "openai" else "compatible provider API key" if provider == "compatible" else "Gemini API key"
             if status in (401, 403):
-                advice = "स्थानीय AI सेवा का authentication token जाँचें।" if provider == "local" else f"{key_label} reject hui ya is project ko API access nahi mila. Railway Variables mein {provider.upper()} key check karein."
+                advice = "स्थानीय AI सेवा का authentication token जाँचें।" if provider == "local" else f"{key_label} reject hui ya is project ko API access nahi mila. Railway Variables mein provider key aur base URL check karein."
             elif status == 404:
-                default_model = "qwen2.5:3b" if provider == "local" else DEFAULT_OPENAI_MODEL if provider == "openai" else DEFAULT_MODEL
-                advice = f"{provider.title()} model nahi mila. {model_variable} को {default_model} सेट करें और local model pull करें।"
+                default_model = "qwen2.5:3b" if provider == "local" else DEFAULT_OPENAI_MODEL if provider == "openai" else DEFAULT_MODEL if provider == "gemini" else "provider dashboard mein available model ID"
+                advice = f"{provider.title()} model nahi mila. {model_variable} mein {default_model} provider wala exact model ID set karein."
             elif status == 429:
                 advice = "स्थानीय AI सेवा व्यस्त है या उसकी rate limit लगी है। थोड़ी देर बाद retry करें।" if provider == "local" else f"{provider.title()} quota/rate limit poori hui. Provider dashboard mein isi project ka usage aur billing check karein, phir retry karein."
             elif status == 400:
@@ -558,6 +717,15 @@ async def parse_inventory_request(message: str, history: list[dict], *, _provide
         body = response.json()
         if provider == "local":
             content = str(body.get("message", {}).get("content") or "")
+        elif provider == "compatible":
+            message = body.get("choices", [{}])[0].get("message", {})
+            raw_content = message.get("content", "")
+            if isinstance(raw_content, list):
+                content = "".join(
+                    str(part.get("text", "")) for part in raw_content if isinstance(part, dict)
+                )
+            else:
+                content = str(raw_content or "")
         elif provider == "openai":
             content = str(body.get("output_text") or "")
             if not content:
@@ -622,24 +790,24 @@ async def parse_inventory_request(message: str, history: list[dict], *, _provide
 
 
 async def _fallback_or_raise(message: str, history: list[dict], provider: str, override: str | None, error: AssistantProviderError) -> dict:
-    """Use the secondary configured API in auto mode, then report both failures."""
-    if not override and os.getenv("AI_PROVIDER", "gemini").strip().lower() == "auto":
-        fallback = "gemini" if provider == "openai" else "openai"
-        fallback_key = "GEMINI_API_KEY" if fallback == "gemini" else "OPENAI_API_KEY"
-        if os.getenv(fallback_key, "").strip():
+    """Try another configured API in auto mode, then report both failures."""
+    requested_provider = _setting("DISHA_AI_PROVIDER", "AI_PROVIDER", "gemini").lower()
+    external_fallback_allowed = not _custom_provider_requested() or _setting("DISHA_AI_ALLOW_EXTERNAL_INFERENCE", default="false").lower() in {"1", "true", "yes", "on"}
+    if not override and requested_provider == "auto" and external_fallback_allowed:
+        fallbacks = [name for name in ("openai", "gemini", "compatible") if name != provider and _provider_configured(name)]
+        for fallback in fallbacks:
             logger.warning("%s assistant failed; retrying with configured %s provider.", provider, fallback)
             try:
                 return await parse_inventory_request(message, history, _provider_override=fallback)
             except AssistantProviderError as fallback_exc:
-                logger.warning("Both configured assistant providers failed (%s, %s).", provider, fallback)
-                raise AssistantProviderError(
-                    f"Both configured AI providers failed ({provider} and {fallback}).",
+                logger.warning("Configured assistant fallback %s also failed.", fallback)
+                error = AssistantProviderError(
+                    f"Configured AI providers failed ({provider}, {fallback}).",
                     upstream_status=fallback_exc.upstream_status,
-                    user_message=(
-                        f"OpenAI aur Gemini dono se abhi response nahi mila. "
-                        f"{error.user_message} Doosri API bhi fail hui: {fallback_exc.user_message}"
-                    ),
-                ) from fallback_exc
+                    user_message=f"{error.user_message} Backup AI provider ({fallback}) bhi fail hua: {fallback_exc.user_message}",
+                )
+        if fallbacks:
+            raise error
     if provider == "local" and not override:
         raise AssistantProviderError(
             "Self-hosted Ollama request failed.", upstream_status=error.upstream_status,

@@ -50,8 +50,91 @@ async def main():
     assert request["headers"]["Authorization"] == "Bearer local-test-token"
     assert request["json"]["format"] == assistant_service.INTENT_SCHEMA
     assert request["json"]["messages"][0]["role"] == "system"
-    assert "Hindi-only" in request["json"]["messages"][0]["content"]
-    print("ok: local Ollama uses Hindi inventory instructions and strict intent JSON schema")
+    assert "Hindi" in request["json"]["messages"][0]["content"] and "English" in request["json"]["messages"][0]["content"]
+    print("ok: local Ollama uses multilingual inventory instructions and strict intent JSON schema")
+
+    FakeClient.requests = []
+    FakeClient.responses = [FakeResponse(body={"choices": [{"message": {"content": '{"intent":"stock_check","product_query":"नीली ड्रेस","size":"M","quantity":null,"operation":"add","sku":"","product_name":"","category":"","new_sku":"","new_name":"","new_category":"","sizes":"","order_id":null,"reply":""}'}}]})]
+    env = {
+        "AI_PROVIDER": "compatible",
+        "OPENAI_COMPATIBLE_BASE_URL": "https://api.groq.com/openai/v1",
+        "OPENAI_COMPATIBLE_MODEL": "openai/gpt-oss-20b",
+        "OPENAI_COMPATIBLE_API_KEY": "provider-test-token",
+    }
+    with patch.dict(os.environ, env, clear=True), patch.object(assistant_service.httpx, "AsyncClient", FakeClient):
+        assert assistant_service.active_provider() == "compatible"
+        parsed = await assistant_service.parse_inventory_request("नीली ड्रेस के M साइज़ का स्टॉक बताओ", [])
+    assert parsed["intent"] == "stock_check" and parsed["size"] == "M"
+    url, request = FakeClient.requests[-1]
+    assert url == "https://api.groq.com/openai/v1/chat/completions"
+    assert request["headers"]["Authorization"] == "Bearer provider-test-token"
+    assert request["json"]["response_format"] == {"type": "json_object"}
+    assert request["json"]["model"] == "openai/gpt-oss-20b"
+    print("ok: hosted OpenAI-compatible API returns a validated Disha intent without exposing its key")
+
+    FakeClient.requests = []
+    FakeClient.responses = [FakeResponse(body={"choices": [{"message": {"content": '{"intent":"conversation","product_query":"","size":"","quantity":null,"operation":"add","sku":"","product_name":"","category":"","new_sku":"","new_name":"","new_category":"","sizes":"","order_id":null,"reply":"नमस्ते।"}'}}]})]
+    env = {
+        "AI_PROVIDER": "strata",
+        "OPENAI_COMPATIBLE_BASE_URL": "http://strata:8080/v1",
+        "OPENAI_COMPATIBLE_MODEL": "strata",
+    }
+    with patch.dict(os.environ, env, clear=True), patch.object(assistant_service.httpx, "AsyncClient", FakeClient):
+        assert assistant_service.active_provider() == "compatible"
+        parsed = await assistant_service.parse_inventory_request("नमस्ते", [])
+    url, request = FakeClient.requests[-1]
+    assert url == "http://strata:8080/v1/chat/completions"
+    assert "Authorization" not in request["headers"]
+    assert parsed["intent"] == "conversation"
+    print("ok: Strata-compatible endpoint works without a cloud API key")
+
+    with patch.dict(os.environ, {
+        "DISHA_AI_ENABLED": "true", "DISHA_AI_PROVIDER": "strata",
+        "DISHA_AI_BASE_URL": "https://gpu.example.com/v1", "DISHA_AI_MODEL": "strata-model",
+        "DISHA_AI_ALLOW_EXTERNAL_INFERENCE": "false",
+    }, clear=True):
+        assert assistant_service.active_provider() is None
+    with patch.dict(os.environ, {
+        "DISHA_AI_ENABLED": "true", "DISHA_AI_PROVIDER": "strata",
+        "DISHA_AI_BASE_URL": "https://gpu.example.com/v1", "DISHA_AI_MODEL": "strata-model",
+        "DISHA_AI_API_KEY": "disha-test-token", "DISHA_AI_ALLOW_EXTERNAL_INFERENCE": "true",
+        "DISHA_AI_MAX_OUTPUT_TOKENS": "2500", "DISHA_AI_TIMEOUT_SECONDS": "35", "DISHA_AI_TEMPERATURE": "0.4",
+    }, clear=True):
+        assert assistant_service.active_provider() == "compatible"
+        assert assistant_service._compatible_chat_url() == "https://gpu.example.com/v1/chat/completions"
+        assert assistant_service._compatible_generation_limits() == (2500, 35.0)
+        assert assistant_service._compatible_temperature() == 0.4
+    with patch.dict(os.environ, {
+        "DISHA_AI_ENABLED": "false", "DISHA_AI_PROVIDER": "strata",
+        "DISHA_AI_BASE_URL": "http://strata:8080/v1", "DISHA_AI_MODEL": "strata-model",
+    }, clear=True):
+        assert assistant_service.active_provider() is None
+    with patch.dict(os.environ, {
+        "DISHA_AI_PROVIDER": "strata", "DISHA_AI_BASE_URL": "https://user:pass@gpu.example.com/v1",
+        "DISHA_AI_MODEL": "strata-model", "DISHA_AI_ALLOW_EXTERNAL_INFERENCE": "true",
+    }, clear=True):
+        assert assistant_service.active_provider() is None
+    with patch.dict(os.environ, {
+        "DISHA_AI_ENABLED": "false", "DISHA_AI_PROVIDER": "strata", "GEMINI_API_KEY": "must-not-be-used",
+    }, clear=True):
+        try:
+            await assistant_service.transcribe_audio(b"sample", "voice.webm", "audio/webm")
+        except assistant_service.AssistantProviderError:
+            pass
+        else:
+            raise AssertionError("disabled Disha must not call a speech provider")
+    with patch.dict(os.environ, {
+        "DISHA_AI_PROVIDER": "strata", "DISHA_AI_BASE_URL": "http://strata:8080/v1",
+        "DISHA_AI_MODEL": "strata", "DISHA_AI_ALLOW_EXTERNAL_INFERENCE": "false",
+        "GEMINI_API_KEY": "must-not-be-used",
+    }, clear=True):
+        try:
+            await assistant_service.transcribe_audio(b"sample", "voice.webm", "audio/webm")
+        except assistant_service.AssistantProviderError:
+            pass
+        else:
+            raise AssertionError("Strata must not silently fall back to external Gemini transcription")
+    print("ok: Disha provider config validates limits, disabled state, safe endpoint defaults, and remote-inference opt-in")
 
     FakeClient.requests = []
     FakeClient.responses = [FakeResponse(body={"text": "नीली ड्रेस के एम साइज़ में पाँच जोड़ो"})]

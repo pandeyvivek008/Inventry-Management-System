@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import uuid
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 _test_db = os.path.join(tempfile.gettempdir(), f"disha_flow_{uuid.uuid4().hex}.db")
@@ -67,6 +68,17 @@ check(transcribed.status_code == 200 and transcribed.json()["text"] == "Blue kur
 spoken = client.post("/api/assistant/speech", json={"text": "Hello, main Disha hoon"})
 check(spoken.status_code == 200 and spoken.content == b"RIFFfake-wav" and spoken.headers["content-type"].startswith("audio/wav"),
       "spoken response endpoint serves Gemini WAV audio with the correct content type")
+with patch.dict(os.environ, {"DISHA_AI_DIAGNOSTICS_TOKEN": "test-admin-diagnostics-token"}), \
+        patch.object(main.assistant_service, "active_provider", lambda: "compatible"):
+    hidden = client.post("/api/assistant/diagnostics")
+    check(hidden.status_code == 404, "Disha diagnostics hide status without the admin token")
+    diagnostic = client.post("/api/assistant/diagnostics", headers={
+        "Authorization": "Bearer test-admin-diagnostics-token",
+    })
+    check(diagnostic.status_code == 200 and diagnostic.json()["model_responding"] is True,
+          "admin-token diagnostics verify a model response without exposing configuration")
+    check("test-admin-diagnostics-token" not in diagnostic.text and "https://" not in diagnostic.text,
+          "Disha diagnostics do not return the admin token or provider URL")
 created = client.post("/api/products", json={
     "sku": "DISHA-TEST-01", "name": "Blue Kurta", "category": "Kurta Set",
     "variants": [{"size": "S", "initial_stock": 12}, {"size": "M", "initial_stock": 4}],

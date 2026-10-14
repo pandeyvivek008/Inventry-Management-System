@@ -211,15 +211,28 @@ dispatched, use **Mark This Batch as Dispatched**; only then is physical stock d
 
 ### Conversational stock assistant
 
-The floating Disha assistant understands spoken Hindi, Romanized Hindi, and
-Hinglish, then the app resolves inventory requests against its own catalog and
+The floating Disha assistant understands Hindi, Romanized Hindi, Hinglish, and
+English, then the app resolves inventory requests against its own catalog and
 stock ledger. Inventory and product changes are validated by the app and shown
 for confirmation; the model does not write directly to the database.
 
-Configure `OPENAI_API_KEY` as a **Railway app-service variable** to use OpenAI.
-`AI_PROVIDER=gemini` keeps the existing Gemini setup. `AI_PROVIDER=auto`
-prefers OpenAI and falls back to Gemini for chat/audio when both keys are set.
-Optional `AI_PROVIDER=local` routes the structured Hindi intent to Ollama and
+Legacy `AI_PROVIDER=gemini` keeps the existing Gemini setup. For a configurable
+Strata/OpenAI-compatible endpoint, set `DISHA_AI_PROVIDER=strata`,
+`DISHA_AI_BASE_URL`, and `DISHA_AI_MODEL`. Add `DISHA_AI_API_KEY` only when the
+endpoint requires it. Remote endpoints are blocked by default; explicitly set
+`DISHA_AI_ALLOW_EXTERNAL_INFERENCE=true` only when you trust the provider and
+have secured its connection. Private/local Strata endpoints work with the safe
+default. `DISHA_AI_ENABLED=false` disables Disha chat. See
+[SELF_HOSTED_AI_HI.md](SELF_HOSTED_AI_HI.md) for exact Railway examples.
+
+An optional admin-only provider probe is available at
+`POST /api/assistant/diagnostics` when `DISHA_AI_DIAGNOSTICS_TOKEN` is set. Send
+that token as a Bearer authorization header. It makes one minimal inference
+request with no inventory or conversation data and returns only safe status
+flags; diagnostics are hidden when no token is configured. The app has no user
+accounts or roles, so keep the token private and do not expose it in the UI.
+
+Optional `AI_PROVIDER=local` continues to route structured intent to Ollama and
 voice input/output to separately hosted Whisper-compatible and Piper services.
 Never place API keys in HTML, JavaScript, Git, or screenshots. Local setup and
 the deployment boundary are documented in [SELF_HOSTED_AI_HI.md](SELF_HOSTED_AI_HI.md).

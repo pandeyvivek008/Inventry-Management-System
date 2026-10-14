@@ -1,4 +1,5 @@
 import asyncio
+import hmac
 import os
 import shutil
 import uuid
@@ -438,7 +439,7 @@ async def inventory_assistant_chat(payload: schemas.AssistantChatRequest, reques
     explicit stock-adjustment confirmation flow.
     """
     if not assistant_service.api_key_configured():
-        raise HTTPException(status_code=503, detail="Disha की AI सेवा सेट नहीं है। AI_PROVIDER और संबंधित सेवा URL/की जाँचें।")
+        raise HTTPException(status_code=503, detail="Disha AI is disabled or not configured. Check its provider settings and external-inference permission.")
     client_ip = request.client.host if request.client else "unknown"
     if not _assistant_rate_limit(client_ip):
         raise HTTPException(status_code=429, detail="Assistant request limit reached. Please wait a minute and try again.")
@@ -703,6 +704,62 @@ async def inventory_assistant_chat(payload: schemas.AssistantChatRequest, reques
             "operation": operation, "counted": counted,
         },
     }
+
+
+@app.post("/api/assistant/diagnostics")
+async def assistant_diagnostics(request: Request, db: Session = Depends(get_db)):
+    """Admin-token-only, no-inventory-data inference probe for Disha setup."""
+    configured_token = os.getenv("DISHA_AI_DIAGNOSTICS_TOKEN", "").strip()
+    if not configured_token:
+        raise HTTPException(status_code=404, detail="Disha diagnostics are not enabled.")
+    client_ip = request.client.host if request.client else "unknown"
+    if not _assistant_rate_limit(client_ip):
+        raise HTTPException(status_code=429, detail="Assistant request limit reached. Please wait a minute and try again.")
+    supplied = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+    if not hmac.compare_digest(supplied, configured_token):
+        raise HTTPException(status_code=404, detail="Disha diagnostics are not enabled.")
+
+    provider = assistant_service.active_provider()
+    result = {
+        "application": "running",
+        "enabled": provider is not None,
+        "provider": provider or "not-configured",
+        "base_url_configured": bool(os.getenv("DISHA_AI_BASE_URL", "").strip() or os.getenv("OPENAI_COMPATIBLE_BASE_URL", "").strip() or os.getenv("LOCAL_AI_URL", "").strip()),
+        "provider_endpoint_reachable": False if provider else None,
+        "model_responding": False if provider else None,
+        "inventory_tools_available": True,
+        "visual_search_ready": None,
+        "message": "",
+    }
+    try:
+        result["visual_search_ready"] = visual_search_status(db).get("status") == "ready"
+    except Exception:
+        result["visual_search_ready"] = False
+
+    if provider is None:
+        result["message"] = "Disha is disabled or missing valid provider configuration. Check DISHA_AI_ENABLED, provider, URL, model, and external-inference permission."
+        return result
+    try:
+        await assistant_service.parse_inventory_request("Reply with a valid empty inventory-intent JSON object for this health check.", [])
+    except assistant_service.AssistantProviderError as exc:
+        # An upstream HTTP response proves network reachability, but not that
+        # the configured model can successfully answer the expected request.
+        result["provider_endpoint_reachable"] = exc.upstream_status is not None
+        if exc.upstream_status in (401, 403):
+            result["message"] = "The provider rejected authentication. Check its API key and access permissions."
+        elif exc.upstream_status == 404:
+            result["message"] = "The provider answered, but the endpoint or model was not found. Check the base URL and exact model ID."
+        elif exc.upstream_status == 429:
+            result["message"] = "The provider is reachable but rate limited. Check its quota and retry later."
+        elif exc.upstream_status is not None:
+            result["message"] = f"The provider is reachable but returned HTTP {exc.upstream_status}. Check model availability and request compatibility."
+        else:
+            result["message"] = "Disha could not reach a responding model. Check provider availability, secure networking, and timeout settings."
+        return result
+    result["provider_endpoint_reachable"] = True
+    result["model_responding"] = True
+    result["message"] = "Disha's configured model returned a valid structured response. Inventory tools are available; visual-search readiness is reported separately."
+    return result
 
 
 @app.post("/api/assistant/transcribe")
