@@ -1,13 +1,13 @@
 # Disha का Self-hosted AI
 
-यह repo Disha के लिए वैकल्पिक local/self-hosted pipeline देता है। `AI_PROVIDER=local` होने पर चैट intent Ollama से, आवाज़ का transcript `LOCAL_STT_URL` से और बोला हुआ जवाब `LOCAL_TTS_URL` से आता है। Gemini/OpenAI keys की जरूरत नहीं पड़ती। मौजूदा सुरक्षित inventory tools ही database पढ़ते/बदलते हैं; model को SQL या database credentials नहीं दिए जाते। Product/stock/order बदलावों पर app की confirmation और validation जारी रहती है।
+यह repo Disha के लिए वैकल्पिक local/self-hosted pipeline देता है। Chat intent के लिए Strata/OpenAI-compatible endpoint या Ollama configure करें। Voice transcription app में embedded `faster-whisper` से CPU पर locally होती है; `LOCAL_STT_URL` केवल वैकल्पिक private speech service के लिए है। Recording किसी transcription API को नहीं भेजी जाती। Transcript उसके बाद चुने हुए chat model को भेजा जाता है। बोला हुआ जवाब `LOCAL_TTS_URL` से आ सकता है; browser speech fallback भी उपलब्ध है। मौजूदा सुरक्षित inventory tools ही database पढ़ते/बदलते हैं; model को SQL या database credentials नहीं दिए जाते। Product/stock/order बदलावों पर app की confirmation और validation जारी रहती है।
 
 ## क्या इस बदलाव में जुड़ा है
 
 - **Text brain:** Ollama `/api/chat` के strict JSON schema के साथ। Default `qwen2.5:3b` है; दूसरे compatible Ollama model को `LOCAL_AI_MODEL` से चुनें। Ollama के native chat endpoint में schema आधारित output समर्थित है: [Ollama API](https://github.com/ollama/ollama/blob/main/docs/api.md?plain=1).
-- **Hindi speech-to-text:** backend OpenAI-compatible `/v1/audio/transcriptions` endpoint पर Hindi (`language=hi`) भेजता है। उदाहरण implementation [faster-whisper-server](https://github.com/lightforgemedia/faster-whisper-server) है।
+- **Voice speech-to-text:** backend `faster-whisper` embedded model को CPU/int8 पर चलाता है और Hindi/English/Hinglish को auto-detect करता है। Default `tiny` model पहली बार Hugging Face से download होता है; audio server से बाहर नहीं जाता। `LOCAL_STT_URL` सेट करने पर वैकल्पिक private STT endpoint इस्तेमाल होगा।
 - **Speech output:** Piper HTTP `/synthesize` endpoint से WAV audio; server-side Hindi voice sample सुनकर उपयुक्त voice configure करें। [Piper HTTP API](https://github.com/OHF-Voice/piper1-gpl/blob/main/docs/API_HTTP.md).
-- **Gemini 503 recovery:** temporary 500/502/503/504 या network failure पर अधिकतम दो छोटे retries; फिर `LOCAL_STT_URL` configured हो तो local Whisper fallback। Retry भी fail हो तो Disha साफ़ error देती है और typed chat चालू रहता है।
+- **Gemini 503 recovery:** temporary 500/502/503/504 या network failure पर अधिकतम दो छोटे retries; फिर embedded local Whisper fallback। Retry भी fail हो तो Disha साफ़ error देती है और typed chat चालू रहता है।
 - **Photo search:** upload/camera scan के बाद catalog की अधिकतम पाँच तस्वीरों से स्थानीय colour histogram + perceptual hash comparison। यह CLIP/vision LLM नहीं है, इसलिए result suggestion है; stock अपने-आप नहीं बदलता। PostgreSQL में pgvector index setup अलग one-time command है।
 
 ## Local laptop पर शुरू करें
@@ -21,7 +21,7 @@
 
    Ollama default रूप से `http://127.0.0.1:11434` पर सुनता है। उसी laptop पर backend चल रहा हो तो `.env` में `LOCAL_AI_URL=http://127.0.0.1:11434` रखें।
 
-2. Hindi transcription service को अलग process/container में चलाएँ। ऐसा server चुनें जो OpenAI-compatible `POST /v1/audio/transcriptions` दे। `.env` में पूरा endpoint रखें, जैसे `LOCAL_STT_URL=http://127.0.0.1:8000/v1/audio/transcriptions`; चुने server की model configuration उसी के docs के अनुसार करें।
+2. `requirements.txt` install/build के दौरान `faster-whisper` install होगा। App server की पहली voice request पर `tiny` weights download होंगे। Railway पर cold start/model download के लिए पर्याप्त RAM/disk और outbound access चाहिए। Model को redeploy के बाद बनाए रखने के लिए Railway volume mount करके `LOCAL_STT_DOWNLOAD_ROOT` उसी mount path पर रखें। अधिक accuracy के लिए `LOCAL_STT_MODEL=base` चुन सकते हैं; RAM/CPU usage बढ़ेगा।
 
 3. Piper HTTP service चलाएँ और `.env` में `LOCAL_TTS_URL=http://127.0.0.1:5000/synthesize` रखें। `LOCAL_TTS_VOICE` तभी भरें जब उस Piper server पर voice override उपलब्ध हो। “Female/cute” आवाज़ model की voice data पर निर्भर है—इसे sample सुनकर चुनें; code voice को बदलकर female नहीं बना सकता।
 
@@ -31,7 +31,11 @@
    AI_PROVIDER=local
    LOCAL_AI_URL=http://127.0.0.1:11434
    LOCAL_AI_MODEL=qwen2.5:3b
-   LOCAL_STT_URL=http://127.0.0.1:8000/v1/audio/transcriptions
+   LOCAL_STT_MODEL=tiny
+   LOCAL_STT_DEVICE=cpu
+   LOCAL_STT_COMPUTE_TYPE=int8
+   LOCAL_STT_CPU_THREADS=2
+   LOCAL_STT_LANGUAGE=auto
    LOCAL_TTS_URL=http://127.0.0.1:5000/synthesize
    ```
 
@@ -89,7 +93,7 @@ DISHA_AI_ALLOW_EXTERNAL_INFERENCE=false
 
 Railway पर चल रही Disha के लिए `127.0.0.1` Railway container होता है, आपका computer नहीं। Railway को Strata तक पहुँचाने के लिए हमेशा चालू host और authenticated private network/VPN या HTTPS gateway चाहिए। Strata में API key चालू करें; बिना authentication model server को public internet पर expose न करें। Railway Variables में private URL और key रखें। Remote public host होने पर `DISHA_AI_ALLOW_EXTERNAL_INFERENCE=true` भी लगाएँ।
 
-यह integration अभी text chat/intents के लिए है। Disha इस connector से photos Strata को नहीं भेजती; visual product search अपना SigLIP/catalog-index path इस्तेमाल करता है। Strata में optional image input मौजूद है, पर इस app connector में multimodal request/evaluation लागू नहीं है। Voice के लिए `LOCAL_STT_URL` और `LOCAL_TTS_URL` रखें; Gemini transcription/speech तभी इस्तेमाल होगा जब उसका key मौजूद हो और external inference explicitly allowed हो।
+यह integration अभी text chat/intents के लिए है। Disha इस connector से photos Strata को नहीं भेजती; visual product search अपना SigLIP/catalog-index path इस्तेमाल करता है। Strata में optional image input मौजूद है, पर इस app connector में multimodal request/evaluation लागू नहीं है। Strata-compatible chat के साथ voice के लिए embedded local Whisper default है; Gemini fallback automatic नहीं है। Cloud transcription तभी इस्तेमाल होगी जब Gemini provider explicitly चुना गया हो और external inference allowed हो।
 
 ### Privacy और free-tier सीमा
 
@@ -106,7 +110,7 @@ LOCAL_STT_URL=https://<private-speech-host>/v1/audio/transcriptions
 LOCAL_TTS_URL=https://<private-voice-host>/synthesize
 ```
 
-Railway Variables में secrets रखें, `.env`/Git में नहीं। Public internet पर Ollama `11434`, Piper `5000` या Whisper port को बिना authentication expose न करें। Private networking/VPN या authenticated TLS reverse proxy लगाएँ; service keys को `LOCAL_AI_API_KEY`, `LOCAL_STT_API_KEY`, `LOCAL_TTS_API_KEY` में रखें। Railway service का outbound route इन hosts तक पहुँचना चाहिए।
+Railway Variables में secrets रखें, `.env`/Git में नहीं। Public internet पर Ollama `11434`, Piper `5000` या optional Whisper port को बिना authentication expose न करें। Private networking/VPN या authenticated TLS reverse proxy लगाएँ; service keys को `LOCAL_AI_API_KEY`, `LOCAL_STT_API_KEY`, `LOCAL_TTS_API_KEY` में रखें। Railway service का outbound route इन hosts तक पहुँचना चाहिए। Embedded Whisper के लिए अलग STT service आवश्यक नहीं है।
 
 ## Photos: index और सीमा
 

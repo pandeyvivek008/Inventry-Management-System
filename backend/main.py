@@ -727,6 +727,7 @@ async def assistant_diagnostics(request: Request, db: Session = Depends(get_db))
         "base_url_configured": bool(os.getenv("DISHA_AI_BASE_URL", "").strip() or os.getenv("OPENAI_COMPATIBLE_BASE_URL", "").strip() or os.getenv("LOCAL_AI_URL", "").strip()),
         "provider_endpoint_reachable": False if provider else None,
         "model_responding": False if provider else None,
+        "voice_transcription": assistant_service.voice_transcription_mode(),
         "inventory_tools_available": True,
         "visual_search_ready": None,
         "message": "",

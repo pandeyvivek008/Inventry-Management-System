@@ -232,17 +232,20 @@ request with no inventory or conversation data and returns only safe status
 flags; diagnostics are hidden when no token is configured. The app has no user
 accounts or roles, so keep the token private and do not expose it in the UI.
 
-Optional `AI_PROVIDER=local` continues to route structured intent to Ollama and
-voice input/output to separately hosted Whisper-compatible and Piper services.
-Never place API keys in HTML, JavaScript, Git, or screenshots. Local setup and
+Optional `AI_PROVIDER=local` routes structured intent to Ollama. Voice input
+uses embedded `faster-whisper` on CPU by default (Hindi, English, and Hinglish;
+no transcription API); `LOCAL_STT_URL` can override it with a private service.
+Voice output can use Piper or browser speech. Never place API keys in HTML,
+JavaScript, Git, or screenshots. Local setup and
 the deployment boundary are documented in [SELF_HOSTED_AI_HI.md](SELF_HOSTED_AI_HI.md).
 
 Chat history currently stays in that browser's local storage. It is not shared
 between browsers or devices; user accounts and server-side chat history are not
 implemented yet. Disha's microphone starts only after the user opens/taps Disha;
-browser permission is required. Speech transcription is Hindi-only. Gemini's
-temporary audio 5xx errors retry a bounded number of times, then use local
-Whisper if configured. Say
+browser permission is required. Speech transcription defaults to local Whisper,
+which auto-detects Hindi/English; Strata recordings are not sent to a cloud API.
+Gemini's temporary audio 5xx errors retry a bounded number of times, then use
+local Whisper. Say
 **haan/yes** to confirm a pending action or **nahi/no** to cancel. The mic pauses
 when Disha is closed or the tab goes to the background. Daily sales summaries
 count dispatched inventory units (not pending orders); the app does not currently

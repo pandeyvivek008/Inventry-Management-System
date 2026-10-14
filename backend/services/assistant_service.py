@@ -10,7 +10,10 @@ import logging
 import os
 import time
 import ipaddress
+import importlib.util
+from io import BytesIO
 from pathlib import Path
+from threading import Lock
 from urllib.parse import quote, urlsplit
 
 import httpx
@@ -33,6 +36,10 @@ GEMINI_VOICES_URL = "https://generativelanguage.googleapis.com/v1beta/voices"
 OLLAMA_CHAT_URL = "/api/chat"
 OPENAI_COMPATIBLE_CHAT_PATH = "/chat/completions"
 _female_voice_cache: tuple[float, str] | None = None
+_whisper_model = None
+_whisper_model_key: tuple[str, str, str, int, str] | None = None
+_whisper_model_lock = Lock()
+_whisper_inference_lock = Lock()
 
 
 def _setting(name: str, legacy_name: str | None = None, default: str = "") -> str:
@@ -241,14 +248,10 @@ async def transcribe_audio(audio: bytes, filename: str, content_type: str) -> st
     if provider in {"local", "ollama"}:
         return await _transcribe_with_local(audio, filename, content_type)
     if provider in {"compatible", "openai-compatible", "openai_compatible", "strata", "free-api", "free_api"}:
-        if os.getenv("LOCAL_STT_URL", "").strip():
-            return await _transcribe_with_local(audio, filename, content_type)
-        if gemini_key and _external_fallback_allowed():
-            return await _transcribe_with_gemini_or_local(audio, filename, content_type, gemini_key)
-        raise AssistantProviderError(
-            "The configured chat endpoint does not provide speech transcription.",
-            user_message="इस LLM सेवा में voice transcription नहीं है। Gemini API key या LOCAL_STT_URL सेट करें, या text से बात करें।",
-        )
+        # Strata and other OpenAI-compatible chat models do not necessarily
+        # accept audio. Keep speech recognition local and never silently send
+        # recordings to a cloud API as a fallback.
+        return await _transcribe_with_local(audio, filename, content_type)
     if provider == "gemini" and not gemini_key:
         raise AssistantProviderError(
             "GEMINI_API_KEY is required for Hindi voice transcription.",
@@ -318,20 +321,17 @@ async def _transcribe_with_gemini_or_local(audio: bytes, filename: str, content_
     try:
         return await _transcribe_with_gemini(audio, content_type, gemini_key)
     except AssistantProviderError as gemini_error:
-        if gemini_error.upstream_status in {None, 500, 502, 503, 504} and os.getenv("LOCAL_STT_URL", "").strip():
-            logger.warning("Gemini transcription unavailable; trying configured local speech-to-text service.")
+        if gemini_error.upstream_status in {None, 500, 502, 503, 504}:
+            logger.warning("Gemini transcription unavailable; trying local speech-to-text.")
             return await _transcribe_with_local(audio, filename, content_type)
         raise
 
 
 async def _transcribe_with_local(audio: bytes, filename: str, content_type: str) -> str:
-    """Call an OpenAI-compatible self-hosted Whisper transcription endpoint."""
+    """Transcribe locally, preferring a configured private STT service."""
     endpoint = os.getenv("LOCAL_STT_URL", "").strip()
     if not endpoint:
-        raise AssistantProviderError(
-            "LOCAL_STT_URL is required for self-hosted Hindi voice input.",
-            user_message="स्थानीय वॉइस सेवा अभी सेट नहीं है। टेक्स्ट से बात जारी रखें या LOCAL_STT_URL सेट करें।",
-        )
+        return await _transcribe_with_embedded_whisper(audio)
     prompt = (
         "Transcribe Hindi speech only in Devanagari. Preserve product names, colors, size labels and numbers as spoken; "
         "do not translate or answer. Inventory terms: stock, pieces, add, set, delete, restore, dispatch, S M L XL XXL."
@@ -361,6 +361,91 @@ async def _transcribe_with_local(audio: bytes, filename: str, content_type: str)
         raise AssistantProviderError(
             "Local transcription request failed.", user_message="स्थानीय आवाज़ सेवा से संपर्क नहीं हो पाया। टेक्स्ट से बात जारी रखें।",
         ) from exc
+
+
+def _get_embedded_whisper_model():
+    """Load and cache faster-whisper lazily so text-only startup stays light."""
+    global _whisper_model, _whisper_model_key
+    model_name = os.getenv("LOCAL_STT_MODEL", "tiny").strip() or "tiny"
+    device = os.getenv("LOCAL_STT_DEVICE", "cpu").strip().lower() or "cpu"
+    compute_type = os.getenv("LOCAL_STT_COMPUTE_TYPE", "int8").strip().lower() or "int8"
+    try:
+        cpu_threads = max(1, min(8, int(os.getenv("LOCAL_STT_CPU_THREADS", "2"))))
+    except ValueError:
+        cpu_threads = 2
+    download_root = os.getenv("LOCAL_STT_DOWNLOAD_ROOT", "").strip()
+    model_key = (model_name, device, compute_type, cpu_threads, download_root)
+    with _whisper_model_lock:
+        if _whisper_model is not None and _whisper_model_key == model_key:
+            return _whisper_model
+        try:
+            from faster_whisper import WhisperModel
+        except ImportError as exc:
+            raise AssistantProviderError(
+                "The embedded faster-whisper runtime is not installed.",
+                user_message="Local voice model install nahi hua. App dependencies mein faster-whisper add karke service rebuild karein, ya text se baat karein.",
+            ) from exc
+        try:
+            options = {
+                "device": device,
+                "compute_type": compute_type,
+                "cpu_threads": cpu_threads,
+            }
+            if download_root:
+                options["download_root"] = download_root
+            _whisper_model = WhisperModel(model_name, **options)
+            _whisper_model_key = model_key
+            logger.info("Loaded local speech recognition model (%s, %s/%s).", model_name, device, compute_type)
+            return _whisper_model
+        except Exception as exc:
+            _whisper_model = None
+            _whisper_model_key = None
+            logger.warning("Local speech model could not load (%s).", type(exc).__name__)
+            raise AssistantProviderError(
+                "The local speech model could not be loaded.",
+                user_message="Local voice model load nahi hua. Railway logs/resources aur LOCAL_STT_MODEL setting check karein; pehli baar model download ho sakta hai.",
+            ) from exc
+
+
+def _transcribe_with_embedded_whisper_sync(audio: bytes) -> str:
+    model = _get_embedded_whisper_model()
+    configured_language = os.getenv("LOCAL_STT_LANGUAGE", "auto").strip().lower() or "auto"
+    language = None if configured_language in {"auto", "detect", ""} else configured_language
+    prompt = (
+        "Inventory conversation in Hindi, English, or Hinglish. Preserve product names, colors, SKU codes, "
+        "sizes S M L XL XXL, and quantities. Transcribe speech; do not answer it."
+    )
+    try:
+        # faster-whisper's model is not designed for concurrent access from
+        # multiple requests in one process; serialize inference per worker.
+        with _whisper_inference_lock:
+            segments, _info = model.transcribe(
+                BytesIO(audio),
+                language=language,
+                task="transcribe",
+                beam_size=3,
+                initial_prompt=prompt,
+                condition_on_previous_text=False,
+                vad_filter=True,
+            )
+            transcript = " ".join(segment.text.strip() for segment in segments if segment.text.strip()).strip()[:500]
+        if transcript:
+            return transcript
+        raise AssistantProviderError("Local transcription returned no speech text.", user_message="आवाज़ साफ़ नहीं मिली। कृपया दोबारा बोलें।")
+    except AssistantProviderError:
+        raise
+    except Exception as exc:
+        logger.warning("Embedded local transcription failed (%s).", type(exc).__name__)
+        raise AssistantProviderError(
+            "Embedded local transcription failed.",
+            user_message="Local voice transcription complete nahi ho payi. Chhoti recording dobara try karein ya type karke baat karein.",
+        ) from exc
+
+
+async def _transcribe_with_embedded_whisper(audio: bytes) -> str:
+    if not audio:
+        raise AssistantProviderError("No audio was provided.", user_message="Awaaz record nahi hui. Dobara boliye ya type karein.")
+    return await asyncio.to_thread(_transcribe_with_embedded_whisper_sync, audio)
 
 
 async def _transcribe_with_gemini(audio: bytes, content_type: str, api_key: str) -> str:
@@ -560,6 +645,16 @@ def active_provider() -> str | None:
         if _provider_configured(provider):
             return provider
     return None
+
+
+def voice_transcription_mode() -> str:
+    """Return a safe diagnostic label without exposing URLs or credentials."""
+    if os.getenv("LOCAL_STT_URL", "").strip():
+        return "private-stt-service"
+    try:
+        return "embedded-whisper" if importlib.util.find_spec("faster_whisper") else "unavailable"
+    except (ImportError, ValueError):
+        return "unavailable"
 
 
 def api_key_configured() -> bool:

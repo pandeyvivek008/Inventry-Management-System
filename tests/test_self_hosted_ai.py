@@ -2,7 +2,8 @@
 import asyncio
 import os
 import sys
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 from services import assistant_service  # noqa: E402
@@ -127,14 +128,33 @@ async def main():
         "DISHA_AI_PROVIDER": "strata", "DISHA_AI_BASE_URL": "http://strata:8080/v1",
         "DISHA_AI_MODEL": "strata", "DISHA_AI_ALLOW_EXTERNAL_INFERENCE": "false",
         "GEMINI_API_KEY": "must-not-be-used",
-    }, clear=True):
-        try:
-            await assistant_service.transcribe_audio(b"sample", "voice.webm", "audio/webm")
-        except assistant_service.AssistantProviderError:
-            pass
-        else:
-            raise AssertionError("Strata must not silently fall back to external Gemini transcription")
+    }, clear=True), patch.object(assistant_service, "_transcribe_with_embedded_whisper", new=AsyncMock(return_value="local transcript")) as local_stt:
+        transcript = await assistant_service.transcribe_audio(b"sample", "voice.webm", "audio/webm")
+        assert transcript == "local transcript"
+        local_stt.assert_awaited_once_with(b"sample")
     print("ok: Disha provider config validates limits, disabled state, safe endpoint defaults, and remote-inference opt-in")
+
+    model_options = {}
+    class FakeWhisperModel:
+        def __init__(self, name, **kwargs):
+            model_options.update(name=name, **kwargs)
+
+        def transcribe(self, audio, **kwargs):
+            assert audio.read() == b"sample"
+            model_options.update(transcribe=kwargs)
+            return iter([SimpleNamespace(text=" स्टॉक पाँच जोड़ो ")]), SimpleNamespace(language="hi")
+
+    assistant_service._whisper_model = None
+    assistant_service._whisper_model_key = None
+    with patch.dict(os.environ, {
+        "DISHA_AI_PROVIDER": "strata", "LOCAL_STT_MODEL": "tiny", "LOCAL_STT_DEVICE": "cpu",
+        "LOCAL_STT_COMPUTE_TYPE": "int8", "LOCAL_STT_LANGUAGE": "auto",
+    }, clear=True), patch.dict(sys.modules, {"faster_whisper": SimpleNamespace(WhisperModel=FakeWhisperModel)}):
+        transcript = await assistant_service.transcribe_audio(b"sample", "voice.webm", "audio/webm")
+    assert transcript == "स्टॉक पाँच जोड़ो"
+    assert model_options["name"] == "tiny" and model_options["device"] == "cpu" and model_options["compute_type"] == "int8"
+    assert model_options["transcribe"]["language"] is None
+    print("ok: embedded Whisper transcribes audio locally with CPU/int8 and auto language detection")
 
     FakeClient.requests = []
     FakeClient.responses = [FakeResponse(body={"text": "नीली ड्रेस के एम साइज़ में पाँच जोड़ो"})]
