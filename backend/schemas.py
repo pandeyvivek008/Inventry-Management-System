@@ -54,6 +54,7 @@ class ProductOut(BaseModel):
     name: str
     category: Optional[str] = None
     image_path: Optional[str] = None
+    images: List[str] = Field(default_factory=list)
     vendor: Optional[VendorOut] = None
     variants: List[VariantOut]
     total_stock: int
@@ -61,7 +62,11 @@ class ProductOut(BaseModel):
 
 class StockAdjustment(BaseModel):
     variant_code: str
-    new_count: int          # the physically-counted true value
+    # `new_count` preserves the original absolute-count API. `delta` supports
+    # an explicit restock/remove operation without ambiguous client math.
+    new_count: Optional[int] = None
+    operation: str = "set"
+    delta: Optional[int] = None
     note: Optional[str] = "manual recount"
     expected_current_stock: Optional[int] = None
 
@@ -123,6 +128,7 @@ class AlertOut(BaseModel):
     product_name: str
     alert_type: str
     stock_at_alert: int
+    current_stock: Optional[int] = None
     created_at: datetime
     ordered_qty: Optional[int] = None
     required_qty: Optional[int] = None

@@ -131,9 +131,20 @@ def _variant_out(v: models.Variant) -> dict:
 
 def _product_out(p: models.Product) -> dict:
     live_variants = [v for v in p.variants if not v.is_deleted]
+    image_paths = []
+    if p.image_path:
+        image_paths.append(p.image_path)
+    image_paths.extend(
+        image.image_path for image in sorted(
+            p.reference_images,
+            key=lambda image: (not image.is_primary, image.id),
+        )
+        if image.image_path and image.image_path not in image_paths
+    )
     return {
         "id": p.id, "sku": p.sku, "name": p.name, "category": p.category,
         "image_path": p.image_path,
+        "images": image_paths,
         "vendor": {"id": p.vendor.id, "name": p.vendor.name, "contact": p.vendor.contact} if p.vendor else None,
         "variants": [_variant_out(v) for v in sorted(live_variants, key=lambda v: (bulk_stock_service.SIZE_ORDER.get(v.size, 99), v.size))],
         "total_stock": sum(v.current_stock for v in live_variants),
@@ -152,7 +163,11 @@ def _variant_row(v: models.Variant) -> dict:
 
 
 def _get_product_by_sku(db: Session, sku: str, include_deleted: bool = False) -> models.Product:
-    q = db.query(models.Product).options(selectinload(models.Product.variants), joinedload(models.Product.vendor)) \
+    q = db.query(models.Product).options(
+        selectinload(models.Product.variants),
+        selectinload(models.Product.reference_images),
+        joinedload(models.Product.vendor),
+    ) \
         .filter(models.Product.sku == sku.strip().upper())
     if not include_deleted:
         q = q.filter(models.Product.is_deleted == False)  # noqa: E712
@@ -307,7 +322,11 @@ def _fuzzy_product_score(value: str, product) -> float:
 
 @app.get("/api/products")
 def list_products(q: str | None = None, limit: int | None = Query(None, ge=1, le=500), offset: int = Query(0, ge=0), paged: bool = False, db: Session = Depends(get_db)):
-    base = db.query(models.Product).options(selectinload(models.Product.variants), joinedload(models.Product.vendor)) \
+    base = db.query(models.Product).options(
+        selectinload(models.Product.variants),
+        selectinload(models.Product.reference_images),
+        joinedload(models.Product.vendor),
+    ) \
         .filter(models.Product.is_deleted == False)  # noqa: E712
     query = _apply_smart_search(base, (models.Product.sku, models.Product.name, models.Product.category), q)
     # Paged clients need an exact count even when the search box is empty.
@@ -1009,9 +1028,20 @@ def visual_search_status(db: Session = Depends(get_db)):
         photo_count = 0
 
     pgvector_index_exists = False
+    pgvector_extension_installed = False
     indexed_photo_count = 0
+    postgres_connected = False
     if dialect == "postgresql":
         try:
+            db.execute(text("SELECT 1"))
+            postgres_connected = True
+        except Exception:
+            db.rollback()
+    if postgres_connected:
+        try:
+            pgvector_extension_installed = bool(db.execute(text(
+                "SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector')"
+            )).scalar())
             pgvector_index_exists = bool(db.execute(
                 text("SELECT to_regclass(:table_name) IS NOT NULL"),
                 {"table_name": visual_search_service.TABLE_NAME},
@@ -1031,22 +1061,41 @@ def visual_search_status(db: Session = Depends(get_db)):
     needs_rebuild = dialect == "postgresql" and (
         not pgvector_index_exists or indexed_photo_count < photo_count
     )
-    if not runtime_installed and not external_model_service:
-        message = "SigLIP runtime is missing from this app service build."
-    elif dialect != "postgresql":
-        message = "Visual search on Railway needs the app connected to PostgreSQL with pgvector."
+    model_available = runtime_installed or external_model_service
+    index_ready = (
+        dialect == "postgresql"
+        and pgvector_extension_installed
+        and pgvector_index_exists
+        and photo_count > 0
+        and indexed_photo_count >= photo_count
+    )
+    if dialect != "postgresql":
+        if not os.getenv("DATABASE_URL", "").strip():
+            message = f"Database: SQLite (DATABASE_URL is not set). Visual search requires PostgreSQL with pgvector. Catalog photos: {photo_count}."
+        else:
+            message = f"Database: {dialect}. Visual search requires PostgreSQL with pgvector; check the app service DATABASE_URL."
+    elif not postgres_connected:
+        message = "Database URL is PostgreSQL, but the app cannot connect to it. Check the Railway PostgreSQL service and DATABASE_URL reference."
+    elif not pgvector_extension_installed:
+        message = "Database: PostgreSQL connected; pgvector extension is missing. Enable vector on this database, then rebuild the image index."
     elif photo_count == 0:
-        message = "No product reference photos are saved yet. Add clear product photos first."
+        message = "Database: PostgreSQL with pgvector connected; no catalog reference photos are saved yet. Add clear product photos first."
     elif needs_rebuild:
-        message = "Some saved catalog photos are not indexed. Run the visual index rebuild from this app service."
+        message = f"Database: PostgreSQL with pgvector connected; {indexed_photo_count} of {photo_count} photos are indexed. Rebuild the image index from this app service."
     elif not model_weights_loaded and not external_model_service:
         message = "Catalog photo index is ready. SigLIP weights will load the first time you search a photo."
     else:
         message = "Visual model runtime and catalog photo index are ready."
+    if not model_available:
+        message += " SigLIP runtime is not installed and no private model service is configured."
 
     return {
-        "status": "ready" if runtime_installed or external_model_service else "unavailable",
+        "status": "ready" if index_ready and model_available else "unavailable",
         "database": dialect,
+        "database_url_configured": bool(os.getenv("DATABASE_URL", "").strip()),
+        "postgres_connected": postgres_connected,
+        "pgvector_extension_installed": pgvector_extension_installed,
+        "index_ready": index_ready,
         "runtime_installed": runtime_installed,
         "model_weights_loaded": model_weights_loaded,
         "external_model_service_configured": external_model_service,
@@ -1203,13 +1252,45 @@ def product_for_variant(variant_code: str, db: Session = Depends(get_db)):
 
 @app.post("/api/inventory/adjust", response_model=schemas.VariantOut)
 def adjust_stock(payload: schemas.StockAdjustment, db: Session = Depends(get_db)):
-    if payload.new_count < 0:
-        raise HTTPException(400, "Count cannot be negative.")
+    if payload.operation not in {"set", "delta"}:
+        raise HTTPException(400, "Operation must be 'set' or 'delta'.")
+    if payload.operation == "set":
+        if payload.new_count is None:
+            raise HTTPException(400, "Enter the final physical stock count.")
+        if payload.new_count < 0:
+            raise HTTPException(400, "Count cannot be negative.")
+    else:
+        if payload.delta is None or payload.delta == 0:
+            raise HTTPException(400, "Enter a non-zero quantity to add or remove.")
+        if payload.expected_current_stock is None:
+            raise HTTPException(400, "Current stock is required for a safe add/remove update.")
     variant = _get_variant_by_code(db, payload.variant_code)
     variant = db.query(models.Variant).filter(models.Variant.id == variant.id).populate_existing().with_for_update().one()
     if payload.expected_current_stock is not None and variant.current_stock != payload.expected_current_stock:
         raise HTTPException(409, f"Stock changed since this update was prepared. Current stock is {variant.current_stock}; refresh and try again.")
-    inventory_service.set_absolute_stock(db, variant, payload.new_count, note=payload.note)
+    try:
+        if payload.operation == "set":
+            inventory_service.set_absolute_stock(
+                db, variant, payload.new_count, note=payload.note,
+                expected_current_stock=payload.expected_current_stock,
+            )
+        else:
+            new_count = variant.current_stock + payload.delta
+            if new_count < 0:
+                raise HTTPException(400, f"Cannot remove {abs(payload.delta)} units; only {variant.current_stock} are in stock.")
+            inventory_service.apply_stock_change(
+                db,
+                variant,
+                payload.delta,
+                transaction_type=(models.TransactionType.RESTOCK if payload.delta > 0 else models.TransactionType.MANUAL_ADJUSTMENT),
+                reference=payload.note,
+                created_by="stock adjustment",
+                expected_current_stock=payload.expected_current_stock,
+            )
+            variant.last_counted_at = datetime.now(timezone.utc)
+            db.flush()
+    except inventory_service.StaleStockError as exc:
+        raise HTTPException(409, f"Stock changed since this update was prepared. Current stock is {exc.current}; refresh and try again.") from exc
     alert_service.check_variant_alert(db, variant)
     db.commit()
     db.refresh(variant)
@@ -1336,6 +1417,7 @@ def _collect_alerts(db: Session, q: str | None = None):
     result = [{
         "id": a.id, "variant_code": a.variant.variant_code, "sku": a.variant.product.sku, "size": a.variant.size,
         "product_name": a.variant.product.name, "alert_type": a.alert_type, "stock_at_alert": a.stock_at_alert,
+        "current_stock": a.variant.current_stock,
         "created_at": a.created_at, "ordered_qty": None, "required_qty": None,
     } for a in alerts]
 
@@ -1358,6 +1440,7 @@ def _collect_alerts(db: Session, q: str | None = None):
             "product_name": item["name"],
             "alert_type": "ORDER_SHORTAGE",
             "stock_at_alert": item["current_stock"],
+            "current_stock": item["current_stock"],
             "created_at": datetime.now(timezone.utc),
             "ordered_qty": item["ordered_qty"],
             "required_qty": item["required_qty"],

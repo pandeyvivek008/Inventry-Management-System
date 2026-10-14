@@ -261,7 +261,15 @@ $("topbar-alerts").addEventListener("click", () => switchView("alerts"));
 
 document.querySelectorAll(".rail-link[data-view]").forEach((btn) => btn.addEventListener("click", () => switchView(btn.dataset.view)));
 
-function switchView(name) {
+const APP_VIEW_NAMES = new Set([...document.querySelectorAll(".view")].map((view) => view.id.replace(/^view-/, "")));
+function viewFromLocation() {
+  const requested = decodeURIComponent(window.location.hash.replace(/^#\/?/, "").split(/[?&]/, 1)[0] || "");
+  return APP_VIEW_NAMES.has(requested) ? requested : "dashboard";
+}
+
+function switchView(name, { updateUrl = true } = {}) {
+  if (!APP_VIEW_NAMES.has(name)) name = "dashboard";
+  if (updateUrl && viewFromLocation() !== name) window.history.pushState({ view: name }, "", `#${encodeURIComponent(name)}`);
   window.scrollTo({ top: 0, left: 0, behavior: "auto" });
   document.documentElement.scrollTop = 0;
   document.body.scrollTop = 0;
@@ -284,6 +292,8 @@ function switchView(name) {
   if (name === "visual") loadVisualSearchStatus();
   if (name === "history") { history.offset = 0; loadHistory(true); }
 }
+
+window.addEventListener("popstate", () => switchView(viewFromLocation(), { updateUrl: false }));
 
 // Keep dashboard counters and alert state fresh without creating a new timer
 // every time the user changes sidebar pages.
@@ -1096,13 +1106,15 @@ const manualProductResults = $("manual-product-results");
 
 function scanStockCard(product, onlyVariantCode = null, includeHeader = true) {
   const variants = (product.variants || []).filter((variant) => !onlyVariantCode || variant.variant_code.toUpperCase() === onlyVariantCode.toUpperCase());
+  const photos = [...new Set([...(product.images || []), product.image_path].filter(Boolean))];
   return `<section class="scan-product-card">
     ${includeHeader ? `<header><strong>${esc(product.name)}</strong><span class="sku-tag">${esc(product.sku)}</span></header>` : ""}
     ${product.category ? `<small class="scan-product-category">${esc(product.category)}</small>` : ""}
+    ${photos.length ? `<div class="scan-product-photos" aria-label="${esc(product.name)} catalog photos">${photos.map((path, index) => `<img src="${esc(path)}" alt="${esc(product.name)} photo ${index + 1}" loading="lazy">`).join("")}</div>` : ""}
     <div class="scan-size-list">${variants.map((variant) => `<form class="scan-stock-form" data-code="${esc(variant.variant_code)}" data-current="${Number(variant.current_stock)}">
       <span class="size-chip">${esc(variant.size)}</span>
       <span class="scan-current-stock">Current: <b>${Number(variant.current_stock)}</b></span>
-      <input class="input scan-new-count" type="number" min="0" step="1" inputmode="numeric" required placeholder="New count" aria-label="New stock count for ${esc(product.name)} size ${esc(variant.size)}">
+      <div class="stock-stepper"><button class="stock-step" type="button" data-step="-1" aria-label="Decrease ${esc(product.name)} size ${esc(variant.size)} count">−</button><input class="input scan-new-count" type="number" min="0" step="1" inputmode="numeric" required value="${Number(variant.current_stock)}" aria-label="Final physical stock count for ${esc(product.name)} size ${esc(variant.size)}"><button class="stock-step" type="button" data-step="1" aria-label="Increase ${esc(product.name)} size ${esc(variant.size)} count">+</button></div>
       <button class="btn-primary scan-stock-save" type="submit">Update</button>
       <small class="scan-stock-feedback" aria-live="polite"></small>
     </form>`).join("") || '<p class="hint">No active sizes are available.</p>'}</div>
@@ -1110,9 +1122,16 @@ function scanStockCard(product, onlyVariantCode = null, includeHeader = true) {
 }
 
 function attachScanStockForms(container) {
-  container.querySelectorAll(".scan-stock-form").forEach((form) => form.addEventListener("submit", async (event) => {
+  container.querySelectorAll(".scan-stock-form").forEach((form) => {
+    const input = form.querySelector(".scan-new-count");
+    form.querySelectorAll(".stock-step").forEach((step) => step.addEventListener("click", () => {
+      const current = Number(input.value || 0), next = Math.max(0, current + Number(step.dataset.step));
+      input.value = String(next);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }));
+    form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const input = form.querySelector(".scan-new-count"), button = form.querySelector(".scan-stock-save"), feedback = form.querySelector(".scan-stock-feedback");
+    const button = form.querySelector(".scan-stock-save"), feedback = form.querySelector(".scan-stock-feedback");
     const newCount = Number(input.value);
     if (!Number.isInteger(newCount) || newCount < 0) { feedback.textContent = "Enter a whole count of zero or more."; return; }
     const oldCount = Number(form.dataset.current);
@@ -1120,19 +1139,20 @@ function attachScanStockForms(container) {
     feedback.textContent = "Saving…";
     try {
       const updated = await apiPost(`${API}/inventory/adjust`, {
-        variant_code: form.dataset.code, new_count: newCount,
+        variant_code: form.dataset.code, operation: "set", new_count: newCount,
         expected_current_stock: oldCount, note: "scan and recount"
       });
       form.dataset.current = String(updated.current_stock);
       form.querySelector(".scan-current-stock b").textContent = updated.current_stock;
-      input.value = "";
+      input.value = String(updated.current_stock);
       feedback.textContent = "Stock updated.";
       showToast(`${form.dataset.code}: stock updated to ${updated.current_stock}`, "success", 2200);
-      await loadSummary();
+      await refreshInventoryViews();
     } catch (error) {
       feedback.textContent = error.message || "Update failed. Refresh and try again.";
     } finally { button.disabled = false; }
-  }));
+    });
+  });
 }
 
 async function searchManualProducts() {
@@ -1219,12 +1239,17 @@ async function loadVisualSearchStatus() {
   try {
     const status = await getJSON(`${API}/visual-search/status`);
     el.textContent = status.message;
-    const ready = !status.needs_rebuild && status.database === "postgresql" && status.catalog_photos > 0 && status.status === "ready";
+    const ready = status.index_ready === true && status.status === "ready";
     el.classList.toggle("is-ready", ready);
     el.classList.toggle("is-warning", !ready);
-    if (status.database === "postgresql" && status.catalog_photos) {
-      el.title = `${status.indexed_photos} of ${status.catalog_photos} catalog photos indexed`;
-    }
+    el.title = [
+      `Database: ${status.database}${status.database_url_configured ? " (DATABASE_URL configured)" : " (SQLite fallback; DATABASE_URL missing)"}`,
+      `PostgreSQL connected: ${status.postgres_connected ? "yes" : "no"}`,
+      `pgvector extension: ${status.pgvector_extension_installed ? "installed" : "missing"}`,
+      `Photo index: ${status.indexed_photos} / ${status.catalog_photos}${status.index_ready ? " (ready)" : " (not ready)"}`,
+      `Model runtime: ${status.runtime_installed ? "installed" : "missing"}; weights loaded: ${status.model_weights_loaded ? "yes" : "no"}`,
+      `Private model service: ${status.external_model_service_configured ? "configured" : "not configured"}`,
+    ].join("\n");
   } catch (_) {
     el.textContent = "Could not check photo search setup. The app API may still be starting; try again shortly.";
     el.classList.add("is-warning");
@@ -2370,26 +2395,45 @@ async function loadAlerts() {
       <section class="alert-design">
         <header class="alert-design-head"><div><div class="name">${esc(group.product_name)}</div><div class="sku-tag">${esc(group.sku)}</div></div><span class="alert-group-count">${group.alert_count} size alert${group.alert_count === 1 ? "" : "s"}</span></header>
         <div class="alert-design-sizes">${group.items.map((a) => {
-          const message = a.alert_type === "ORDER_SHORTAGE" ? `Order shortage · Stock ${a.stock_at_alert} · Orders ${a.ordered_qty} · Need ${a.required_qty}` : a.alert_type === "OUT_OF_STOCK" ? `Out of stock · ${a.stock_at_alert} pcs` : `Low stock · ${a.stock_at_alert} pcs`;
-          return `<form class="alert-row ${a.alert_type} alert-quick-form" data-code="${esc(a.variant_code)}">
-            <div class="alert-size-label"><span class="size-chip">${esc(a.size)}</span><span class="meta">${message}</span></div>
-            <div class="alert-quick"><input type="number" min="0" class="input quick-count" placeholder="New count" aria-label="New count for ${esc(group.sku)} size ${esc(a.size)}"><button class="btn-secondary quick-save" type="submit">Update</button></div>
+          const current = Number(a.current_stock ?? a.stock_at_alert);
+          const message = a.alert_type === "ORDER_SHORTAGE" ? `Order shortage · Orders ${a.ordered_qty} · Need ${a.required_qty}` : a.alert_type === "OUT_OF_STOCK" ? "Out of stock" : "Low stock";
+          return `<form class="alert-row ${a.alert_type} alert-quick-form" data-code="${esc(a.variant_code)}" data-current="${current}">
+            <div class="alert-size-label"><span class="size-chip">${esc(a.size)}</span><span class="meta">${message} · Current ${current}</span></div>
+            <div class="alert-quick"><select class="input quick-mode" aria-label="Stock update mode for ${esc(group.sku)} size ${esc(a.size)}"><option value="add" selected>Add quantity</option><option value="remove">Remove quantity</option><option value="set">Set count</option></select><div class="stock-stepper alert-stepper"><button class="stock-step" type="button" data-step="-1" aria-label="Decrease quantity">−</button><input type="number" min="1" step="1" value="1" inputmode="numeric" class="input quick-count" aria-label="Quantity to add for ${esc(group.sku)} size ${esc(a.size)}"><button class="stock-step" type="button" data-step="1" aria-label="Increase quantity">+</button></div><button class="btn-secondary quick-save" type="submit">Update</button></div>
           </form>`;
         }).join("")}</div>
       </section>`).join("");
     list.querySelectorAll(".alert-quick-form").forEach((form) => form.addEventListener("submit", async (event) => {
       event.preventDefault();
-      const input = form.querySelector(".quick-count"), button = form.querySelector(".quick-save");
+      const input = form.querySelector(".quick-count"), button = form.querySelector(".quick-save"), mode = form.querySelector(".quick-mode").value;
       if (input.value === "") { showToast("Enter a count first", true); input.focus(); return; }
+      const value = Number(input.value), current = Number(form.dataset.current);
+      if (!Number.isInteger(value) || value < (mode === "set" ? 0 : 1)) { showToast(mode === "set" ? "Enter a whole count of zero or more." : "Enter a whole quantity of one or more.", true); input.focus(); return; }
       if (button.disabled) return;
       button.disabled = true;
       try {
-        const r = await apiPost(`${API}/inventory/adjust`, { variant_code: form.dataset.code, new_count: Number(input.value), note: "alert quick-update" });
-        showToast(`${form.dataset.code} set to ${r.current_stock}`, "success", 2600);
+        const payload = mode === "set"
+          ? { variant_code: form.dataset.code, operation: "set", new_count: value, expected_current_stock: current, note: "alert physical count" }
+          : { variant_code: form.dataset.code, operation: "delta", delta: mode === "add" ? value : -value, expected_current_stock: current, note: mode === "add" ? "alert stock added" : "alert stock removed" };
+        const r = await apiPost(`${API}/inventory/adjust`, payload);
+        showToast(`${form.dataset.code}: ${current} → ${r.current_stock}`, "success", 2600);
         await refreshInventoryViews();
       } catch (err) { showToast("Update failed: " + err.message, true); }
       finally { button.disabled = false; }
     }));
+    list.querySelectorAll(".alert-quick-form").forEach((form) => {
+      const input = form.querySelector(".quick-count"), mode = form.querySelector(".quick-mode");
+      mode.addEventListener("change", () => {
+        const setCount = mode.value === "set";
+        input.min = setCount ? "0" : "1";
+        input.value = setCount ? form.dataset.current : "1";
+        input.setAttribute("aria-label", setCount ? "Final physical stock count" : `${mode.value === "add" ? "Quantity to add" : "Quantity to remove"}`);
+      });
+      form.querySelectorAll(".stock-step").forEach((step) => step.addEventListener("click", () => {
+        const min = Number(input.min || 0), next = Math.max(min, Number(input.value || 0) + Number(step.dataset.step));
+        input.value = String(next);
+      }));
+    });
   } catch (e) { if (requestId === alertPage.requestId) list.innerHTML = `<p class="hint">Could not load alerts.</p>`; }
 }
 const alertPage = { offset: 0, limit: 30, requestId: 0 };
@@ -2512,7 +2556,9 @@ async function loadTrash() {
 
 
 // ---------------- Init ----------------
-loadSummary();
-loadInventory();
-loadMoversChart();
-loadOrderHistory();
+const initialView = viewFromLocation();
+if (!window.location.hash || !APP_VIEW_NAMES.has(decodeURIComponent(window.location.hash.replace(/^#\/?/, "").split(/[?&]/, 1)[0] || ""))) {
+  window.history.replaceState({ view: initialView }, "", `#${encodeURIComponent(initialView)}`);
+}
+switchView(initialView, { updateUrl: false });
+if (initialView !== "dashboard") loadSummary();

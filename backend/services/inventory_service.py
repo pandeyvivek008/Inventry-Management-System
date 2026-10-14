@@ -36,6 +36,13 @@ class InsufficientStockError(Exception):
         super().__init__(f"{variant_code}: requested {requested}, only {available} available")
 
 
+class StaleStockError(Exception):
+    def __init__(self, variant_code: str, current: int):
+        self.variant_code = variant_code
+        self.current = current
+        super().__init__(f"{variant_code}: stock changed; current count is {current}")
+
+
 def apply_stock_change(
     db: Session,
     variant: Variant,
@@ -44,6 +51,7 @@ def apply_stock_change(
     reference: str = None,
     created_by: str = "system",
     allow_negative: bool = False,
+    expected_current_stock: int = None,
 ) -> Variant:
     """
     Apply `delta` to variant.current_stock atomically (delta can be + or -).
@@ -52,21 +60,30 @@ def apply_stock_change(
     set an absolute value rather than a signed change).
     Logs an InventoryTransaction row in the same DB transaction.
     """
+    conditions = [Variant.id == variant.id]
+    if expected_current_stock is not None:
+        conditions.append(Variant.current_stock == expected_current_stock)
     if delta < 0 and not allow_negative:
+        conditions.append(Variant.current_stock >= -delta)
         result = db.execute(
             update(Variant)
-            .where(Variant.id == variant.id, Variant.current_stock >= -delta)
+            .where(*conditions)
             .values(current_stock=Variant.current_stock + delta)
         )
         if result.rowcount == 0:
             db.refresh(variant)
+            if expected_current_stock is not None and variant.current_stock != expected_current_stock:
+                raise StaleStockError(variant.variant_code, variant.current_stock)
             raise InsufficientStockError(variant.variant_code, variant.current_stock, -delta)
     else:
-        db.execute(
+        result = db.execute(
             update(Variant)
-            .where(Variant.id == variant.id)
+            .where(*conditions)
             .values(current_stock=Variant.current_stock + delta)
         )
+        if result.rowcount == 0:
+            db.refresh(variant)
+            raise StaleStockError(variant.variant_code, variant.current_stock)
 
     db.refresh(variant)
 
@@ -89,6 +106,7 @@ def set_absolute_stock(
     new_count: int,
     created_by: str = "manual",
     note: str = "manual recount",
+    expected_current_stock: int = None,
 ) -> Variant:
     """Manual physical-count update: set stock to an exact known value
     (not a +/- change). Used by the 'someone counted the rack' workflow.
@@ -101,6 +119,7 @@ def set_absolute_stock(
         reference=note,
         created_by=created_by,
         allow_negative=True,  # an absolute recount is always valid, even if it's a big drop
+        expected_current_stock=expected_current_stock,
     )
     variant.last_counted_at = datetime.now(timezone.utc)
     db.flush()
