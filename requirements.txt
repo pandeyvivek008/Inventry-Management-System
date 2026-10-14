@@ -26,4 +26,7 @@ faster-whisper>=1.1,<2
 # persistent Railway volume to avoid downloading again after redeploys).
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch>=2.6,<3
--r backend/requirements-visual-ai.txt
+transformers>=4.51.1,<5
+accelerate>=1.2,<2
+safetensors>=0.5,<1
+sentencepiece>=0.2,<1
