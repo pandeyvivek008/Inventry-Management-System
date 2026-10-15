@@ -42,7 +42,7 @@ def _vector(position, sign=1.0):
 def _set_encoder_for(content_to_vector):
     return patch.object(
         visual_match_service,
-        "image_embedding",
+        "local_visual_embedding",
         side_effect=lambda content: content_to_vector[hashlib.sha256(content).hexdigest()],
     )
 
@@ -152,14 +152,22 @@ def test_invalid_image_is_rejected_and_empty_catalog_is_no_match():
     assert empty.json()["status"] == "no_match" and empty.json()["matches"] == []
 
 
-def test_missing_model_fails_closed_instead_of_returning_a_nearest_sku():
+def test_sqlite_visual_search_works_without_siglip_weights():
     _reset_test_state()
     client = TestClient(main.app)
     photo = _photo((55, 65, 75))
-    with patch.object(visual_match_service, "image_embedding", side_effect=visual_match_service.ImageModelUnavailable("model missing")):
+    created = client.post("/api/products", json={"sku": "LOCAL-VISUAL", "name": "Local visual test", "variants": [{"size": "M", "initial_stock": 7}]})
+    assert created.status_code == 200
+    assert client.post("/api/products/LOCAL-VISUAL/image", files={"file": ("ref.jpg", photo, "image/jpeg")}).status_code == 200
+    with patch.object(visual_match_service, "image_embedding", side_effect=visual_match_service.ImageModelUnavailable("SigLIP weights unavailable")):
         response = client.post("/api/products/visual-match", files={"file": ("scan.jpg", photo, "image/jpeg")})
-    assert response.status_code == 503
-    assert "model missing" in response.json()["detail"]
+    assert response.status_code == 200
+    assert response.json()["status"] == "matched"
+    assert response.json()["matches"][0]["product"]["sku"] == "LOCAL-VISUAL"
+    assert response.json()["matching_mode"] == "local color/layout suggestions"
+    status = client.get("/api/visual-search/status")
+    assert status.status_code == 200 and status.json()["status"] == "ready"
+    assert status.json()["local_matcher_available"] is True
 
 
 def test_remote_visual_model_service_uses_bearer_key_and_validates_vector():
@@ -205,5 +213,5 @@ if __name__ == "__main__":
     test_verified_match_returns_real_catalog_identity_and_live_stock()
     test_near_tied_designs_are_ambiguous_not_auto_selected()
     test_invalid_image_is_rejected_and_empty_catalog_is_no_match()
-    test_missing_model_fails_closed_instead_of_returning_a_nearest_sku()
+    test_sqlite_visual_search_works_without_siglip_weights()
     test_remote_visual_model_service_uses_bearer_key_and_validates_vector()

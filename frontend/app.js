@@ -1237,27 +1237,36 @@ let visualPreviewUrl = null;
 async function loadVisualSearchStatus() {
   const el = $("visual-runtime-status");
   if (!el) return;
-  el.textContent = "Checking photo search setup…";
-  el.className = "visual-runtime-status";
-  try {
-    const status = await getJSON(`${API}/visual-search/status`);
-    el.textContent = status.message;
-    const ready = status.index_ready === true && status.status === "ready";
-    el.classList.toggle("is-ready", ready);
-    el.classList.toggle("is-warning", !ready);
-    el.title = [
-      `Database: ${status.database}${status.database_url_configured ? " (DATABASE_URL configured)" : " (SQLite fallback; DATABASE_URL missing)"}`,
-      `PostgreSQL connected: ${status.postgres_connected ? "yes" : "no"}`,
-      `pgvector extension: ${status.pgvector_extension_installed ? "installed" : "missing"}`,
-      status.database === "postgresql"
-        ? `Photo index: ${status.indexed_photos} / ${status.catalog_photos}${status.index_ready ? " (ready)" : " (not ready)"}`
-        : `Local photo matcher: ${status.index_ready ? `ready; ${status.catalog_photos} reference photos` : "no usable photos or development catalog limit exceeded"}`,
-      `Model runtime: ${status.runtime_installed ? "installed" : "missing"}; weights loaded: ${status.model_weights_loaded ? "yes" : "no"}`,
-      `Private model service: ${status.external_model_service_configured ? "configured" : "not configured"}`,
-    ].join("\n");
-  } catch (_) {
-    el.textContent = "Could not check photo search setup. The app API may still be starting; try again shortly.";
-    el.classList.add("is-warning");
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    el.textContent = attempt ? "Photo search API is starting; retrying…" : "Checking photo search setup…";
+    el.className = "visual-runtime-status";
+    try {
+      const status = await getJSON(`${API}/visual-search/status`);
+      el.textContent = status.message;
+      const ready = status.index_ready === true && status.status === "ready";
+      el.classList.toggle("is-ready", ready);
+      el.classList.toggle("is-warning", !ready);
+      el.title = [
+        `Database: ${status.database}${status.database_url_configured ? " (DATABASE_URL configured)" : " (SQLite fallback; DATABASE_URL missing)"}`,
+        `PostgreSQL connected: ${status.postgres_connected ? "yes" : "no"}`,
+        `pgvector extension: ${status.pgvector_extension_installed ? "installed" : "missing"}`,
+        status.database === "postgresql"
+          ? `Photo index: ${status.indexed_photos} / ${status.catalog_photos}${status.index_ready ? " (ready)" : " (not ready)"}`
+          : `Local photo matcher: ${status.index_ready ? `ready; ${status.catalog_photos} reference photos` : "no usable photos or development catalog limit exceeded"}`,
+        `Model runtime: ${status.runtime_installed ? "installed" : "missing"}; weights loaded: ${status.model_weights_loaded ? "yes" : "no"}`,
+        `Private model service: ${status.external_model_service_configured ? "configured" : "not configured"}`,
+      ].join("\n");
+      return;
+    } catch (error) {
+      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 700 * (attempt + 1)));
+      else {
+        const detail = String(error?.message || "");
+        el.textContent = detail.includes("502")
+          ? "Photo search API is returning 502. The service may be restarting; check Railway deploy/runtime logs and retry."
+          : "Photo search setup could not be reached after 3 attempts. Check the Railway app service, then retry.";
+        el.classList.add("is-warning");
+      }
+    }
   }
 }
 
@@ -1334,6 +1343,7 @@ async function matchVisualProduct() {
       const statusHint = response.status === 502 || response.status === 503
         ? " Check the app's Railway runtime logs and the photo-search setup status above."
         : "";
+      if (response.status === 502 || response.status === 503) void loadVisualSearchStatus();
       throw new Error(`${details || `Photo search returned HTTP ${response.status}.`}${statusHint}`);
     }
     if (payload.status === "no_match" || !payload.matches?.length) {

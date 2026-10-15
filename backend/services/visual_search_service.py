@@ -214,8 +214,10 @@ def ensure_postgres_index(engine) -> None:
 
 def index_product_image(db, product_id: int, image_id: int, content: bytes, image_path: Path | None = None) -> None:
     """Index one saved reference image; called after its DB row is created."""
-    values = _image_embedding(content)
-    if _database_is_postgres(db):
+    postgres = _database_is_postgres(db)
+    # Keep heavyweight transformer inference out of the SQLite app process.
+    values = _image_embedding(content) if postgres else visual_match_service.local_visual_embedding(content)
+    if postgres:
         # New uploads should be indexable without a separate schema setup step.
         # Existing catalog photos still need the one-off rebuild script.
         ensure_postgres_index(db.get_bind())
@@ -299,7 +301,7 @@ def _development_search(db, embedding: tuple[float, ...], image_dir: Path, limit
                 with _local_embedding_lock:
                     cached = _local_embeddings.get(image.id)
                 if not cached or cached[0] != signature:
-                    ref_embedding = _image_embedding(candidate.read_bytes())
+                    ref_embedding = visual_match_service.local_visual_embedding(candidate.read_bytes())
                     with _local_embedding_lock:
                         _local_embeddings[image.id] = (signature, ref_embedding)
                 else:
@@ -324,14 +326,28 @@ def _decide(hits: list[SearchHit]) -> SearchResult:
     return SearchResult("matched", (top,), "A strong visual match was found. Sizes and stock are read live from the database.")
 
 
+def _decide_local(hits: list[SearchHit]) -> SearchResult:
+    """Use conservative thresholds for the non-semantic local descriptor."""
+    if not hits or hits[0].similarity < 0.66:
+        return SearchResult("no_match", (), "No local visual candidate was similar enough. Try a clear photo with the garment filling the frame.")
+    top = hits[0]
+    margin = top.similarity - hits[1].similarity if len(hits) > 1 else 1.0
+    if top.similarity >= 0.985 and margin >= 0.12:
+        return SearchResult("matched", (top,), "A near-identical catalog photo matched. Verify the design before using its stock.")
+    return SearchResult("ambiguous", tuple(hits[:3]), "Local color/layout suggestions. Review the product photos before choosing a design.")
+
+
 def search(db, content: bytes, image_dir: Path, limit: int) -> SearchResult:
     """Rank saved design reference photos. Recognition never modifies inventory."""
-    embedding = _image_embedding(content)
-    if _database_is_postgres(db):
+    postgres = _database_is_postgres(db)
+    if postgres:
+        embedding = _image_embedding(content)
         try:
             hits = _postgres_search(db, embedding, max(limit, 5))
         except Exception as exc:
             raise VisualSearchUnavailable(f"SigLIP 2 PostgreSQL index unavailable. Build {TABLE_NAME} and retry.") from exc
     else:
+        embedding = visual_match_service.local_visual_embedding(content)
         hits = _development_search(db, embedding, image_dir, max(limit, 5))
+        return _decide_local(hits)
     return _decide(hits)

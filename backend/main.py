@@ -1079,6 +1079,7 @@ async def visual_product_match(
         "matches": matches,
         "message": message,
         "score_type": "cosine_similarity_not_probability",
+        "matching_mode": "local color/layout suggestions" if engine.dialect.name != "postgresql" else "SigLIP 2 semantic image embeddings",
         "notice": "Only a matched result is a strong visual match. Ambiguous results are suggestions; photo search never changes stock.",
     }
 
@@ -1087,11 +1088,16 @@ async def visual_product_match(
 def visual_search_status(db: Session = Depends(get_db)):
     """Report safe setup diagnostics for photo search without exposing secrets."""
     dialect = engine.dialect.name
+    catalog_product_count = 0
     try:
         photo_count = db.query(models.ProductImage).join(models.Product).filter(
             models.Product.is_deleted == False  # noqa: E712
         ).count()
+        catalog_product_count = db.query(models.Product).filter(
+            models.Product.is_deleted == False  # noqa: E712
+        ).count()
     except Exception:
+        db.rollback()
         photo_count = 0
 
     pgvector_index_exists = False
@@ -1128,7 +1134,8 @@ def visual_search_status(db: Session = Depends(get_db)):
     needs_rebuild = dialect == "postgresql" and (
         not pgvector_index_exists or indexed_photo_count < photo_count
     )
-    model_available = runtime_installed or external_model_service
+    local_matcher_available = dialect != "postgresql"
+    model_available = local_matcher_available or runtime_installed or external_model_service
     if dialect == "postgresql":
         index_ready = (
             postgres_connected
@@ -1138,14 +1145,16 @@ def visual_search_status(db: Session = Depends(get_db)):
             and indexed_photo_count >= photo_count
         )
     else:
-        # SQLite uses the bounded local matcher and does not have a persistent
-        # pgvector index. The matcher itself checks the catalog-size limit.
-        index_ready = 0 < photo_count <= visual_search_service.DEV_MAX_CATALOG
+        # SQLite uses a deterministic Pillow-only color/layout matcher; it does
+        # not load SigLIP or require persistent vector-index setup.
+        index_ready = photo_count > 0 and catalog_product_count <= visual_search_service.DEV_MAX_CATALOG
     if dialect != "postgresql":
         if not os.getenv("DATABASE_URL", "").strip():
-            message = f"Database: SQLite local mode. Photo search can compare up to {visual_search_service.DEV_MAX_CATALOG} designs without a pgvector index. Catalog photos: {photo_count}."
+            message = f"Database: SQLite local mode. Lightweight photo suggestions are ready for up to {visual_search_service.DEV_MAX_CATALOG} designs; no model download or pgvector index is needed. Catalog photos: {photo_count}."
+            if os.getenv("RAILWAY_ENVIRONMENT", "").strip():
+                message += " Railway is not connected to PostgreSQL (DATABASE_URL is missing); connect the PostgreSQL service before relying on durable production inventory."
         else:
-            message = f"Database: {dialect}. Local photo matching is limited to {visual_search_service.DEV_MAX_CATALOG} designs; use PostgreSQL with pgvector for larger catalogs. Catalog photos: {photo_count}."
+            message = f"Database: {dialect}. Lightweight photo suggestions are available for up to {visual_search_service.DEV_MAX_CATALOG} designs; use PostgreSQL with pgvector for larger catalogs. Catalog photos: {photo_count}."
     elif not postgres_connected:
         message = "Database URL is PostgreSQL, but the app cannot connect to it. Check the Railway PostgreSQL service and DATABASE_URL reference."
     elif not pgvector_extension_installed:
@@ -1170,6 +1179,7 @@ def visual_search_status(db: Session = Depends(get_db)):
         "index_ready": index_ready,
         "runtime_installed": runtime_installed,
         "model_weights_loaded": model_weights_loaded,
+        "local_matcher_available": local_matcher_available,
         "external_model_service_configured": external_model_service,
         "pgvector_index_exists": pgvector_index_exists,
         "catalog_photos": photo_count,

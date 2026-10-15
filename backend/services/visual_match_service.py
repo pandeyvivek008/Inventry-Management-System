@@ -55,6 +55,39 @@ def validate_image(content: bytes) -> None:
     _open_image(content)
 
 
+def local_visual_embedding(content: bytes) -> tuple[float, ...]:
+    """Build a small deterministic color/layout descriptor using Pillow only.
+
+    This bounded fallback is for SQLite/local deployments where downloading a
+    transformer model is impractical. It is deliberately kept separate from
+    SigLIP vectors so these descriptors can never be mixed in the pgvector
+    production index. Results are suggestions and must be visually reviewed.
+    """
+    image = _open_image(content).convert("HSV").resize((64, 64), Image.Resampling.BILINEAR)
+    pixels = image.load()
+    values: list[float] = []
+    for cell_y in range(4):
+        for cell_x in range(4):
+            histograms = [[0.0] * 16 for _ in range(3)]
+            for y in range(cell_y * 16, (cell_y + 1) * 16):
+                for x in range(cell_x * 16, (cell_x + 1) * 16):
+                    hue, saturation, brightness = pixels[x, y]
+                    # Gray/white/black backgrounds carry little garment-color
+                    # information, so only saturated pixels count for hue.
+                    if saturation >= 35:
+                        histograms[0][hue >> 4] += 1.0
+                    histograms[1][saturation >> 4] += 1.0
+                    histograms[2][brightness >> 4] += 1.0
+            for channel, weight in enumerate((1.8, 0.8, 0.55)):
+                hist = histograms[channel]
+                total = sum(hist)
+                values.extend((count / total * weight) if total else 0.0 for count in hist)
+    norm = sum(value * value for value in values) ** 0.5
+    if norm <= 1e-12:
+        raise InvalidProductImage("This photo has too little visual detail. Try a clearer product photo.")
+    return tuple(value / norm for value in values)
+
+
 def image_extension(content: bytes) -> str:
     """Return a browser-safe extension based on image bytes, not user filename."""
     _open_image(content)
