@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse, RedirectResponse, Response
 from sqlalchemy import case, func, or_, delete as sa_delete, inspect as sa_inspect, text
-from sqlalchemy.orm import Session, joinedload, selectinload, contains_eager
+from sqlalchemy.orm import Session, joinedload, selectinload, contains_eager, aliased
 
 from database import Base, engine, get_db, SessionLocal
 import models
@@ -386,11 +386,17 @@ def _daily_sales_summary(db: Session) -> dict:
     start_utc = datetime.combine(today, datetime.min.time(), tzinfo=ist).astimezone(timezone.utc)
     end_utc = datetime.combine(today + timedelta(days=1), datetime.min.time(), tzinfo=ist).astimezone(timezone.utc)
     T, V, P = models.InventoryTransaction, models.Variant, models.Product
+    void_marker = aliased(models.InventoryTransaction)
+    not_voided = ~db.query(void_marker.id).filter(
+        void_marker.reference == func.replace(T.reference, ":dispatch", ":delete-reversal")
+    ).exists()
     base = db.query(T).filter(
         T.transaction_type == models.TransactionType.ORDER_DEDUCTION,
         T.created_at >= start_utc,
         T.created_at < end_utc,
         T.change_qty < 0,
+        T.reference.like("order_upload:%:dispatch"),
+        not_voided,
     )
     units = base.with_entities(func.coalesce(-func.sum(T.change_qty), 0)).scalar()
     line_count = base.with_entities(func.count(T.id)).scalar()
@@ -400,6 +406,7 @@ def _daily_sales_summary(db: Session) -> dict:
         .filter(
             T.transaction_type == models.TransactionType.ORDER_DEDUCTION,
             T.created_at >= start_utc, T.created_at < end_utc, T.change_qty < 0,
+            T.reference.like("order_upload:%:dispatch"), not_voided,
         ).scalar()
     )
     rows = (
@@ -411,6 +418,8 @@ def _daily_sales_summary(db: Session) -> dict:
             T.created_at >= start_utc,
             T.created_at < end_utc,
             T.change_qty < 0,
+            T.reference.like("order_upload:%:dispatch"),
+            not_voided,
         )
         .group_by(P.id, P.sku, P.name)
         .order_by(func.sum(-T.change_qty).desc(), P.sku.asc())
@@ -1472,6 +1481,60 @@ async def upload_orders(file: UploadFile = File(...), db: Session = Depends(get_
         raise HTTPException(400, str(e))
 
 
+@app.delete("/api/orders/{order_upload_id}")
+def delete_order_upload(order_upload_id: int, db: Session = Depends(get_db)):
+    """Remove a processed file and all its order demand, safely reversing dispatch stock."""
+    upload = db.query(models.OrderUpload).filter(models.OrderUpload.id == order_upload_id).with_for_update().first()
+    if upload is None:
+        raise HTTPException(status_code=404, detail="Order batch not found. It may already have been deleted.")
+
+    lines = db.query(models.OrderLine).filter(models.OrderLine.order_upload_id == order_upload_id).all()
+    fulfilled_by_variant: dict[int, int] = defaultdict(int)
+    for line in lines:
+        if line.status == models.OrderLineStatus.FULFILLED and line.variant_id and line.qty_fulfilled > 0:
+            fulfilled_by_variant[line.variant_id] += line.qty_fulfilled
+
+    try:
+        restored_units = 0
+        if fulfilled_by_variant:
+            variants = db.query(models.Variant).filter(
+                models.Variant.id.in_(fulfilled_by_variant.keys())
+            ).with_for_update().all()
+            by_id = {variant.id: variant for variant in variants}
+            for variant_id, quantity in fulfilled_by_variant.items():
+                variant = by_id.get(variant_id)
+                if variant is None:
+                    raise HTTPException(status_code=409, detail="A dispatched size was removed; this batch cannot be safely reversed.")
+                inventory_service.apply_stock_change(
+                    db, variant, quantity,
+                    transaction_type=models.TransactionType.MANUAL_ADJUSTMENT,
+                    reference=f"order_upload:{order_upload_id}:delete-reversal",
+                    created_by="order_batch_delete",
+                )
+                alert_service.check_variant_alert(db, variant)
+                restored_units += quantity
+
+        removed_lines = len(lines)
+        filename = upload.filename
+        db.query(models.OrderLine).filter(models.OrderLine.order_upload_id == order_upload_id).delete(synchronize_session=False)
+        db.delete(upload)  # Also releases its unique file hash for a corrected re-upload.
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise
+
+    return {
+        "deleted_order_upload_id": order_upload_id,
+        "filename": filename,
+        "removed_lines": removed_lines,
+        "restored_units": restored_units,
+        "message": "Order demand removed; dispatched quantities, if any, were restored to stock.",
+    }
+
+
 # ------------------------------------------------------------------ #
 # Alerts
 # ------------------------------------------------------------------ #
@@ -1557,6 +1620,9 @@ def list_alert_groups(limit: int = Query(30, ge=1, le=100), offset: int = Query(
 @app.post("/api/orders/{order_upload_id}/dispatch")
 def dispatch_order_upload(order_upload_id: int, db: Session = Depends(get_db)):
     """Confirm a marketplace order batch is dispatched and deduct physical stock."""
+    upload = db.query(models.OrderUpload).filter(models.OrderUpload.id == order_upload_id).with_for_update().first()
+    if upload is None:
+        raise HTTPException(status_code=404, detail="Order batch not found.")
     lines = (
         db.query(models.OrderLine)
         .options(joinedload(models.OrderLine.variant).joinedload(models.Variant.product))

@@ -189,7 +189,7 @@
         </label>
       </div>
       <div id="order-history" style="margin-top:16px;"></div>
-      <div class="pager"><button id="orders-prev" class="btn-secondary pager-btn" type="button">← Previous</button><span id="orders-page-info"></span><button id="orders-next" class="btn-secondary pager-btn" type="button">Next →</button></div>
+      <div id="orders-pager" class="pager" hidden><button id="orders-prev" class="btn-secondary pager-btn" type="button">← Previous</button><span id="orders-page-info"></span><button id="orders-next" class="btn-secondary pager-btn" type="button">Next →</button></div>
       <div id="upload-result" style="margin-top:16px;"></div>
     </section>
 
@@ -242,7 +242,11 @@
         <div id="label-selected" hidden style="margin-top:12px; padding-top:12px; border-top:1px solid var(--line);">
           <div id="label-selected-name" class="bold"></div>
           <p id="label-size-summary" class="hint"></p>
-          <a id="product-qr-download" href="#" download class="btn-primary product-qr-download"><i class="fa-solid fa-qrcode"></i><i class="fa-solid fa-barcode"></i> Download compact QR + barcode label</a>
+          <div class="product-label-actions print-label-options" aria-label="Download product labels">
+            <a id="product-barcode-download" href="#" download class="btn-secondary product-label-link"><i class="fa-solid fa-barcode"></i><span>Barcode</span></a>
+            <a id="product-qr-download" href="#" download class="btn-secondary product-label-link"><i class="fa-solid fa-qrcode"></i><span>QR code</span></a>
+            <a id="product-combo-download" href="#" download class="btn-primary product-label-link"><i class="fa-solid fa-tags"></i><span>Both</span></a>
+          </div>
         </div>
       </div>
     </section>

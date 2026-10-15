@@ -1418,34 +1418,79 @@ $("bulk-file-input").addEventListener("change", async () => {
 // ORDERS
 // ================================================================ //
 const ordersPage = { offset: 0, limit: 25 };
+const orderLinePageSize = 25;
+const orderLinePages = new Map();
+let lastProcessedOrderUploadId = null;
 $("orders-prev").addEventListener("click", () => { ordersPage.offset = Math.max(0, ordersPage.offset - ordersPage.limit); loadOrderHistory(); });
 $("orders-next").addEventListener("click", () => { ordersPage.offset += ordersPage.limit; loadOrderHistory(); });
+function renderOrderBatchLines(batch) {
+  const pageCount = Math.max(1, Math.ceil(batch.lines.length / orderLinePageSize));
+  const linePage = Math.min(orderLinePages.get(batch.order_upload_id) || 0, pageCount - 1);
+  orderLinePages.set(batch.order_upload_id, linePage);
+  const start = linePage * orderLinePageSize;
+  const rows = batch.lines.slice(start, start + orderLinePageSize).map((l) => `<tr><td>${esc(l.sku)}</td><td>${esc(l.size || "—")}</td><td class="hide-sm">${esc(l.product_name || "—")}</td><td class="num">${l.qty_ordered}</td><td>${esc(l.status.replace(/_/g, " "))}</td></tr>`).join("");
+  return `<div class="table-wrap"><table class="grid"><thead><tr><th>SKU</th><th>Size</th><th class="hide-sm">Product</th><th class="num">Orders</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div>
+    ${pageCount > 1 ? `<div class="pager order-lines-pager"><button class="btn-secondary pager-btn order-line-prev" type="button" data-id="${batch.order_upload_id}" ${linePage === 0 ? "disabled" : ""}>← Previous</button><span>${start + 1}–${Math.min(start + orderLinePageSize, batch.lines.length)} of ${batch.lines.length}</span><button class="btn-secondary pager-btn order-line-next" type="button" data-id="${batch.order_upload_id}" ${linePage + 1 >= pageCount ? "disabled" : ""}>Next →</button></div>` : ""}`;
+}
 async function loadOrderHistory() {
   const box = $("order-history");
   if (!box) return;
   try {
     const page = await getJSON(`${API}/orders/history?limit=${ordersPage.limit}&offset=${ordersPage.offset}&paged=true`);
     const batches = page.items;
+    if (!batches.length && page.total && ordersPage.offset >= page.total) {
+      ordersPage.offset = Math.max(0, Math.floor((page.total - 1) / ordersPage.limit) * ordersPage.limit);
+      return loadOrderHistory();
+    }
     $("orders-page-info").textContent = batches.length ? `${ordersPage.offset + 1}–${Math.min(ordersPage.offset + batches.length, page.total)} of ${page.total}` : "";
     $("orders-prev").disabled = ordersPage.offset === 0;
     $("orders-next").disabled = ordersPage.offset + batches.length >= page.total;
+    $("orders-pager").hidden = page.total <= ordersPage.limit;
     if (!batches.length) {
       box.innerHTML = `<div class="panel"><p class="hint center">No order batches processed yet.</p></div>`;
       return;
     }
     box.innerHTML = `<div class="section-title-row"><h2>Processed Order Batches</h2><span class="hint">Saved after refresh</span></div>` + batches.map((b) => {
-      const rows = b.lines.map((l) => `<tr><td>${esc(l.sku)}</td><td>${esc(l.size || "—")}</td><td class="hide-sm">${esc(l.product_name || "—")}</td><td class="num">${l.qty_ordered}</td><td>${esc(l.status.replace(/_/g, " "))}</td></tr>`).join("");
       return `<div class="order-batch panel" data-upload-id="${b.order_upload_id}">
         <div class="order-batch-head">
           <div><strong>${esc(b.filename || "Order file")}</strong><div class="hint">${new Date(b.uploaded_at).toLocaleString()} · Batch #${b.order_upload_id}</div></div>
-          <div class="order-batch-actions"><span class="status-pill batch-${b.status === "PENDING" ? "pending" : b.status === "DISPATCHED" ? "done" : "warn"}">${esc(b.status)}</span>${b.pending_count ? `<button class="btn-primary batch-dispatch" type="button" data-id="${b.order_upload_id}"><i class="fa-solid fa-truck-fast"></i> Dispatch</button>` : ""}</div>
+          <div class="order-batch-actions"><span class="status-pill batch-${b.status === "PENDING" ? "pending" : b.status === "DISPATCHED" ? "done" : "warn"}">${esc(b.status)}</span>${b.pending_count ? `<button class="btn-primary batch-dispatch" type="button" data-id="${b.order_upload_id}"><i class="fa-solid fa-truck-fast"></i> Dispatch</button>` : ""}<button class="btn-danger batch-delete" type="button" data-id="${b.order_upload_id}" data-filename="${esc(b.filename || "Order file")}"><i class="fa-solid fa-trash-can"></i> Delete batch</button></div>
         </div>
         <div class="order-stats"><span>${b.total_rows} rows</span><span>${b.pending_count} pending</span><span>${b.fulfilled_count} dispatched</span><span>${b.not_found_count} not found</span></div>
-        <div class="table-wrap"><table class="grid"><thead><tr><th>SKU</th><th>Size</th><th class="hide-sm">Product</th><th class="num">Orders</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div>
+        <div class="order-lines-content">${renderOrderBatchLines(b)}</div>
       </div>`;
     }).join("");
     box.querySelectorAll(".batch-dispatch").forEach((btn) => btn.addEventListener("click", () => dispatchOrderBatch(Number(btn.dataset.id), true)));
+    const batchById = new Map(batches.map((batch) => [String(batch.order_upload_id), batch]));
+    box.querySelectorAll(".order-batch").forEach((batchElement) => {
+      const batch = batchById.get(batchElement.dataset.uploadId);
+      if (batch) bindOrderLinePager(batchElement.querySelector(".order-lines-content"), batch);
+    });
+    box.querySelectorAll(".batch-delete").forEach((btn) => btn.addEventListener("click", () => deleteOrderBatch(Number(btn.dataset.id), btn.dataset.filename || "Order file")));
   } catch (e) { box.innerHTML = `<div class="panel"><p class="hint">Could not load order history.</p></div>`; }
+}
+
+async function deleteOrderBatch(uploadId, filename) {
+  if (!confirm(`Delete batch “${filename}” and all its order lines? This removes its pending reorder demand. If it was dispatched, ${"\n"}the dispatched quantity will be restored to inventory so you can correct the file and process it again.`)) return;
+  try {
+    const result = await apiDelete(`${API}/orders/${uploadId}`);
+    if (lastProcessedOrderUploadId === uploadId) {
+      $("upload-result").innerHTML = "";
+      lastProcessedOrderUploadId = null;
+    }
+    showToast(`Batch deleted · ${result.restored_units || 0} dispatched units restored`);
+    await loadOrderHistory();
+    await refreshInventoryViews();
+  } catch (err) { showToast(`Could not delete batch: ${err.message || err}`, true); }
+}
+
+function bindOrderLinePager(content, batch) {
+  content.querySelectorAll(".order-line-prev, .order-line-next").forEach((btn) => btn.addEventListener("click", () => {
+    const delta = btn.classList.contains("order-line-next") ? 1 : -1;
+    orderLinePages.set(batch.order_upload_id, Math.max(0, (orderLinePages.get(batch.order_upload_id) || 0) + delta));
+    content.innerHTML = renderOrderBatchLines(batch);
+    bindOrderLinePager(content, batch);
+  }));
 }
 
 const dropzone = $("dropzone"), fileInput = $("order-file-input");
@@ -1463,6 +1508,7 @@ async function handleOrderUpload() {
     const res = await fetch(`${API}/orders/upload`, { method: "POST", body: fd });
     const data = await res.json();
     if (!res.ok) { box.innerHTML = `<div class="msg error">${esc(data.detail)}</div>`; return; }
+    lastProcessedOrderUploadId = data.order_upload_id;
     renderUploadResult(data);
     ordersPage.offset = 0;
     await loadOrderHistory();
@@ -2510,7 +2556,13 @@ function selectLabelProduct(product) {
   $("label-selected").hidden = false;
   $("label-selected-name").textContent = `${product.sku} — ${product.name}`;
   $("label-size-summary").textContent = `${product.variants.length} size${product.variants.length === 1 ? "" : "s"} · either code opens the complete design`;
-  $("product-qr-download").href = `${API}/products/${encodeURIComponent(product.sku)}/label`;
+  const base = `${API}/products/${encodeURIComponent(product.sku)}`;
+  $("product-barcode-download").href = `${base}/barcode`;
+  $("product-barcode-download").download = `${product.sku}_barcode.png`;
+  $("product-qr-download").href = `${base}/qr`;
+  $("product-qr-download").download = `${product.sku}_qr.png`;
+  $("product-combo-download").href = `${base}/label`;
+  $("product-combo-download").download = `${product.sku}_barcode_qr.png`;
 }
 
 // ================================================================ //

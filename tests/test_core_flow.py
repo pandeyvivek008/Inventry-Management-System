@@ -448,6 +448,11 @@ expect(r.status_code == 200 and len(product_decoded) == 1
        and product_decoded[0].type == "CODE128"
        and product_decoded[0].data.decode() == "PRODUCT:AS1",
        f"single product barcode decodes to design lookup, got {[(d.type, d.data) for d in product_decoded]}")
+r = client.get("/api/products/AS1/qr")
+qr_decoded = zbar_decode(PILImage.open(BytesIO(r.content)))
+expect(r.status_code == 200 and len(qr_decoded) == 1 and qr_decoded[0].type == "QRCODE"
+       and qr_decoded[0].data.decode() == "PRODUCT:AS1",
+       f"separate product QR decodes to the same design lookup, got {[(d.type, d.data) for d in qr_decoded]}")
 
 print("30. Restock requirement is the shortfall between pending orders and physical stock")
 client.post("/api/products", json={"sku": "RS1", "name": "Restock Shortfall", "variants": [
@@ -490,7 +495,8 @@ print("30b. Daily sales counts dispatched units and excludes pending orders")
 client.post("/api/products", json={"sku": "SALESTODAY", "name": "Sales Summary Test", "variants": [
     {"size": "M", "initial_stock": 100},
 ]})
-sales_upload = post_orders(make_xlsx(["SKU", "Size", "Quantity"], [("SALESTODAY", "M", 50)]), "sales_today.xlsx")
+sales_file = make_xlsx(["SKU", "Size", "Quantity"], [("SALESTODAY", "M", 50)])
+sales_upload = post_orders(sales_file, "sales_today.xlsx")
 pending_sales_before = client.get("/api/analytics/daily-sales").json()
 expect(pending_sales_before["dispatched_units"] == 0 or all(p["sku"] != "SALESTODAY" for p in pending_sales_before["top_products"]),
        "uploaded pending orders are not counted as today's sales")
@@ -508,6 +514,23 @@ expect(today_history["status"] == "DISPATCHED" and today_history["fulfilled_coun
        and today_history["pending_count"] == 0
        and today_history["lines"][0]["qty_fulfilled"] == 50,
        "order history records the dispatch and fulfilled quantity accurately")
+sales_before_delete = sales_today["dispatched_units"]
+deleted_sales = client.delete(f"/api/orders/{sales_upload.json()['order_upload_id']}")
+expect(deleted_sales.status_code == 200 and deleted_sales.json()["restored_units"] == 50,
+       "deleting a dispatched batch reverses its inventory deduction")
+expect(client.get("/api/variants/SALESTODAY-M").json()["current_stock"] == 100,
+       "dispatch stock is restored when its batch is removed")
+sales_after_delete = client.get("/api/analytics/daily-sales").json()
+expect(sales_after_delete["dispatched_units"] == sales_before_delete - 50
+       and all(p["sku"] != "SALESTODAY" for p in sales_after_delete["top_products"]),
+       "deleted dispatch is removed from daily sales totals and product ranking")
+expect(all(i["sku"] != "SALESTODAY" for i in client.get("/api/reorder-list").json()),
+       "deleted batch no longer contributes pending or fulfilled reorder demand")
+expect(client.delete(f"/api/orders/{sales_upload.json()['order_upload_id']}").status_code == 404,
+       "a removed batch is no longer present for subsequent delete requests")
+reprocessed_sales = post_orders(sales_file, "sales_today.xlsx")
+expect(reprocessed_sales.status_code == 200,
+       "deleting a processed batch releases the file hash for a corrected re-upload")
 
 print("30c. Dispatch rechecks atomic stock and rolls back the whole batch on a shortage")
 client.post("/api/products", json={"sku": "RACE1", "name": "Concurrent Dispatch Guard", "variants": [
