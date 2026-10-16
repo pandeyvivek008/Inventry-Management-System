@@ -33,8 +33,10 @@ def _setting(name: str, default: float, lower: float, upper: float) -> float:
 
 # These are conservative starting values, not calibrated probabilities. The
 # actual Twins Lady photo benchmark is needed before claiming production accuracy.
-MIN_SIMILARITY = _setting("VISUAL_MATCH_MIN_SCORE", 0.82, -1.0, 1.0)
-MIN_MARGIN = _setting("VISUAL_MATCH_MIN_MARGIN", 0.06, 0.0, 1.0)
+# Strict auto-match defaults favor precision. Lower-scoring cross-view results
+# remain visible as reviewable candidates instead of being silently selected.
+MIN_SIMILARITY = _setting("VISUAL_MATCH_MIN_SCORE", 0.90, -1.0, 1.0)
+MIN_MARGIN = _setting("VISUAL_MATCH_MIN_MARGIN", 0.10, 0.0, 1.0)
 
 
 class VisualSearchUnavailable(RuntimeError):
@@ -331,11 +333,11 @@ def _decide(hits: list[SearchHit]) -> SearchResult:
     if not hits:
         return SearchResult("no_match", (), "No usable product reference photos are indexed.")
     top = hits[0]
-    if top.similarity < MIN_SIMILARITY:
-        return SearchResult("no_match", (), "No catalog design was similar enough. Try a clear, front-facing photo.")
+    if top.similarity < 0.35:
+        return SearchResult("no_match", (), "No catalog design looked sufficiently related. Try a clear, closer photo of the garment.")
     margin = top.similarity - hits[1].similarity if len(hits) > 1 else 1.0
-    if margin < MIN_MARGIN:
-        return SearchResult("ambiguous", tuple(hits[:3]), "Several designs look similar. Review the photos before choosing a product.")
+    if top.similarity < MIN_SIMILARITY or margin < MIN_MARGIN:
+        return SearchResult("ambiguous", tuple(hits[:5]), "Possible matches found. Review the product photos and confirm the exact design.")
     return SearchResult("matched", (top,), "A strong visual match was found. Sizes and stock are read live from the database.")
 
 
@@ -345,7 +347,7 @@ def _decide_local(hits: list[SearchHit]) -> SearchResult:
         return SearchResult("no_match", (), "No local visual candidate was similar enough. Try a clear photo with the garment filling the frame.")
     top = hits[0]
     margin = top.similarity - hits[1].similarity if len(hits) > 1 else 1.0
-    if top.similarity >= 0.985 and margin >= 0.12:
+    if top.similarity >= 0.995 and margin >= 0.15:
         return SearchResult("matched", (top,), "A near-identical catalog photo matched. Verify the design before using its stock.")
     return SearchResult("ambiguous", tuple(hits[:3]), "Local color/layout suggestions. Review the product photos before choosing a design.")
 

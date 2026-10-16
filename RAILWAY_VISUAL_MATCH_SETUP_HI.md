@@ -71,13 +71,13 @@ The app calls a separate, private Railway service for Google's public `google/si
 7. Set the existing conservative starting values, then calibrate them on a labeled validation set:
 
    ```text
-   VISUAL_MATCH_MIN_SCORE=0.82
-   VISUAL_MATCH_MIN_MARGIN=0.06
+   VISUAL_MATCH_MIN_SCORE=0.90
+   VISUAL_MATCH_MIN_MARGIN=0.10
    VISUAL_SEARCH_DEV_MAX_CATALOG=500
    VISUAL_SEARCH_RPM=30
    ```
 
-   These scores are cosine similarities, not confidence percentages. The values above are provisional; do not lower them just to force a result. Include same-color near-duplicate designs, different colors, alternate camera angles, dark/blurred photos, non-garment images, and products absent from the catalog. Record top-1 accuracy, top-5 recall, false-accept rate, and no-match rate.
+   These scores are cosine similarities, not confidence percentages. The strict defaults auto-select only high-scoring, clearly separated results; weaker cross-view package/model results stay in the reviewable candidate list. Do not lower thresholds just to force an exact label. Include same-color near-duplicate designs, different colors, alternate camera angles, dark/blurred photos, non-garment images, and products absent from the catalog. Record top-1 accuracy, top-5 recall, false-accept rate, and no-match rate.
 
 ## Index existing catalog photos
 
