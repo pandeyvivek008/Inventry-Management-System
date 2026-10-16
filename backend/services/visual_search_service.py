@@ -58,13 +58,23 @@ class SearchResult:
 _local_requests: dict[str, deque[float]] = {}
 _local_rate_lock = Lock()
 _local_embedding_lock = Lock()
-_local_embeddings: dict[int, tuple[tuple[str, int, int], tuple[float, ...]]] = {}
+_local_embeddings: dict[int, tuple[tuple[str, str, int, int], tuple[float, ...]]] = {}
 _redis_client = None
 _redis_checked = False
 
 
 def _database_is_postgres(db) -> bool:
     return db.bind.dialect.name == "postgresql"
+
+
+def _semantic_local_mode() -> bool:
+    """Use the same SigLIP space for local catalogs when the private service exists.
+
+    The Pillow descriptor is useful as an offline fallback, but cannot reliably
+    link a folded, packaged garment to a model photo. A configured model service
+    must therefore be used for both the query and every catalog reference.
+    """
+    return bool(os.getenv("VISUAL_AI_URL", "").strip())
 
 
 def _vector_literal(values: tuple[float, ...]) -> str:
@@ -216,7 +226,7 @@ def index_product_image(db, product_id: int, image_id: int, content: bytes, imag
     """Index one saved reference image; called after its DB row is created."""
     postgres = _database_is_postgres(db)
     # Keep heavyweight transformer inference out of the SQLite app process.
-    values = _image_embedding(content) if postgres else visual_match_service.local_visual_embedding(content)
+    values = _image_embedding(content) if postgres or _semantic_local_mode() else visual_match_service.local_visual_embedding(content)
     if postgres:
         # New uploads should be indexable without a separate schema setup step.
         # Existing catalog photos still need the one-off rebuild script.
@@ -230,10 +240,11 @@ def index_product_image(db, product_id: int, image_id: int, content: bytes, imag
                 embedding = EXCLUDED.embedding, indexed_at = CURRENT_TIMESTAMP
         """), {"image_id": image_id, "product_id": product_id, "model_name": MODEL_NAME, "embedding": embedding})
     else:
-        signature = ("inline", 0, len(content))
+        mode = MODEL_NAME if _semantic_local_mode() else "local-color-layout:v1"
+        signature = (mode, "inline", 0, len(content))
         if image_path:
             stat = image_path.stat()
-            signature = (str(image_path.resolve()), stat.st_mtime_ns, stat.st_size)
+            signature = (mode, str(image_path.resolve()), stat.st_mtime_ns, stat.st_size)
         with _local_embedding_lock:
             _local_embeddings[image_id] = (signature, values)
 
@@ -297,11 +308,13 @@ def _development_search(db, embedding: tuple[float, ...], image_dir: Path, limit
             try:
                 candidate.relative_to(image_dir.resolve())
                 stat = candidate.stat()
-                signature = (str(candidate), stat.st_mtime_ns, stat.st_size)
+                mode = MODEL_NAME if _semantic_local_mode() else "local-color-layout:v1"
+                signature = (mode, str(candidate), stat.st_mtime_ns, stat.st_size)
                 with _local_embedding_lock:
                     cached = _local_embeddings.get(image.id)
                 if not cached or cached[0] != signature:
-                    ref_embedding = visual_match_service.local_visual_embedding(candidate.read_bytes())
+                    ref_content = candidate.read_bytes()
+                    ref_embedding = _image_embedding(ref_content) if _semantic_local_mode() else visual_match_service.local_visual_embedding(ref_content)
                     with _local_embedding_lock:
                         _local_embeddings[image.id] = (signature, ref_embedding)
                 else:
@@ -337,6 +350,22 @@ def _decide_local(hits: list[SearchHit]) -> SearchResult:
     return SearchResult("ambiguous", tuple(hits[:3]), "Local color/layout suggestions. Review the product photos before choosing a design.")
 
 
+def _decide_semantic_local(hits: list[SearchHit]) -> SearchResult:
+    """Keep cross-view semantic candidates visible for staff confirmation.
+
+    SigLIP cosine values are not confidence percentages and packaged photos can
+    score lower than model-to-model shots. Below the auto-match threshold, show
+    ranked candidate photos for confirmation instead of hiding them as no-match.
+    """
+    if not hits or hits[0].similarity < 0.35:
+        return SearchResult("no_match", (), "No catalog photo looks sufficiently related. Try a closer, clearer photo of the garment.")
+    top = hits[0]
+    margin = top.similarity - hits[1].similarity if len(hits) > 1 else 1.0
+    if top.similarity >= MIN_SIMILARITY and margin >= MIN_MARGIN:
+        return SearchResult("matched", (top,), "A strong visual match was found. Verify the product before using its live stock.")
+    return SearchResult("ambiguous", tuple(hits[:5]), "Possible product matches found. Compare the saved photos and confirm the correct design.")
+
+
 def search(db, content: bytes, image_dir: Path, limit: int) -> SearchResult:
     """Rank saved design reference photos. Recognition never modifies inventory."""
     postgres = _database_is_postgres(db)
@@ -347,7 +376,8 @@ def search(db, content: bytes, image_dir: Path, limit: int) -> SearchResult:
         except Exception as exc:
             raise VisualSearchUnavailable(f"SigLIP 2 PostgreSQL index unavailable. Build {TABLE_NAME} and retry.") from exc
     else:
-        embedding = visual_match_service.local_visual_embedding(content)
+        semantic = _semantic_local_mode()
+        embedding = _image_embedding(content) if semantic else visual_match_service.local_visual_embedding(content)
         hits = _development_search(db, embedding, image_dir, max(limit, 5))
-        return _decide_local(hits)
+        return _decide_semantic_local(hits) if semantic else _decide_local(hits)
     return _decide(hits)

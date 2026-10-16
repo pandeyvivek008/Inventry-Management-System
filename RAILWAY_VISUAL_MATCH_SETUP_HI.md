@@ -2,7 +2,7 @@
 
 ## Current deployment: one Inventory service
 
-The current setup runs the inventory API and SigLIP 2 in the **same Railway Inventory service**. This section supersedes the older separate-model-service steps below.
+The PostgreSQL production setup runs the inventory API and SigLIP 2 in the **same Railway Inventory service**. When the app is in SQLite local mode, it can use the private model service in the private-service section below instead; this does not require changing the inventory database. In either semantic mode, both the packaging/query photo and every saved catalog photo are embedded by the same SigLIP model.
 
 1. Keep the existing Inventory service's `DATABASE_URL` and product-image volume unchanged. Do not point it at a new empty PostgreSQL database: SQLite rows and uploaded photos do not move automatically. Back up and migrate catalog, variants, orders, history, and image files before any database change.
 2. Set Railway **Root Directory** to blank (repository root). Mount a persistent volume at `/data`, set `HF_HOME=/data/huggingface`, and keep the existing product-photo volume mounted at its current path.
@@ -18,7 +18,7 @@ The current setup runs the inventory API and SigLIP 2 in the **same Railway Inve
    cd backend && python -m uvicorn main:app --host 0.0.0.0 --port $PORT
    ```
 
-   Do not use `visual_model_service:app` as this service's start command; that would run only the model API and hide the inventory UI/API. Leave `VISUAL_AI_URL` unset to use the in-process model. The first image search downloads weights and can take several minutes. PyTorch uses additional CPU/RAM. Mount a persistent volume at `/data` and set `HF_HOME=/data/huggingface` to cache weights across deploys.
+   Do not use `visual_model_service:app` as this service's start command; that would run only the model API and hide the inventory UI/API. Leave `VISUAL_AI_URL` unset to use the in-process model on PostgreSQL deployments. For SQLite deployments that need packaging-photo matching, set `VISUAL_AI_URL` and `VISUAL_AI_API_KEY` as described in the private-service section below. The first image search downloads weights and can take several minutes. PyTorch uses additional CPU/RAM. Mount a persistent volume at `/data` and set `HF_HOME=/data/huggingface` to cache weights across deploys.
 5. Deploy, open **Visual Product Search**, and read the setup status shown above the photo-search message. If the status says old catalog photos are not indexed, run from this same Inventory service:
 
    ```sh
@@ -31,7 +31,7 @@ The model downloads from the public Hugging Face checkpoint; no token/API key is
 
 ---
 
-## Legacy split-service instructions (do not use for the current single-service deployment)
+## Private split-service instructions (use when SQLite app needs semantic package-photo matching)
 
 The app calls a separate, private Railway service for Google's public `google/siglip2-base-patch16-224` image encoder. The app remains on its small core dependency set, so model startup/inference does not block stock and order requests. The service downloads public model weights automatically at startup; no Hugging Face token is needed. Model files persist in a Railway volume. The model is general-purpose, not fine-tuned on Twins Lady photos.
 

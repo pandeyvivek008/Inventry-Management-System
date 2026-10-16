@@ -1079,7 +1079,11 @@ async def visual_product_match(
         "matches": matches,
         "message": message,
         "score_type": "cosine_similarity_not_probability",
-        "matching_mode": "local color/layout suggestions" if engine.dialect.name != "postgresql" else "SigLIP 2 semantic image embeddings",
+        "matching_mode": (
+            "SigLIP 2 semantic image embeddings" if engine.dialect.name == "postgresql"
+            or os.getenv("VISUAL_AI_URL", "").strip()
+            else "local color/layout suggestions"
+        ),
         "notice": "Only a matched result is a strong visual match. Ambiguous results are suggestions; photo search never changes stock.",
     }
 
@@ -1131,11 +1135,29 @@ def visual_search_status(db: Session = Depends(get_db)):
     runtime_installed = bool(find_spec("torch") and find_spec("transformers"))
     model_weights_loaded = visual_match_service._encoder is not None
     external_model_service = bool(os.getenv("VISUAL_AI_URL", "").strip())
+    external_model_service_ready = False
+    if external_model_service and os.getenv("VISUAL_AI_API_KEY", "").strip():
+        try:
+            import httpx
+            service_url = os.getenv("VISUAL_AI_URL", "").strip().rstrip("/")
+            response = httpx.get(f"{service_url}/health", timeout=1.5)
+            response.raise_for_status()
+            health = response.json()
+            external_model_service_ready = (
+                health.get("status") == "ready"
+                and health.get("model") == visual_search_service.MODEL_NAME
+            )
+        except Exception:
+            external_model_service_ready = False
     needs_rebuild = dialect == "postgresql" and (
         not pgvector_index_exists or indexed_photo_count < photo_count
     )
     local_matcher_available = dialect != "postgresql"
-    model_available = local_matcher_available or runtime_installed or external_model_service
+    model_available = (
+        local_matcher_available and not external_model_service
+        or runtime_installed and not external_model_service
+        or external_model_service_ready
+    )
     if dialect == "postgresql":
         index_ready = (
             postgres_connected
@@ -1145,16 +1167,23 @@ def visual_search_status(db: Session = Depends(get_db)):
             and indexed_photo_count >= photo_count
         )
     else:
-        # SQLite uses a deterministic Pillow-only color/layout matcher; it does
-        # not load SigLIP or require persistent vector-index setup.
+        # SQLite uses the Pillow fallback unless the private SigLIP service is
+        # configured. With the service, query and catalog photos share semantic
+        # embeddings, allowing packaged and model-view photos to match.
         index_ready = photo_count > 0 and catalog_product_count <= visual_search_service.DEV_MAX_CATALOG
     if dialect != "postgresql":
         if not os.getenv("DATABASE_URL", "").strip():
-            message = f"Database: SQLite local mode. Lightweight photo suggestions are ready for up to {visual_search_service.DEV_MAX_CATALOG} designs; no model download or pgvector index is needed. Catalog photos: {photo_count}."
+            if external_model_service_ready:
+                message = f"Database: SQLite local mode. SigLIP 2 semantic matching via the private model service is configured for up to {visual_search_service.DEV_MAX_CATALOG} designs. Catalog photos: {photo_count}."
+            elif external_model_service:
+                message = "SQLite is available, but the private SigLIP service is not ready or its key is missing. Check VISUAL_AI_URL, VISUAL_AI_API_KEY, and the model service /health endpoint."
+            else:
+                message = f"Database: SQLite local mode. Lightweight color/layout suggestions are available for up to {visual_search_service.DEV_MAX_CATALOG} designs. For packaged-photo to model-photo matching, configure the private SigLIP model service. Catalog photos: {photo_count}."
             if os.getenv("RAILWAY_ENVIRONMENT", "").strip():
                 message += " Railway is not connected to PostgreSQL (DATABASE_URL is missing); connect the PostgreSQL service before relying on durable production inventory."
         else:
-            message = f"Database: {dialect}. Lightweight photo suggestions are available for up to {visual_search_service.DEV_MAX_CATALOG} designs; use PostgreSQL with pgvector for larger catalogs. Catalog photos: {photo_count}."
+            mode_text = "SigLIP 2 semantic matching via the private model service" if external_model_service_ready else "lightweight color/layout suggestions; configure a ready private SigLIP model service for packaged-photo matching"
+            message = f"Database: {dialect}. {mode_text} are available for up to {visual_search_service.DEV_MAX_CATALOG} designs; use PostgreSQL with pgvector for larger catalogs. Catalog photos: {photo_count}."
     elif not postgres_connected:
         message = "Database URL is PostgreSQL, but the app cannot connect to it. Check the Railway PostgreSQL service and DATABASE_URL reference."
     elif not pgvector_extension_installed:
@@ -1168,7 +1197,10 @@ def visual_search_status(db: Session = Depends(get_db)):
     else:
         message = "Visual model runtime and catalog photo index are ready."
     if not model_available:
-        message += " SigLIP runtime is not installed and no private model service is configured."
+        if external_model_service:
+            message += " The configured private SigLIP service is not ready or its key is missing."
+        else:
+            message += " SigLIP runtime is not installed and no private model service is configured."
 
     return {
         "status": "ready" if index_ready and model_available else "unavailable",
@@ -1181,6 +1213,8 @@ def visual_search_status(db: Session = Depends(get_db)):
         "model_weights_loaded": model_weights_loaded,
         "local_matcher_available": local_matcher_available,
         "external_model_service_configured": external_model_service,
+        "external_model_service_ready": external_model_service_ready,
+        "semantic_matching_available": (dialect == "postgresql" and model_available) or external_model_service_ready,
         "pgvector_index_exists": pgvector_index_exists,
         "catalog_photos": photo_count,
         "indexed_photos": indexed_photo_count,
