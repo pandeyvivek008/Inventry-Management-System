@@ -256,6 +256,7 @@ def process_order_excel(db: Session, file_bytes: bytes, filename: str, created_b
 
     # --- Step 1: parse rows ---
     parsed = []  # (candidate codes, size or None, qty)
+    summary_codes = {"TOTAL", "GRAND TOTAL", "SUBTOTAL"}
     for rec in df.to_dict("records"):
         qty = 1 if used_default_qty else to_int(rec.get(qty_col))
         if qty is None or qty <= 0:
@@ -264,6 +265,11 @@ def process_order_excel(db: Session, file_bytes: bytes, filename: str, created_b
         if not cands:
             continue
         size = clean_code(rec.get(size_col)) if size_col else None
+        normalized_cands = {" ".join(code.replace("_", " ").replace("-", " ").split()) for code in cands}
+        if normalized_cands and normalized_cands <= summary_codes and (not size or size in {"-", "—", "TOTAL"}):
+            # Marketplace workbooks may append a footer quantity row. Do not
+            # turn that summary into an unmapped order that can never dispatch.
+            continue
         parsed.append((cands, size, qty))
     if not parsed:
         raise BadOrderFileError("No usable rows: every row was missing a SKU or a positive quantity.")

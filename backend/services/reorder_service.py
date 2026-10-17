@@ -20,7 +20,7 @@ _COLOR_NAMES = (
     "navy blue", "sky blue", "royal blue", "baby pink", "hot pink", "rani pink", "rose pink",
     "dark green", "light green", "olive green", "sea green", "bottle green", "off white", "off-white", "multi color",
     "multicolor", "mustard", "maroon", "magenta", "turquoise", "teal", "lavender",
-    "purple", "violet", "fuchsia", "mauve", "mehendi", "lemon yellow", "pink", "red", "blue", "green", "yellow", "orange", "peach",
+    "purple", "violet", "fuchsia", "mauve", "mehendi", "lemon yellow", "rani", "pink", "red", "blue", "green", "yellow", "orange", "peach",
     "coral", "rust", "wine", "black", "white", "cream", "ivory", "beige", "brown", "coffee", "lemon", "rama",
     "grey", "gray", "silver", "gold", "golden", "charcoal", "mint", "lime", "cyan",
     "रानी", "गुलाबी", "लाल", "नीला", "नीली", "हरा", "हरी", "पीला", "पीली", "काला",
@@ -44,6 +44,15 @@ def _identity_words(value: str | None) -> str:
     """Normalize names for matching while retaining their readable spelling elsewhere."""
     value = str(value or "").casefold().replace("_", " ")
     return " ".join(re.findall(r"[\w]+", value, flags=re.UNICODE))
+
+
+def _has_known_source_brand(sku: str) -> bool:
+    normalized = _identity_words(sku)
+    for brand in _SOURCE_BRAND_PREFIXES:
+        prefix = _identity_words(brand)
+        if prefix and (normalized == prefix or normalized.startswith(prefix + " ")):
+            return True
+    return False
 
 
 def _product_party(item: dict) -> str:
@@ -115,6 +124,164 @@ def _product_name_and_colour(item: dict) -> tuple[str, str]:
     product_identity = _remove_leading_words(product_identity, party)
     display_name = " ".join(product_identity.split()).title()
     return display_name, colour
+
+
+def _reorder_identity(item: dict) -> tuple[str, str, str]:
+    """Return brand/party-independent product and colour identity for merging."""
+    product, colour = _product_name_and_colour(item)
+    product_key = _identity_words(product)
+    # In this SKU convention V is used as a party/line marker (for example,
+    # TWINS_V_PANKHUDI_PINK). It should not split an otherwise matching design
+    # from MODA_V_PANKHUDI_PINK or another brand's PANKHUDI_PINK.
+    product_key = re.sub(r"^v\s+", "", product_key)
+    sku = str(item.get("sku") or "").strip()
+    if not product_key and not colour:
+        product_key = _identity_words(sku)
+    return product_key, _identity_words(colour), colour
+
+
+def _twins_base_sku(items: list[dict], product: str, colour: str) -> str:
+    """Choose a TWINS SKU spelling when one exists, otherwise build one."""
+    twins_bodies = []
+    source_bodies = []
+    for item in items:
+        raw_sku = str(item.get("sku") or "").strip()
+        body = _strip_source_brand(raw_sku)
+        body = _remove_size_suffix(body, str(item.get("size") or ""))
+        if not body:
+            continue
+        source_bodies.append(body)
+        normalized = _identity_words(raw_sku)
+        if normalized.startswith("twins "):
+            twins_bodies.append(body)
+
+    # Keep the app's established TWINS alias, including a party marker when
+    # that is the only TWINS SKU in the merged group. Prefer the shortest
+    # existing alias when both marked and unmarked forms are present.
+    candidates = twins_bodies or source_bodies
+    if candidates:
+        body = min(candidates, key=lambda value: (len(_identity_words(value).split()), len(value), value))
+    else:
+        body = " ".join(part for part in (product, colour if colour != "—" else "") if part)
+    return "_".join(part for part in (_TARGET_REORDER_BRAND, _sku_component(body)) if part)
+
+
+def consolidate_reorder_items(items: list[dict], part: str | None = None) -> list[dict]:
+    """Merge matching reorder lines across brands into one TWINS row per size.
+
+    Matching ignores the seller brand and party marker. Product identity and
+    colour define a design; size stays part of the output SKU and quantity key.
+    Unmapped lines retain their source SKU and remain isolated.
+    """
+    groups: dict[tuple[str, str, str], dict] = {}
+    for item in items:
+        source_sku = str(item.get("sku") or "").strip()
+        size = " ".join(str(item.get("size") or "—").upper().split())
+        mergeable = False
+        if item.get("is_new"):
+            key = ("__unmapped__", source_sku.casefold(), size)
+            product, colour = source_sku or "Unknown SKU", "—"
+        else:
+            product_key, colour_key, colour = _reorder_identity(item)
+            # Rebrand only rows with a recognized source brand or a sufficiently
+            # clear product+colour identity. Generic catalog SKUs (for example
+            # RS1) keep their real SKU/variant codes and never become TWINS_*.
+            mergeable = bool(product_key and colour_key) and (
+                _has_known_source_brand(source_sku)
+                or product_key != _identity_words(source_sku)
+            )
+            key = (
+                (product_key, colour_key, size)
+                if mergeable else ("__raw__", source_sku.casefold(), size)
+            )
+            product, _ = _product_name_and_colour(item)
+
+        row = groups.setdefault(key, {
+            "sku": "",
+            "size": size,
+            "variant_code": "",
+            "name": product,
+            "party": item.get("party") if not item.get("is_new") and not mergeable else None,
+            "current_stock": 0,
+            "ordered_qty": 0,
+            "dispatched_qty": 0,
+            "required_qty": 0,
+            "image_path": None,
+            "is_new": bool(item.get("is_new")),
+            "_mergeable": bool(not item.get("is_new") and mergeable),
+            "_sources": [],
+            "_source_skus": set(),
+            "_variant_codes": set(),
+        })
+        row["current_stock"] += int(item.get("current_stock") or 0)
+        row["ordered_qty"] += int(item.get("ordered_qty") or 0)
+        row["dispatched_qty"] += int(item.get("dispatched_qty") or 0)
+        row["required_qty"] += int(item.get("required_qty") or 0)
+        if item.get("image_path") and not row["image_path"]:
+            row["image_path"] = item["image_path"]
+        row["_sources"].append(item)
+        if source_sku:
+            row["_source_skus"].add(source_sku)
+        variant_code = str(item.get("variant_code") or "").strip()
+        if variant_code:
+            row["_variant_codes"].add(variant_code)
+
+    query_tokens = re.findall(r"[\w]+", str(part or "").casefold())
+    result = []
+    for row in groups.values():
+        if row["is_new"]:
+            base_sku = next(iter(sorted(row["_source_skus"])), "UNKNOWN")
+            searchable = " ".join((base_sku, row["name"], row["size"]))
+        elif not row["_mergeable"]:
+            base_sku = next(iter(sorted(row["_source_skus"])), "UNKNOWN")
+            searchable = " ".join((base_sku, row["name"], row["size"], " ".join(row["_variant_codes"])))
+            row["sku"] = base_sku
+            row["variant_code"] = next(iter(sorted(row["_variant_codes"])), base_sku)
+        else:
+            # Each size may have a mix of source brands; derive one target SKU
+            # from all matching source aliases, preserving the size suffix.
+            source_rows = row["_sources"]
+            product, colour = _product_name_and_colour(source_rows[0])
+            base_sku = _twins_base_sku(source_rows, product, colour)
+            size_suffix = _sku_component(row["size"])
+            if size_suffix and not _sku_has_size_suffix(base_sku, row["size"]):
+                base_sku = f"{base_sku}_{size_suffix}"
+            row["sku"] = base_sku
+            twins_variant_codes = sorted(
+                str(source.get("variant_code") or "").strip()
+                for source in source_rows
+                if str(source.get("variant_code") or "").strip()
+                and _identity_words(str(source.get("sku") or "")).startswith("twins ")
+            )
+            # Preserve the real catalog variant code when a matching TWINS
+            # record exists; SKU is the consolidated display/picklist alias.
+            row["variant_code"] = twins_variant_codes[0] if twins_variant_codes else base_sku
+            searchable = " ".join((
+                base_sku,
+                product,
+                colour,
+                row["size"],
+                " ".join(row["_source_skus"]),
+            ))
+        if query_tokens and not all(token in _identity_words(searchable) for token in query_tokens):
+            continue
+        if row["is_new"]:
+            row["sku"] = base_sku
+            row["variant_code"] = base_sku
+        row.pop("_sources", None)
+        row.pop("_source_skus", None)
+        row.pop("_variant_codes", None)
+        row.pop("_mergeable", None)
+        result.append(row)
+
+    def _row_sort_key(row: dict):
+        if row["is_new"]:
+            return ("~unmapped", _identity_words(row.get("sku")), _size_sort_key(row["size"]))
+        product_key, colour_key, _ = _reorder_identity(row)
+        return (product_key, colour_key, _size_sort_key(row["size"]))
+
+    result.sort(key=_row_sort_key)
+    return result
 
 
 def _size_sort_key(size: str):
@@ -229,7 +396,9 @@ def generate_reorder_list(db: Session, save_batch: bool = True, part: str | None
             unknown_query = unknown_query.filter(or_(OrderLine.sku.ilike(like), OrderLine.size.ilike(like)))
     for sku, size, ordered_qty in unknown_query.all():
         ordered_qty = int(ordered_qty or 0)
-        if ordered_qty <= 0:
+        if ordered_qty <= 0 or _identity_words(str(sku)) in {"total", "grand total", "subtotal"}:
+            # Older order sheets sometimes contain a footer row such as
+            # TOTAL | 2234. It is not an unmapped product or dispatch line.
             continue
         items.append({
             "sku": str(sku).upper(),
@@ -266,45 +435,28 @@ def generate_reorder_list(db: Session, save_batch: bool = True, part: str | None
 def reorder_list_to_excel(items: list[dict]) -> bytes:
     """Export shortages in the picklist's SKU / Size / Quantity layout.
 
-    Matching source brands are grouped by party, product and colour. Their
-    quantities are added by size and emitted using the TWINS brand SKU. No
-    grand-total row is written.
+    Matching source brands are grouped by product and colour, regardless of
+    brand or party. Their quantities are added by size and emitted using the
+    TWINS brand SKU. No grand-total row is written.
     """
+    items = consolidate_reorder_items(items)
     wb = Workbook()
     ws = wb.active
     ws.title = "Reorder"
 
-    grouped: dict[tuple[str, str, str, str], dict] = {}
+    blocks: dict[tuple[str, str], list[dict]] = {}
     for item in items:
-        party = _product_party(item)
-        product_name, colour = _product_name_and_colour(item)
-        size = " ".join(str(item.get("size") or "—").upper().split())
-        sku = str(item.get("sku") or "").strip()
         if item.get("is_new"):
-            # Keep separate unmapped designs apart until they are reconciled.
-            key = ("__unmapped__", sku.casefold(), "", "")
-            party, product_name, colour = "Unmapped", sku or "Unknown SKU", "—"
+            block_key = ("__unmapped__", str(item.get("sku") or "UNKNOWN").casefold())
         else:
-            # If the SKU contributes neither a party nor a product token, keep
-            # it isolated instead of merging unrelated products by colour.
-            identity_guard = sku.casefold() if not party and not product_name else ""
-            key = (_identity_words(party), _identity_words(product_name), _identity_words(colour), identity_guard)
-        row = grouped.setdefault(key, {
-            "party": party,
-            "product": product_name,
-            "colour": colour,
-            "quantities": {},
-            "source_skus": {},
-            "is_new": bool(item.get("is_new")),
-        })
-        row["quantities"][size] = row["quantities"].get(size, 0) + int(item.get("required_qty") or 0)
-        source_sku = str(item.get("sku") or "").strip()
-        if source_sku:
-            row["source_skus"].setdefault(size, set()).add(source_sku)
-
-    rows = sorted(grouped.values(), key=lambda row: (
-        _identity_words(row["party"]), _identity_words(row["product"]), _identity_words(row["colour"])
-    ))
+            product_key, colour_key, _ = _reorder_identity(item)
+            sku = str(item.get("sku") or "").strip()
+            mergeable = bool(product_key and colour_key) and (
+                _has_known_source_brand(sku) or product_key != _identity_words(sku)
+            )
+            block_key = (product_key, colour_key) if mergeable else ("__raw__", sku.casefold())
+        blocks.setdefault(block_key, []).append(item)
+    ordered_blocks = sorted(blocks.items(), key=lambda entry: entry[0])
     headers = ["SKU", "Size", "Quantity"]
     header_font = Font(name="Aptos", bold=True, size=11, color="FFFFFF")
     header_fill = PatternFill(start_color="24466C", end_color="24466C", fill_type="solid")
@@ -315,51 +467,27 @@ def reorder_list_to_excel(items: list[dict]) -> bytes:
         cell.fill = header_fill
 
     row_idx = 2
-    for index, item in enumerate(rows):
-        product_words = _identity_words(item["product"]).split()
-        party_words = _identity_words(item["party"]).split()
-        # Some imported product names still start with the party token. Keep it
-        # only once in the generated SKU.
-        if party_words and product_words[:len(party_words)] == party_words:
-            product_words = product_words[len(party_words):]
-
-        if not item["is_new"]:
-            sku_parts = [
-                _TARGET_REORDER_BRAND,
-                _sku_component(item["party"]),
-                _sku_component(" ".join(product_words)),
-                _sku_component(item["colour"] if item["colour"] != "—" else ""),
-            ]
-            base_sku = "_".join(part for part in sku_parts if part)
-            if not base_sku:
-                base_sku = next(iter(sorted(next(iter(item["source_skus"].values()), {"UNKNOWN"}))))
-
-        sizes = sorted(item["quantities"], key=_size_sort_key)
-        for size in sizes:
-            quantity = item["quantities"][size]
-            size_sku = _sku_component(size)
-            if item["is_new"]:
-                # Unmapped lines have no safe product identity yet. Preserve
-                # the source SKU for that size so it can be reconciled.
-                sku = next(iter(sorted(item["source_skus"].get(size) or {"UNKNOWN"})))
-            else:
-                sku = base_sku
-            if size_sku and not _sku_has_size_suffix(sku, size):
-                sku = f"{sku}_{size_sku}" if sku else size_sku
-            values = [sku, size, quantity]
+    for block_index, (_, rows) in enumerate(ordered_blocks):
+        rows.sort(key=lambda item: _size_sort_key(item["size"]))
+        for item in rows:
+            size = item["size"]
+            sku = str(item.get("sku") or "UNKNOWN")
+            if size and not _sku_has_size_suffix(sku, size):
+                sku = f"{sku}_{_sku_component(size)}" if sku else _sku_component(size)
+            values = [sku, size, int(item.get("required_qty") or 0)]
             for col, value in enumerate(values, start=1):
                 cell = ws.cell(row=row_idx, column=col, value=value)
                 cell.font = Font(name="Aptos", size=10, color="172B4D")
                 cell.alignment = Alignment(vertical="center", horizontal="right" if col == 3 else "left")
                 cell.border = Border(bottom=thin_line)
-                if index % 2 == 0:
+                if block_index % 2 == 0:
                     cell.fill = PatternFill("solid", fgColor="F2F7FC")
                 if col == 3:
                     cell.font = Font(name="Aptos", size=11, bold=True, color="173B63")
             ws.row_dimensions[row_idx].height = 22
             row_idx += 1
         # Keep each product / colour block visually separate in Excel.
-        if index < len(rows) - 1:
+        if block_index < len(ordered_blocks) - 1:
             row_idx += 1
 
     for column, width in {"A": 48, "B": 16, "C": 18}.items():

@@ -1838,13 +1838,23 @@ def dispatch_order_upload(
 # ------------------------------------------------------------------ #
 @app.get("/api/reorder-list")
 def reorder_list(part: str | None = None, limit: int | None = Query(None, ge=1, le=200), offset: int = Query(0, ge=0), db: Session = Depends(get_db)):
-    items = reorder_service.generate_reorder_list(db, save_batch=False, part=part)
+    # Merge cross-brand aliases before pagination so one product/colour/size
+    # appears once and the page count reflects the consolidated picklist.
+    items = reorder_service.generate_reorder_list(db, save_batch=False)
+    items = reorder_service.consolidate_reorder_items(items, part=part)
     return {"total": len(items), "limit": limit, "offset": offset, "items": items[offset:offset + limit]} if limit is not None else items
 
 
 @app.get("/api/reorder-list/export")
 def reorder_list_export(part: str | None = None, db: Session = Depends(get_db)):
-    items = reorder_service.generate_reorder_list(db, save_batch=True, part=part)
+    if part and part.strip():
+        # Keep the saved reorder batch scoped to the user's raw SKU search,
+        # while building the downloadable group from all brands that match it.
+        reorder_service.generate_reorder_list(db, save_batch=True, part=part)
+        items = reorder_service.generate_reorder_list(db, save_batch=False)
+    else:
+        items = reorder_service.generate_reorder_list(db, save_batch=True)
+    items = reorder_service.consolidate_reorder_items(items, part=part)
     items = [item for item in items if item["required_qty"] > 0 or item.get("is_new")]
     xlsx_bytes = reorder_service.reorder_list_to_excel(items)
     return StreamingResponse(BytesIO(xlsx_bytes), media_type=XLSX_MEDIA, headers={"Content-Disposition": "attachment; filename=reorder_list.xlsx"})
