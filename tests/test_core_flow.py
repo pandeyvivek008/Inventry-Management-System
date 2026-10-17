@@ -462,15 +462,79 @@ shortfall_upload = post_orders(make_xlsx(["SKU", "Size", "Quantity"], [("RS1", "
 shortfall = next(i for i in client.get("/api/reorder-list").json() if i["sku"] == "RS1")
 expect(shortfall["current_stock"] == 2 and shortfall["ordered_qty"] == 5 and shortfall["required_qty"] == 3,
        "physical stock 2 against pending orders 5 yields restock required 3")
-blocked_dispatch = client.post(f"/api/orders/{shortfall_upload.json()['order_upload_id']}/dispatch")
-expect(blocked_dispatch.status_code == 409 and "only 2 in stock" in blocked_dispatch.json()["detail"],
-       "dispatch blocks overselling and leaves the pending shortage visible")
-expect(client.get("/api/variants/RS1-M").json()["current_stock"] == 2,
-       "blocked dispatch leaves physical stock unchanged")
+shortfall_id = shortfall_upload.json()["order_upload_id"]
+ready_history = next(i for i in client.get("/api/orders/history", params={"limit": 200}).json()
+                     if i["order_upload_id"] == shortfall_id)
+expect(ready_history["dispatch_state"] == "PARTIAL" and ready_history["dispatchable_units"] == 2
+       and ready_history["lines"][0]["dispatchable_qty"] == 2,
+       "order history shows a partial ready amount when only two of five pieces are stocked")
+partial_dispatch = client.post(f"/api/orders/{shortfall_id}/dispatch")
+expect(partial_dispatch.status_code == 200 and partial_dispatch.json()["dispatched_units"] == 2
+       and partial_dispatch.json()["pending_units"] == 3,
+       "dispatch deducts available pieces instead of blocking the whole batch")
+expect(client.get("/api/variants/RS1-M").json()["current_stock"] == 0,
+       "partial dispatch deducts only the two physically available pieces")
+partial_history = next(i for i in client.get("/api/orders/history", params={"limit": 200}).json()
+                       if i["order_upload_id"] == shortfall_id)
+expect(partial_history["status"] == "PENDING" and partial_history["pending_units"] == 3
+       and partial_history["dispatched_units"] == 2
+       and partial_history["lines"][0]["status"] == "PARTIALLY_DISPATCHED",
+       "the undispatched three pieces remain pending after a partial dispatch")
+partial_reorder = next(i for i in client.get("/api/reorder-list").json() if i["sku"] == "RS1")
+expect(partial_reorder["ordered_qty"] == 3 and partial_reorder["dispatched_qty"] == 2
+       and partial_reorder["required_qty"] == 3,
+       "reorder quantity follows the remaining order and does not double-count dispatched pieces")
 client.post("/api/inventory/adjust", json={"variant_code": "RS1-M", "new_count": 5, "note": "restock before dispatch"})
-expect(client.post(f"/api/orders/{shortfall_upload.json()['order_upload_id']}/dispatch").status_code == 200
-       and client.get("/api/variants/RS1-M").json()["current_stock"] == 0,
-       "dispatch succeeds after the requested physical stock is arranged")
+ready_again = next(i for i in client.get("/api/orders/history", params={"limit": 200}).json()
+                   if i["order_upload_id"] == shortfall_id)
+expect(ready_again["dispatch_state"] == "READY" and ready_again["dispatchable_units"] == 3
+       and ready_again["lines"][0]["dispatchable_qty"] == 3,
+       "restocking changes the pending line to green-ready for its remaining quantity")
+second_dispatch = client.post(f"/api/orders/{shortfall_id}/dispatch")
+expect(second_dispatch.status_code == 200 and second_dispatch.json()["dispatched_units"] == 3
+       and second_dispatch.json()["pending_units"] == 0
+       and client.get("/api/variants/RS1-M").json()["current_stock"] == 2,
+       "a later dispatch ships only the remaining three pieces and leaves surplus stock untouched")
+
+print("30.1 Selected order lines dispatch independently and keep the rest pending")
+client.post("/api/products", json={"sku": "SEL1", "name": "Selected Dispatch", "variants": [
+    {"size": "S", "initial_stock": 1}, {"size": "M", "initial_stock": 0},
+]})
+selected_upload = post_orders(make_xlsx(["SKU", "Size", "Quantity"], [("SEL1", "S", 2), ("SEL1", "M", 3)]), "selected_dispatch.xlsx")
+selected_id = selected_upload.json()["order_upload_id"]
+selected_history = next(i for i in client.get("/api/orders/history", params={"limit": 200}).json()
+                        if i["order_upload_id"] == selected_id)
+selected_s_line = next(line for line in selected_history["lines"] if line["size"] == "S")
+selected_m_line = next(line for line in selected_history["lines"] if line["size"] == "M")
+selected_dispatch = client.post(f"/api/orders/{selected_id}/dispatch", json={"line_ids": [selected_s_line["id"]]})
+expect(selected_dispatch.status_code == 200 and selected_dispatch.json()["dispatched_units"] == 1
+       and selected_dispatch.json()["pending_units"] == 4,
+       "selected line dispatch uses its available piece without dispatching another size")
+selected_after = next(i for i in client.get("/api/orders/history", params={"limit": 200}).json()
+                      if i["order_upload_id"] == selected_id)
+expect(next(line for line in selected_after["lines"] if line["id"] == selected_s_line["id"])["pending_qty"] == 1
+       and next(line for line in selected_after["lines"] if line["id"] == selected_m_line["id"])["pending_qty"] == 3
+       and client.get("/api/variants/SEL1-S").json()["current_stock"] == 0
+       and client.get("/api/variants/SEL1-M").json()["current_stock"] == 0,
+       "unselected size demand stays pending and no stock is deducted from it")
+selected_delete = client.delete(f"/api/orders/{selected_id}")
+expect(selected_delete.status_code == 200 and selected_delete.json()["restored_units"] == 1
+       and client.get("/api/variants/SEL1-S").json()["current_stock"] == 1,
+       "deleting a partially dispatched batch restores only the pieces already sent")
+
+print("30.2 Shared stock is allocated across pending batches without double-ready totals")
+client.post("/api/products", json={"sku": "FIFO1", "name": "FIFO Dispatch", "variants": [
+    {"size": "M", "initial_stock": 3},
+]})
+fifo_old = post_orders(make_xlsx(["SKU", "Size", "Quantity"], [("FIFO1", "M", 2)]), "fifo_older.xlsx")
+fifo_new = post_orders(make_xlsx(["SKU", "Size", "Quantity"], [("FIFO1", "M", 3)]), "fifo_newer.xlsx")
+fifo_history = client.get("/api/orders/history", params={"limit": 200}).json()
+fifo_old_row = next(i for i in fifo_history if i["order_upload_id"] == fifo_old.json()["order_upload_id"])
+fifo_new_row = next(i for i in fifo_history if i["order_upload_id"] == fifo_new.json()["order_upload_id"])
+expect(fifo_old_row["dispatch_state"] == "READY" and fifo_old_row["dispatchable_units"] == 2
+       and fifo_new_row["dispatch_state"] == "PARTIAL" and fifo_new_row["dispatchable_units"] == 1
+       and fifo_old_row["dispatchable_units"] + fifo_new_row["dispatchable_units"] == 3,
+       "older pending demand receives first claim and visible ready pieces never exceed physical stock")
 
 print("30a. Legacy negative stock is carried into the reorder quantity")
 client.post("/api/products", json={"sku": "NEGRESTOCK", "name": "Negative Balance Recovery", "variants": [

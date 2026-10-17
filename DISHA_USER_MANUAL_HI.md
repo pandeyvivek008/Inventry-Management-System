@@ -39,6 +39,13 @@ Stock update se pehle Disha current count aur proposed count dikhata hai. Dhyan 
 
 Product banana/edit karna, Trash mein bhejna/restore karna, aur order batch dispatch karna bhi action card ke baad hi hota hai. Dispatch se pehle batch number aur units dekh lein. Disha ke paas arbitrary database, file system, ya provider account ka access nahi hai.
 
+## Process Orders: available stock dispatch karein
+
+- Upload ke baad batch **Pending** rehta hai; stock upload par deduct nahi hota.
+- Har batch line mein ordered, dispatched, pending aur abhi dispatch ho sakne wali quantity dikhti hai. Green **Ready** tick ka matlab poori pending quantity available counted stock se cover hai; **Partial** mein jitne pieces available hain, utne hi dikhte hain.
+- **Dispatch Ready** batch ke available pieces deduct karta hai. **All ready** se current line page ki available rows chun kar **Dispatch Selected** dabaya ja sakta hai.
+- Partial dispatch ke baad baaki pieces pending rehte hain. Naya stock count/update karne ke baad wahi batch dobara dispatch kar sakte hain. Stock availability pending batches mein FIFO order se dikhai jati hai.
+
 ## WhatsApp message draft
 
 Recipient ka phone number country code ke saath (+91 98765 43210) aur bhejne wala exact message bolen. Disha draft dikhayegi. **WhatsApp kholen** par click karke recipient aur text jaanchein; message bhejne ke liye WhatsApp mein Send aapko khud dabana hai. App personal WhatsApp notifications ya phone contacts nahi padh sakti.

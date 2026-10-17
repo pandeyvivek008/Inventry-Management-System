@@ -130,6 +130,46 @@ def _variant_out(v: models.Variant) -> dict:
     }
 
 
+def _order_line_dispatchability(db: Session, target_lines) -> dict[int, int]:
+    """Allocate counted physical stock to pending order lines in FIFO order.
+
+    The returned quantity is informational for the UI and also limits a
+    dispatch request to the quantity currently available for each selected
+    line. Looking across batches prevents the same physical pieces from making
+    every pending batch appear ready at once.
+    """
+    target_ids = {line.id for line in target_lines if line.status == models.OrderLineStatus.PENDING}
+    variant_ids = {line.variant_id for line in target_lines if line.variant_id is not None}
+    if not target_ids or not variant_ids:
+        return {}
+
+    pending_lines = (
+        db.query(models.OrderLine)
+        .join(models.OrderUpload, models.OrderLine.order_upload_id == models.OrderUpload.id)
+        .options(joinedload(models.OrderLine.variant))
+        .filter(
+            models.OrderLine.status == models.OrderLineStatus.PENDING,
+            models.OrderLine.variant_id.in_(variant_ids),
+        )
+        .order_by(models.OrderUpload.uploaded_at.asc(), models.OrderUpload.id.asc(), models.OrderLine.id.asc())
+        .all()
+    )
+    stock_left: dict[int, int] = {}
+    dispatchable: dict[int, int] = {}
+    for line in pending_lines:
+        variant = line.variant
+        if variant is None:
+            continue
+        if variant.id not in stock_left:
+            stock_left[variant.id] = max(int(variant.current_stock or 0), 0) if variant.last_counted_at else 0
+        remaining = max(int(line.qty_ordered or 0) - int(line.qty_fulfilled or 0), 0)
+        quantity = min(remaining, stock_left[variant.id])
+        if line.id in target_ids:
+            dispatchable[line.id] = quantity
+        stock_left[variant.id] -= quantity
+    return dispatchable
+
+
 def _product_out(p: models.Product) -> dict:
     live_variants = [v for v in p.variants if not v.is_deleted]
     image_paths = []
@@ -491,7 +531,7 @@ async def inventory_assistant_chat(payload: schemas.AssistantChatRequest, reques
         dashboard = summary(db)
         pending_line_count, pending_units = db.query(
             func.count(models.OrderLine.id),
-            func.coalesce(func.sum(models.OrderLine.qty_ordered), 0),
+            func.coalesce(func.sum(models.OrderLine.qty_ordered - models.OrderLine.qty_fulfilled), 0),
         ).filter(models.OrderLine.status == models.OrderLineStatus.PENDING).one()
         total_stock = db.query(func.coalesce(func.sum(models.Variant.current_stock), 0)).join(models.Product).filter(
             models.Variant.is_deleted == False, models.Product.is_deleted == False  # noqa: E712
@@ -552,10 +592,10 @@ async def inventory_assistant_chat(payload: schemas.AssistantChatRequest, reques
         more = f" Aur {len(needed) - 8} sizes hain." if len(needed) > 8 else ""
         return {"status": "reorder_summary", "reply": f"{len(needed)} sizes mein restock chahiye. " + "; ".join(lines) + "." + more, "total": len(needed)}
     if action == "pending_orders":
-        pending_lines, pending_units = db.query(func.count(models.OrderLine.id), func.coalesce(func.sum(models.OrderLine.qty_ordered), 0)).filter(models.OrderLine.status == models.OrderLineStatus.PENDING).one()
+        pending_lines, pending_units = db.query(func.count(models.OrderLine.id), func.coalesce(func.sum(models.OrderLine.qty_ordered - models.OrderLine.qty_fulfilled), 0)).filter(models.OrderLine.status == models.OrderLineStatus.PENDING).one()
         batches = db.query(models.OrderUpload).join(models.OrderLine).filter(models.OrderLine.status == models.OrderLineStatus.PENDING).distinct().order_by(models.OrderUpload.uploaded_at.desc()).limit(5).all()
         batch_text = ", ".join(f"batch {b.id} ({b.filename or 'orders'})" for b in batches) or "koi pending batch nahi"
-        return {"status": "pending_orders", "reply": f"{int(pending_lines or 0)} pending order lines hain, total {int(pending_units or 0)} pieces. Recent batches: {batch_text}. Dispatch se pehle stock validate hota hai."}
+        return {"status": "pending_orders", "reply": f"{int(pending_lines or 0)} pending order lines hain, total {int(pending_units or 0)} pieces baaki hain. Recent batches: {batch_text}. Available counted stock dispatch hoga; baaki pieces pending rahenge."}
     if action == "recent_activity":
         T, V, P = models.InventoryTransaction, models.Variant, models.Product
         query = db.query(T).join(V, T.variant_id == V.id).join(P, V.product_id == P.id)
@@ -625,11 +665,16 @@ async def inventory_assistant_chat(payload: schemas.AssistantChatRequest, reques
         batch = db.query(models.OrderUpload).filter(models.OrderUpload.id == order_id).first()
         if not batch:
             return {"status": "not_found", "reply": f"Order batch {order_id} nahi mila."}
-        lines = db.query(models.OrderLine).filter(models.OrderLine.order_upload_id == order_id, models.OrderLine.status == models.OrderLineStatus.PENDING).all()
+        lines = db.query(models.OrderLine).options(joinedload(models.OrderLine.variant)).filter(models.OrderLine.order_upload_id == order_id, models.OrderLine.status == models.OrderLineStatus.PENDING).all()
         if not lines:
             return {"status": "clarify", "reply": f"Batch {order_id} mein koi pending order line nahi hai."}
-        units = sum(line.qty_ordered for line in lines)
-        return {"status": "confirm_action", "reply": f"Batch {order_id} ({batch.filename or 'orders'}) ke {len(lines)} pending lines, total {units} pieces dispatch honge. Dispatch ke waqt har size ka stock validate hoga; shortage hui to poora batch rukega. Confirm?", "action": {"type": "order_dispatch", "order_id": order_id, "filename": batch.filename, "lines": len(lines), "units": units}}
+        pending_units = sum(max(line.qty_ordered - line.qty_fulfilled, 0) for line in lines)
+        available_by_line = _order_line_dispatchability(db, lines)
+        available_units = sum(available_by_line.values())
+        if available_units <= 0:
+            return {"status": "clarify", "reply": f"Batch {order_id} mein {pending_units} pieces pending hain, lekin abhi counted stock dispatch ke liye available nahi hai. Inventory count/update ke baad try karein."}
+        available_lines = sum(1 for quantity in available_by_line.values() if quantity > 0)
+        return {"status": "confirm_action", "reply": f"Batch {order_id} ({batch.filename or 'orders'}) mein {pending_units} pieces baaki hain; abhi {available_units} available pieces dispatch honge. Bacha hua stock aane tak pending rahega. Confirm?", "action": {"type": "order_dispatch", "order_id": order_id, "filename": batch.filename, "lines": available_lines, "units": available_units, "pending_units": pending_units}}
     if action == "whatsapp_message":
         phone = str(intent.get("recipient_phone") or "").strip().translate(str.maketrans("०१२३४५६७८९", "0123456789"))
         phone = re.sub(r"[\s().-]", "", phone)
@@ -1497,12 +1542,18 @@ def order_history(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, g
         .order_by(models.OrderUpload.uploaded_at.desc(), models.OrderUpload.id.desc())
         .offset(offset).limit(limit).all()
     )
+    page_lines = [line for upload in uploads for line in upload.lines]
+    dispatchable_by_line = _order_line_dispatchability(db, page_lines)
     result = []
     for u in uploads:
-        pending = sum(1 for line in u.lines if line.status == models.OrderLineStatus.PENDING)
-        fulfilled = sum(1 for line in u.lines if line.status == models.OrderLineStatus.FULFILLED)
+        pending_lines = [line for line in u.lines if line.status == models.OrderLineStatus.PENDING]
+        pending = len(pending_lines)
+        fulfilled = sum(1 for line in u.lines if line.qty_fulfilled > 0)
         insufficient = sum(1 for line in u.lines if line.status == models.OrderLineStatus.INSUFFICIENT_STOCK)
         not_found = sum(1 for line in u.lines if line.status == models.OrderLineStatus.SKU_NOT_FOUND)
+        pending_units = sum(max(line.qty_ordered - line.qty_fulfilled, 0) for line in pending_lines)
+        dispatched_units = sum(line.qty_fulfilled for line in u.lines)
+        dispatchable_units = sum(dispatchable_by_line.get(line.id, 0) for line in pending_lines)
         if pending:
             status = "PENDING"
         elif fulfilled:
@@ -1515,15 +1566,27 @@ def order_history(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, g
         for line in sorted(u.lines, key=lambda x: x.id):
             product_name = line.variant.product.name if line.variant and line.variant.product else None
             variant_code = line.variant.variant_code if line.variant else None
+            pending_qty = max(line.qty_ordered - line.qty_fulfilled, 0) if line.status == models.OrderLineStatus.PENDING else 0
+            dispatchable_qty = dispatchable_by_line.get(line.id, 0)
+            line_status = "PARTIALLY_DISPATCHED" if pending_qty and line.qty_fulfilled else line.status.value
             lines.append({
                 "id": line.id, "sku": line.sku, "size": line.size, "variant_code": variant_code,
                 "product_name": product_name, "qty_ordered": line.qty_ordered,
-                "qty_fulfilled": line.qty_fulfilled, "status": line.status.value,
+                "qty_fulfilled": line.qty_fulfilled, "pending_qty": pending_qty,
+                "dispatchable_qty": dispatchable_qty, "status": line_status,
             })
+        dispatch_state = "WAITING"
+        if dispatchable_units and dispatchable_units >= pending_units:
+            dispatch_state = "READY"
+        elif dispatchable_units:
+            dispatch_state = "PARTIAL"
         result.append({
             "order_upload_id": u.id, "filename": u.filename, "uploaded_at": u.uploaded_at,
             "total_rows": u.total_rows, "unique_skus": u.unique_skus,
             "pending_count": pending, "fulfilled_count": fulfilled,
+            "pending_units": pending_units, "dispatched_units": dispatched_units,
+            "dispatchable_lines": sum(1 for line in pending_lines if dispatchable_by_line.get(line.id, 0) > 0),
+            "dispatchable_units": dispatchable_units, "dispatch_state": dispatch_state,
             "insufficient_count": insufficient, "not_found_count": not_found,
             "status": status, "lines": lines,
         })
@@ -1554,7 +1617,7 @@ def delete_order_upload(order_upload_id: int, db: Session = Depends(get_db)):
     lines = db.query(models.OrderLine).filter(models.OrderLine.order_upload_id == order_upload_id).all()
     fulfilled_by_variant: dict[int, int] = defaultdict(int)
     for line in lines:
-        if line.status == models.OrderLineStatus.FULFILLED and line.variant_id and line.qty_fulfilled > 0:
+        if line.variant_id and line.qty_fulfilled > 0:
             fulfilled_by_variant[line.variant_id] += line.qty_fulfilled
 
     try:
@@ -1681,12 +1744,16 @@ def list_alert_groups(limit: int = Query(30, ge=1, le=100), offset: int = Query(
 # Dispatch pending orders
 # ------------------------------------------------------------------ #
 @app.post("/api/orders/{order_upload_id}/dispatch")
-def dispatch_order_upload(order_upload_id: int, db: Session = Depends(get_db)):
-    """Confirm a marketplace order batch is dispatched and deduct physical stock."""
+def dispatch_order_upload(
+    order_upload_id: int,
+    payload: schemas.OrderDispatchRequest | None = None,
+    db: Session = Depends(get_db),
+):
+    """Dispatch available pieces from a batch, leaving any shortage pending."""
     upload = db.query(models.OrderUpload).filter(models.OrderUpload.id == order_upload_id).with_for_update().first()
     if upload is None:
         raise HTTPException(status_code=404, detail="Order batch not found.")
-    lines = (
+    pending_lines = (
         db.query(models.OrderLine)
         .options(joinedload(models.OrderLine.variant).joinedload(models.Variant.product))
         .filter(
@@ -1698,41 +1765,49 @@ def dispatch_order_upload(order_upload_id: int, db: Session = Depends(get_db)):
         # that support row locks (PostgreSQL). The guarded stock update below
         # remains the final protection against a simultaneous recount/dispatch.
         .with_for_update(of=models.OrderLine)
+        .order_by(models.OrderLine.id.asc())
         .all()
     )
-    if not lines:
+    if not pending_lines:
         raise HTTPException(status_code=404, detail="No pending order lines found for this upload.")
 
-    # Validate the whole batch before changing anything.
-    by_variant = {}
-    for line in lines:
-        by_variant[line.variant_id] = by_variant.get(line.variant_id, 0) + line.qty_ordered
+    selected_ids = set(payload.line_ids) if payload is not None else None
+    if selected_ids is not None:
+        pending_by_id = {line.id: line for line in pending_lines}
+        invalid_ids = selected_ids.difference(pending_by_id)
+        if invalid_ids:
+            raise HTTPException(status_code=409, detail="Some selected order lines are no longer pending. Refresh the order list and try again.")
+        lines = [pending_by_id[line_id] for line_id in sorted(selected_ids)]
+    else:
+        lines = pending_lines
 
-    for variant_id, qty in by_variant.items():
-        variant = next(line.variant for line in lines if line.variant_id == variant_id)
-        if variant.last_counted_at is None:
-            raise HTTPException(
-                status_code=400,
-                detail=f"{variant.variant_code}: physical stock has never been counted. Count it before dispatch.",
-            )
-        if qty > variant.current_stock:
-            raise HTTPException(
-                status_code=409,
-                detail=f"{variant.variant_code}: {qty} ordered, but only {variant.current_stock} in stock. Restock/count the size before dispatch.",
-            )
+    dispatchable_by_line = _order_line_dispatchability(db, lines)
+    plan = []
+    for line in lines:
+        remaining = max(line.qty_ordered - line.qty_fulfilled, 0)
+        quantity = min(remaining, dispatchable_by_line.get(line.id, 0))
+        if quantity > 0:
+            plan.append((line, quantity))
+    if not plan:
+        raise HTTPException(
+            status_code=409,
+            detail="No counted stock is available for these pending order lines. Any undispatched quantity remains pending.",
+        )
 
     try:
-        for line in lines:
+        for line, quantity in plan:
             variant = line.variant
             apply = inventory_service.apply_stock_change
             apply(
-                db, variant, -line.qty_ordered,
+                db, variant, -quantity,
                 transaction_type=models.TransactionType.ORDER_DEDUCTION,
                 reference=f"order_upload:{order_upload_id}:dispatch",
                 created_by="dispatch",
             )
-            line.qty_fulfilled = line.qty_ordered
-            line.status = models.OrderLineStatus.FULFILLED
+            line.qty_fulfilled += quantity
+            if line.qty_fulfilled >= line.qty_ordered:
+                line.qty_fulfilled = line.qty_ordered
+                line.status = models.OrderLineStatus.FULFILLED
             alert_service.check_variant_alert(db, variant)
         db.commit()
     except inventory_service.InsufficientStockError as exc:
@@ -1745,11 +1820,16 @@ def dispatch_order_upload(order_upload_id: int, db: Session = Depends(get_db)):
         db.rollback()
         raise
 
+    remaining_lines = [line for line in pending_lines if line.status == models.OrderLineStatus.PENDING]
+    remaining_units = sum(max(line.qty_ordered - line.qty_fulfilled, 0) for line in remaining_lines)
+    dispatched_units = sum(quantity for _, quantity in plan)
     return {
         "order_upload_id": order_upload_id,
-        "dispatched_lines": len(lines),
-        "dispatched_units": sum(line.qty_ordered for line in lines),
-        "status": "DISPATCHED",
+        "dispatched_lines": len(plan),
+        "dispatched_units": dispatched_units,
+        "pending_lines": len(remaining_lines),
+        "pending_units": remaining_units,
+        "status": "PENDING" if remaining_units else "DISPATCHED",
     }
 
 

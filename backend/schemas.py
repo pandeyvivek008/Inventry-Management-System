@@ -119,6 +119,10 @@ class OrderUploadResult(BaseModel):
     file_note: Optional[str] = None   # e.g. "no quantity column - each row counted as 1"
 
 
+class OrderDispatchRequest(BaseModel):
+    line_ids: List[int] = Field(min_length=1)
+
+
 class AlertOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int

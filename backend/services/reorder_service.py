@@ -27,11 +27,10 @@ def generate_reorder_list(db: Session, save_batch: bool = True, part: str | None
         db.query(
             Variant,
             func.coalesce(func.sum(case(
-                (OrderLine.status == OrderLineStatus.PENDING, OrderLine.qty_ordered), else_=0
+                (OrderLine.status == OrderLineStatus.PENDING,
+                 OrderLine.qty_ordered - OrderLine.qty_fulfilled), else_=0
             )), 0).label("ordered_qty"),
-            func.coalesce(func.sum(case(
-                (OrderLine.status == OrderLineStatus.FULFILLED, OrderLine.qty_ordered), else_=0
-            )), 0).label("dispatched_qty"),
+            func.coalesce(func.sum(OrderLine.qty_fulfilled), 0).label("dispatched_qty"),
         )
         .join(Product, Variant.product_id == Product.id)
         .options(selectinload(Variant.product))
@@ -61,8 +60,8 @@ def generate_reorder_list(db: Session, save_batch: bool = True, part: str | None
     for v, ordered_qty, dispatched_qty in rows:
         ordered_qty = int(ordered_qty or 0)
         dispatched_qty = int(dispatched_qty or 0)
-        # Only pending orders reserve current stock. Dispatched orders have
-        # already reduced physical stock and must not create a second shortage.
+        # Only the unfulfilled remainder reserves stock. Dispatched quantities
+        # have already reduced physical stock and must not create a second shortage.
         if ordered_qty <= 0 and dispatched_qty <= 0:
             continue
         physical_stock = int(v.current_stock or 0)

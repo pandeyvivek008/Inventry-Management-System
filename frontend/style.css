@@ -374,6 +374,15 @@ img { max-width: 100%; display: block; }
 .batch-pending { background:var(--low-bg); color:var(--low); }
 .batch-done { background:var(--ok-bg); color:var(--ok); }
 .batch-warn { background:var(--out-bg); color:var(--out); }
+.batch-ready, .dispatch-line-ready, .dispatch-line-done { background:var(--ok-bg); color:var(--ok); }
+.batch-partial, .dispatch-line-partial { background:var(--low-bg); color:var(--low); }
+.batch-waiting, .dispatch-line-waiting { background:var(--paper); color:var(--ink-soft); }
+.dispatch-line-ready, .dispatch-line-done, .dispatch-line-partial, .dispatch-line-waiting { display:inline-flex; align-items:center; gap:5px; border-radius:999px; padding:4px 8px; font-size:11px; font-weight:700; white-space:nowrap; }
+.order-select-cell { min-width:78px; }
+.order-page-select-label { display:inline-flex; align-items:center; gap:5px; white-space:nowrap; font-size:10px; }
+.order-select-cell input[type="checkbox"] { width:16px; height:16px; accent-color:var(--ok); vertical-align:middle; }
+.order-line-status { margin-top:4px; font-size:10px; }
+.order-batch-actions .dispatch-selected:disabled { opacity:.55; cursor:not-allowed; }
 .btn-danger { background: var(--out-bg); color: var(--out); border: 1px solid #efc7c4; }
 .btn-danger:hover { border-color: var(--out); }
 

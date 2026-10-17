@@ -1430,16 +1430,41 @@ $("bulk-file-input").addEventListener("change", async () => {
 const ordersPage = { offset: 0, limit: 25 };
 const orderLinePageSize = 25;
 const orderLinePages = new Map();
+const selectedOrderLineIdsByBatch = new Map();
 let lastProcessedOrderUploadId = null;
 $("orders-prev").addEventListener("click", () => { ordersPage.offset = Math.max(0, ordersPage.offset - ordersPage.limit); loadOrderHistory(); });
 $("orders-next").addEventListener("click", () => { ordersPage.offset += ordersPage.limit; loadOrderHistory(); });
+function orderBatchSelection(batchId) {
+  const id = Number(batchId);
+  if (!selectedOrderLineIdsByBatch.has(id)) selectedOrderLineIdsByBatch.set(id, new Set());
+  return selectedOrderLineIdsByBatch.get(id);
+}
 function renderOrderBatchLines(batch) {
   const pageCount = Math.max(1, Math.ceil(batch.lines.length / orderLinePageSize));
   const linePage = Math.min(orderLinePages.get(batch.order_upload_id) || 0, pageCount - 1);
   orderLinePages.set(batch.order_upload_id, linePage);
   const start = linePage * orderLinePageSize;
-  const rows = batch.lines.slice(start, start + orderLinePageSize).map((l) => `<tr><td>${esc(l.sku)}</td><td>${esc(l.size || "—")}</td><td class="hide-sm">${esc(l.product_name || "—")}</td><td class="num">${l.qty_ordered}</td><td>${esc(l.status.replace(/_/g, " "))}</td></tr>`).join("");
-  return `<div class="table-wrap"><table class="grid"><thead><tr><th>SKU</th><th>Size</th><th class="hide-sm">Product</th><th class="num">Orders</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div>
+  const visibleLines = batch.lines.slice(start, start + orderLinePageSize);
+  const selection = orderBatchSelection(batch.order_upload_id);
+  const selectableLines = visibleLines.filter((line) => line.pending_qty > 0 && line.dispatchable_qty > 0);
+  const pageAllSelected = selectableLines.length > 0 && selectableLines.every((line) => selection.has(line.id));
+  const rows = visibleLines.map((line) => {
+    const canDispatch = line.pending_qty > 0 && line.dispatchable_qty > 0;
+    let dispatchLabel = "";
+    if (line.pending_qty <= 0) dispatchLabel = `<span class="dispatch-line-done"><i class="fa-solid fa-circle-check"></i> Dispatched</span>`;
+    else if (line.dispatchable_qty >= line.pending_qty) dispatchLabel = `<span class="dispatch-line-ready"><i class="fa-solid fa-circle-check"></i> Ready · ${line.pending_qty}</span>`;
+    else if (line.dispatchable_qty > 0) dispatchLabel = `<span class="dispatch-line-partial">${line.dispatchable_qty} ready · ${line.pending_qty} pending</span>`;
+    else dispatchLabel = `<span class="dispatch-line-waiting">Waiting for stock</span>`;
+    const lineStatus = line.status === "PARTIALLY_DISPATCHED" ? "Partially dispatched" : line.status.replace(/_/g, " ");
+    return `<tr>
+      <td class="order-select-cell"><input class="order-line-select" type="checkbox" data-line-id="${line.id}" aria-label="Select ${esc(line.sku)} size ${esc(line.size || "—")}" ${canDispatch ? "" : "disabled"} ${selection.has(line.id) ? "checked" : ""}></td>
+      <td class="sku-tag">${esc(line.sku)}</td><td><span class="size-chip">${esc(line.size || "—")}</span></td>
+      <td class="hide-sm">${esc(line.product_name || "—")}</td><td class="num">${line.qty_ordered}</td>
+      <td class="num">${line.qty_fulfilled || 0}</td><td class="num">${line.pending_qty || 0}</td>
+      <td>${dispatchLabel}<div class="hint order-line-status">${esc(lineStatus)}</div></td>
+    </tr>`;
+  }).join("");
+  return `<div class="table-wrap"><table class="grid"><thead><tr><th class="order-select-cell"><label class="order-page-select-label"><input class="order-page-select" type="checkbox" aria-label="Select all ready lines on this page" title="Select all ready lines on this page" ${selectableLines.length ? "" : "disabled"} ${pageAllSelected ? "checked" : ""}><span>All ready</span></label></th><th>SKU</th><th>Size</th><th class="hide-sm">Product</th><th class="num">Orders</th><th class="num">Dispatched</th><th class="num">Pending</th><th>Dispatch status</th></tr></thead><tbody>${rows}</tbody></table></div>
     ${pageCount > 1 ? `<div class="pager order-lines-pager"><button class="btn-secondary pager-btn order-line-prev" type="button" data-id="${batch.order_upload_id}" ${linePage === 0 ? "disabled" : ""}>← Previous</button><span>${start + 1}–${Math.min(start + orderLinePageSize, batch.lines.length)} of ${batch.lines.length}</span><button class="btn-secondary pager-btn order-line-next" type="button" data-id="${batch.order_upload_id}" ${linePage + 1 >= pageCount ? "disabled" : ""}>Next →</button></div>` : ""}`;
 }
 async function loadOrderHistory() {
@@ -1460,21 +1485,35 @@ async function loadOrderHistory() {
       box.innerHTML = `<div class="panel"><p class="hint center">No order batches processed yet.</p></div>`;
       return;
     }
-    box.innerHTML = `<div class="section-title-row"><h2>Processed Order Batches</h2><span class="hint">Saved after refresh</span></div>` + batches.map((b) => {
+    box.innerHTML = `<div class="section-title-row"><h2>Processed Order Batches</h2><span class="hint">Green tick = stock ready · partial dispatch leaves the balance pending</span></div>` + batches.map((b) => {
+      const selection = orderBatchSelection(b.order_upload_id);
+      const readyLineIds = new Set(b.lines.filter((line) => line.pending_qty > 0 && line.dispatchable_qty > 0).map((line) => line.id));
+      for (const lineId of selection) if (!readyLineIds.has(lineId)) selection.delete(lineId);
+      const selectedCount = selection.size;
+      const readiness = b.pending_count
+        ? (b.dispatch_state === "READY" ? "READY TO DISPATCH" : b.dispatch_state === "PARTIAL" ? `PARTIAL · ${b.dispatchable_units} READY` : "WAITING FOR STOCK")
+        : b.status;
+      const readinessClass = b.pending_count
+        ? (b.dispatch_state === "READY" ? "batch-ready" : b.dispatch_state === "PARTIAL" ? "batch-partial" : "batch-waiting")
+        : (b.status === "DISPATCHED" ? "batch-done" : "batch-warn");
       return `<div class="order-batch panel" data-upload-id="${b.order_upload_id}">
         <div class="order-batch-head">
           <div><strong>${esc(b.filename || "Order file")}</strong><div class="hint">${new Date(b.uploaded_at).toLocaleString()} · Batch #${b.order_upload_id}</div></div>
-          <div class="order-batch-actions"><span class="status-pill batch-${b.status === "PENDING" ? "pending" : b.status === "DISPATCHED" ? "done" : "warn"}">${esc(b.status)}</span>${b.pending_count ? `<button class="btn-primary batch-dispatch" type="button" data-id="${b.order_upload_id}"><i class="fa-solid fa-truck-fast"></i> Dispatch</button>` : ""}<button class="btn-danger batch-delete" type="button" data-id="${b.order_upload_id}" data-filename="${esc(b.filename || "Order file")}"><i class="fa-solid fa-trash-can"></i> Delete batch</button></div>
+          <div class="order-batch-actions"><span class="status-pill ${readinessClass}">${readiness === "READY TO DISPATCH" ? '<i class="fa-solid fa-circle-check"></i> ' : ""}${esc(readiness)}</span>${b.dispatchable_units ? `<button class="btn-primary batch-dispatch" type="button" data-id="${b.order_upload_id}"><i class="fa-solid fa-truck-fast"></i> Dispatch Ready (${b.dispatchable_units})</button>` : ""}${b.pending_count ? `<button class="btn-secondary dispatch-selected" type="button" data-id="${b.order_upload_id}" ${selectedCount ? "" : "disabled"}><i class="fa-regular fa-square-check"></i> Dispatch Selected (${selectedCount})</button>` : ""}<button class="btn-danger batch-delete" type="button" data-id="${b.order_upload_id}" data-filename="${esc(b.filename || "Order file")}"><i class="fa-solid fa-trash-can"></i> Delete batch</button></div>
         </div>
-        <div class="order-stats"><span>${b.total_rows} rows</span><span>${b.pending_count} pending</span><span>${b.fulfilled_count} dispatched</span><span>${b.not_found_count} not found</span></div>
+        <div class="order-stats"><span>${b.total_rows} rows</span><span>${b.pending_units} pieces pending</span><span>${b.dispatched_units} pieces dispatched</span><span>${b.dispatchable_units} pieces ready</span><span>${b.not_found_count} not found</span></div>
         <div class="order-lines-content">${renderOrderBatchLines(b)}</div>
       </div>`;
     }).join("");
     box.querySelectorAll(".batch-dispatch").forEach((btn) => btn.addEventListener("click", () => dispatchOrderBatch(Number(btn.dataset.id), true)));
+    box.querySelectorAll(".dispatch-selected").forEach((btn) => btn.addEventListener("click", () => {
+      const uploadId = Number(btn.dataset.id);
+      dispatchOrderBatch(uploadId, true, [...orderBatchSelection(uploadId)]);
+    }));
     const batchById = new Map(batches.map((batch) => [String(batch.order_upload_id), batch]));
     box.querySelectorAll(".order-batch").forEach((batchElement) => {
       const batch = batchById.get(batchElement.dataset.uploadId);
-      if (batch) bindOrderLinePager(batchElement.querySelector(".order-lines-content"), batch);
+      if (batch) bindOrderLinePager(batchElement.querySelector(".order-lines-content"), batch, batchElement);
     });
     box.querySelectorAll(".batch-delete").forEach((btn) => btn.addEventListener("click", () => deleteOrderBatch(Number(btn.dataset.id), btn.dataset.filename || "Order file")));
   } catch (e) { box.innerHTML = `<div class="panel"><p class="hint">Could not load order history.</p></div>`; }
@@ -1494,13 +1533,53 @@ async function deleteOrderBatch(uploadId, filename) {
   } catch (err) { showToast(`Could not delete batch: ${err.message || err}`, true); }
 }
 
-function bindOrderLinePager(content, batch) {
+function syncBatchOrderSelection(card, content, batch) {
+  const selection = orderBatchSelection(batch.order_upload_id);
+  const readyLineIds = new Set(batch.lines.filter((line) => line.pending_qty > 0 && line.dispatchable_qty > 0).map((line) => line.id));
+  for (const lineId of selection) if (!readyLineIds.has(lineId)) selection.delete(lineId);
+  const visible = Math.min(orderLinePages.get(batch.order_upload_id) || 0, Math.max(0, Math.ceil(batch.lines.length / orderLinePageSize) - 1));
+  const visibleLines = batch.lines.slice(visible * orderLinePageSize, (visible + 1) * orderLinePageSize);
+  const eligible = visibleLines.filter((line) => readyLineIds.has(line.id));
+  const selectedVisible = eligible.filter((line) => selection.has(line.id)).length;
+  const pageCheckbox = content.querySelector(".order-page-select");
+  if (pageCheckbox) {
+    pageCheckbox.checked = eligible.length > 0 && selectedVisible === eligible.length;
+    pageCheckbox.indeterminate = selectedVisible > 0 && selectedVisible < eligible.length;
+  }
+  content.querySelectorAll(".order-line-select").forEach((checkbox) => {
+    checkbox.checked = selection.has(Number(checkbox.dataset.lineId));
+  });
+  const dispatchSelected = card.querySelector(".dispatch-selected");
+  if (dispatchSelected) {
+    dispatchSelected.disabled = selection.size === 0;
+    dispatchSelected.innerHTML = `<i class="fa-regular fa-square-check"></i> Dispatch Selected (${selection.size})`;
+  }
+}
+
+function bindOrderLinePager(content, batch, card) {
   content.querySelectorAll(".order-line-prev, .order-line-next").forEach((btn) => btn.addEventListener("click", () => {
     const delta = btn.classList.contains("order-line-next") ? 1 : -1;
     orderLinePages.set(batch.order_upload_id, Math.max(0, (orderLinePages.get(batch.order_upload_id) || 0) + delta));
     content.innerHTML = renderOrderBatchLines(batch);
-    bindOrderLinePager(content, batch);
+    bindOrderLinePager(content, batch, card);
   }));
+  const selection = orderBatchSelection(batch.order_upload_id);
+  content.querySelector(".order-page-select")?.addEventListener("change", (event) => {
+    const linePage = orderLinePages.get(batch.order_upload_id) || 0;
+    const visibleLines = batch.lines.slice(linePage * orderLinePageSize, (linePage + 1) * orderLinePageSize);
+    visibleLines.filter((line) => line.pending_qty > 0 && line.dispatchable_qty > 0).forEach((line) => {
+      if (event.target.checked) selection.add(line.id);
+      else selection.delete(line.id);
+    });
+    syncBatchOrderSelection(card, content, batch);
+  });
+  content.querySelectorAll(".order-line-select").forEach((checkbox) => checkbox.addEventListener("change", (event) => {
+    const lineId = Number(event.target.dataset.lineId);
+    if (event.target.checked) selection.add(lineId);
+    else selection.delete(lineId);
+    syncBatchOrderSelection(card, content, batch);
+  }));
+  syncBatchOrderSelection(card, content, batch);
 }
 
 const dropzone = $("dropzone"), fileInput = $("order-file-input");
@@ -1521,7 +1600,6 @@ async function handleOrderUpload() {
     lastProcessedOrderUploadId = data.order_upload_id;
     renderUploadResult(data);
     ordersPage.offset = 0;
-    await loadOrderHistory();
     await refreshInventoryViews();
   } catch (err) { box.innerHTML = `<div class="msg error">Upload failed: ${esc(err)}</div>`; }
   finally { fileInput.value = ""; }
@@ -1545,8 +1623,8 @@ function renderUploadResult(data) {
       <div class="stat-card"><div class="n">${data.pending_count || 0}</div><div class="l">Pending Orders</div></div>
       <div class="stat-card"><div class="n">${data.not_found_count}</div><div class="l">Not found</div></div>
     </div>
-    <div class="msg note" style="margin-bottom:10px;">Physical stock was not deducted. Use Picklist / Reorder Shortage to see what must be arranged. After dispatch, confirm the batch below.</div>
-    ${(data.pending_count || 0) ? `<button class="btn-primary" type="button" id="dispatch-order-btn" data-upload-id="${data.order_upload_id}" style="margin-bottom:12px;"><i class="fa-solid fa-truck-fast"></i> Mark This Batch as Dispatched</button>` : ""}
+    <div class="msg note" style="margin-bottom:10px;">Stock is not deducted on upload. Dispatch deducts only the counted pieces currently available; the remaining quantity stays pending.</div>
+    ${(data.pending_count || 0) ? `<button class="btn-primary" type="button" id="dispatch-order-btn" data-upload-id="${data.order_upload_id}" style="margin-bottom:12px;"><i class="fa-solid fa-truck-fast"></i> Dispatch Available Stock</button>` : ""}
     ${data.new_alerts.length ? `<div class="msg error" style="margin-bottom:10px;">New low-stock alerts: ${data.new_alerts.map(esc).join(", ")}</div>` : ""}
     <div class="table-wrap"><table class="grid">
       <thead><tr><th>SKU</th><th>Size</th><th class="hide-sm">Product</th><th class="num">Ordered</th><th class="num">Physical Stock</th><th>Status</th></tr></thead>
@@ -1556,21 +1634,42 @@ function renderUploadResult(data) {
   if (btn) btn.addEventListener("click", () => dispatchOrderBatch(Number(btn.dataset.uploadId)));
 }
 
-async function dispatchOrderBatch(uploadId, fromHistory = false) {
-  if (!confirm("Dispatch this order batch and deduct the ordered quantity from physical inventory?")) return;
-  const btn = $("dispatch-order-btn");
+async function dispatchOrderBatch(uploadId, fromHistory = false, lineIds = null) {
+  const selectedIds = Array.isArray(lineIds) ? [...new Set(lineIds.map(Number))] : null;
+  const selectedOnly = selectedIds !== null;
+  const question = selectedOnly
+    ? `Dispatch the currently available stock for ${selectedIds.length} selected line(s)? Any unavailable quantity will remain pending.`
+    : "Dispatch the counted stock currently available for this batch? Any unavailable quantity will remain pending.";
+  if (!selectedIds?.length && selectedOnly) return;
+  if (!confirm(question)) return;
+  const batchCard = document.querySelector(`.order-batch[data-upload-id="${uploadId}"]`);
+  const btn = fromHistory
+    ? batchCard?.querySelector(selectedOnly ? ".dispatch-selected" : ".batch-dispatch")
+    : $("dispatch-order-btn");
   if (btn) { btn.disabled = true; btn.textContent = "Dispatching…"; }
   try {
-    const res = await fetch(`${API}/orders/${uploadId}/dispatch`, { method: "POST" });
+    const request = { method: "POST" };
+    if (selectedOnly) {
+      request.headers = { "Content-Type": "application/json" };
+      request.body = JSON.stringify({ line_ids: selectedIds });
+    }
+    const res = await fetch(`${API}/orders/${uploadId}/dispatch`, request);
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "Dispatch failed");
-    showToast(`${data.dispatched_units} units dispatched`);
-    $("upload-result").innerHTML = `<div class="msg success">Batch #${uploadId} dispatched successfully. Physical inventory has been updated.</div>`;
+    selectedOrderLineIdsByBatch.delete(uploadId);
+    const resultMessage = `${data.dispatched_units} pieces dispatched. ${data.pending_units} pieces remain pending.`;
+    showToast(resultMessage);
+    if (!fromHistory || lastProcessedOrderUploadId === uploadId) $("upload-result").innerHTML = `<div class="msg success">Batch #${uploadId}: ${esc(resultMessage)} Counted stock has been updated.</div>`;
     await refreshInventoryViews();
-    await loadOrderHistory();
   } catch (err) {
-    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-truck-fast"></i> Mark This Batch as Dispatched'; }
-    $("upload-result").insertAdjacentHTML("afterbegin", `<div class="msg error" style="margin-bottom:10px;">${esc(err.message || err)}</div>`);
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = selectedOnly
+        ? `<i class="fa-regular fa-square-check"></i> Dispatch Selected (${selectedIds.length})`
+        : fromHistory ? '<i class="fa-solid fa-truck-fast"></i> Dispatch Ready' : '<i class="fa-solid fa-truck-fast"></i> Dispatch Available Stock';
+    }
+    if (!fromHistory) $("upload-result").insertAdjacentHTML("afterbegin", `<div class="msg error" style="margin-bottom:10px;">${esc(err.message || err)}</div>`);
+    else showToast(`Dispatch failed: ${err.message || err}`, true);
   }
 }
 
@@ -1616,6 +1715,7 @@ async function refreshInventoryViews() {
   await Promise.allSettled([loadSummary(), loadInventory(), loadReorderList(), loadAlerts()]);
   if ($("view-products")?.classList.contains("is-active")) await loadLatestProducts();
   if ($("view-dashboard")?.classList.contains("is-active")) await loadMoversChart();
+  if ($("view-orders")?.classList.contains("is-active")) await loadOrderHistory();
 }
 
 // ---------------- Global conversational inventory assistant ----------------
@@ -1900,7 +2000,7 @@ function addAssistantMessage(role, content, options = {}) {
             ? `Move ${esc(action.sku)} to Trash<div>Design and all its sizes</div>`
             : action.type === "product_restore"
               ? `Restore ${esc(action.sku)}<div>Design and its trashed sizes</div>`
-              : `Dispatch batch ${Number(action.order_id)}<div>${esc(action.filename || "Orders")} · ${Number(action.lines)} lines · ${Number(action.units)} pieces</div>`;
+              : `Dispatch batch ${Number(action.order_id)}<div>${esc(action.filename || "Orders")} · ${Number(action.lines)} lines · ${Number(action.units)} ready of ${Number(action.pending_units ?? action.units)} pending pieces</div>`;
     card.innerHTML = `<strong>${actionText}</strong><button class="btn-primary assistant-confirm-stock" type="button">${action.type === "stock_update" ? "स्टॉक बदलने की पुष्टि करें" : "इस बदलाव की पुष्टि करें"}</button>`;
     bubble.appendChild(card);
     const button = card.querySelector(".assistant-confirm-stock");
@@ -1933,7 +2033,7 @@ function addAssistantMessage(role, content, options = {}) {
           success = `${action.sku} product Trash se restore ho gaya.`;
         } else if (action.type === "order_dispatch") {
           const result = await apiPost(`${API}/orders/${Number(action.order_id)}/dispatch`);
-          success = `Batch ${Number(action.order_id)} dispatch complete: ${Number(result.dispatched_units)} pieces, ${Number(result.dispatched_lines)} lines.`;
+          success = `Batch ${Number(action.order_id)} se ${Number(result.dispatched_units)} pieces dispatch hue; ${Number(result.pending_units)} pieces abhi pending hain.`;
         } else {
           throw new Error("This action is not supported.");
         }
@@ -1946,7 +2046,6 @@ function addAssistantMessage(role, content, options = {}) {
         playSuccessSound();
         showToast(success, "success", 3200);
         await refreshInventoryViews();
-        if ($("view-orders")?.classList.contains("is-active")) await loadOrderHistory();
       } catch (error) {
         button.disabled = false;
         button.textContent = "Retry after checking";

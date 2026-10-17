@@ -171,9 +171,12 @@ product's Edit screen. Blank alert/target fields use defaults of 5 and 20.
 *Process Orders* accepts an Excel **or CSV** file and matches each row on your own
 `variant_code`, seller SKU code, marketplace SKU code, or SKU + Size. Uploading an
 order creates a **PENDING/RESERVED** order line; it does **not** reduce physical stock.
-The Picklist / Reorder Shortage view sums pending orders by size and calculates
-`Required = max(Pending Orders - Physical Stock, 0)`. After the batch is actually
-dispatched, use **Mark This Batch as Dispatched**; only then is physical stock deducted.
+The Picklist / Reorder Shortage view sums each line's unfulfilled remainder by size and calculates
+`Required = max(Pending Orders - Physical Stock, 0)`. Process Orders shows FIFO-allocated
+dispatch availability with a green ready check or a partial-availability count. **Dispatch Ready**
+deducts only counted stock that is available; any remainder stays pending for the next dispatch.
+Use **All ready** to select eligible lines on the current line page, then **Dispatch Selected**
+to process that subset. Deleting a partially dispatched batch restores every already-dispatched piece.
 
 ## 6. Data structures & algorithms - the decisions that matter at ~8,000 rows
 
