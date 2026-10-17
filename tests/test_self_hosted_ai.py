@@ -55,6 +55,19 @@ async def main():
     print("ok: local Ollama uses multilingual inventory instructions and strict intent JSON schema")
 
     FakeClient.requests = []
+    FakeClient.responses = [FakeResponse(body={"message": {"content": '{"intent":"whatsapp_message","recipient_name":"Rahul","recipient_phone":"+91 98765-43210","message_text":"Kal order dispatch hoga."}'}})]
+    with patch.dict(os.environ, env, clear=True), patch.object(assistant_service.httpx, "AsyncClient", FakeClient):
+        parsed = await assistant_service.parse_inventory_request(
+            "Rahul ko WhatsApp karo +91 98765 43210: Kal order dispatch hoga.", [],
+        )
+    assert parsed["intent"] == "whatsapp_message"
+    assert parsed["recipient_name"] == "Rahul"
+    assert parsed["recipient_phone"] == "+91 98765-43210"
+    assert parsed["message_text"] == "Kal order dispatch hoga."
+    assert "whatsapp_message" in request["json"]["format"]["properties"]["intent"]["enum"]
+    print("ok: Disha parses an explicit WhatsApp recipient and exact message into a bounded draft intent")
+
+    FakeClient.requests = []
     FakeClient.responses = [FakeResponse(body={"choices": [{"message": {"content": '{"intent":"stock_check","product_query":"नीली ड्रेस","size":"M","quantity":null,"operation":"add","sku":"","product_name":"","category":"","new_sku":"","new_name":"","new_category":"","sizes":"","order_id":null,"reply":""}'}}]})]
     env = {
         "AI_PROVIDER": "compatible",

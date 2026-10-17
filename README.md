@@ -251,6 +251,12 @@ when Disha is closed or the tab goes to the background. Daily sales summaries
 count dispatched inventory units (not pending orders); the app does not currently
 store sales prices or revenue.
 
+For WhatsApp, Disha can prepare a click-to-chat draft when you provide an
+international-format phone number and the exact message. The app opens WhatsApp
+for you to review and send; it cannot read personal WhatsApp notifications or
+contacts. Automatic low-stock alert delivery still requires a business messaging
+service.
+
 Hindi examples, confirmation steps, photo controls, microphone and earbud setup,
 and troubleshooting are in [VOICE_AUTOMATION_HI.md](VOICE_AUTOMATION_HI.md).
 
@@ -283,6 +289,19 @@ pip install -r requirements.txt
 python tests/test_core_flow.py
 ```
 
+Run the Disha service, voice, provider, and visual-search checks separately:
+
+```bash
+python tests/test_assistant_flow.py
+python tests/test_assistant_audio_fallback.py
+python tests/test_assistant_gemini_tts.py
+python tests/test_self_hosted_ai.py
+python -m pytest tests/test_visual_match.py -q
+```
+
+The first four files are standalone integration scripts; run each in its own
+Python process. test_visual_match.py is the pytest module.
+
 ## 9. Natural next steps (not built, in priority order)
 
 1. **Login/auth** - currently anyone on the network can use it. Fine for a small
@@ -296,8 +315,9 @@ python tests/test_core_flow.py
 4. **Marketplace order-API integration** - replace the manual export/upload step with
    a direct pull; the service layer underneath doesn't need to change, only how order
    rows arrive.
-5. **WhatsApp/SMS alert delivery** - push low-stock alerts out instead of requiring
-   someone to open the Alerts tab.
+5. **WhatsApp/SMS alert delivery** - automatic low-stock alerts still need a
+   configured business messaging service; Disha's current WhatsApp feature opens
+   a user-reviewed draft.
 6. **Phase 2 AI activation** - see #7.
 
 ## 10. Putting it online (GitHub + Railway or Render, not Vercel)

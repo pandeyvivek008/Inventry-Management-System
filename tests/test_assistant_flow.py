@@ -5,6 +5,9 @@ import tempfile
 import uuid
 from unittest.mock import patch
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 _test_db = os.path.join(tempfile.gettempdir(), f"disha_flow_{uuid.uuid4().hex}.db")
 os.environ["DATABASE_URL"] = f"sqlite:///{_test_db.replace(os.sep, '/')}"
@@ -23,7 +26,8 @@ async def fake_parser(_message, _history):
         "intent": "conversation", "product_query": "", "size": "", "quantity": None,
         "operation": "add", "sku": "", "product_name": "", "category": "",
         "new_sku": "", "new_name": "", "new_category": "", "sizes": "",
-        "order_id": None, "reply": "Namaste! Main Disha hoon.",
+        "order_id": None, "recipient_name": "", "recipient_phone": "", "message_text": "",
+        "reply": "Namaste! Main Disha hoon.",
     }
     return {**defaults, **state}
 
@@ -162,4 +166,33 @@ proposal = ask("dispatch", intent="order_dispatch", order_id=batch_id)
 dispatched = client.post(f"/api/orders/{batch_id}/dispatch")
 check(proposal["status"] == "confirm_action" and dispatched.status_code == 200
       and dispatched.json()["dispatched_units"] == 2, "confirmed dispatch on isolated test data")
+
+proposal = ask(
+    "Rahul ko WhatsApp karo +91 98765 43210: Aaj ka order dispatch ho gaya.",
+    intent="whatsapp_message", recipient_name="Rahul", recipient_phone="+91 98765-43210",
+    message_text="Aaj ka order dispatch ho gaya.",
+)
+check(proposal["status"] == "confirm_action" and proposal["action"]["type"] == "whatsapp_compose"
+      and proposal["action"]["phone"] == "+919876543210"
+      and proposal["action"]["message_text"] == "Aaj ka order dispatch ho gaya.",
+      "WhatsApp draft uses the explicit international number and exact message")
+indian_phone = ask(
+    "Rahul ko WhatsApp karo 98765 43210: Kal milte hain.", intent="whatsapp_message",
+    recipient_name="Rahul", recipient_phone="९८७६५ ४३२१०", message_text="Kal milte hain.",
+)
+check(indian_phone["status"] == "confirm_action"
+      and indian_phone["action"]["phone"] == "+919876543210",
+      "10-digit Indian mobile numbers, including Devanagari digits, get the +91 country code")
+invalid_phone = ask(
+    "WhatsApp message bhejo", intent="whatsapp_message", recipient_phone="12345",
+    message_text="Kal milte hain.",
+)
+check(invalid_phone["status"] == "clarify" and "10-digit Indian number" in invalid_phone["reply"],
+      "WhatsApp asks for a valid Indian or international number")
+missing_text = ask(
+    "Rahul ko WhatsApp karo", intent="whatsapp_message", recipient_name="Rahul",
+    recipient_phone="+919876543210", message_text="",
+)
+check(missing_text["status"] == "clarify" and "exact text" in missing_text["reply"],
+      "WhatsApp never invents the message body")
 print("ALL DISHA FLOW CHECKS PASSED")

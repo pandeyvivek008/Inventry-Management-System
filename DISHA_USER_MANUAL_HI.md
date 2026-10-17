@@ -1,6 +1,6 @@
 # Disha ka user manual
 
-Disha Hindi, Hinglish aur English mein inventory ke sawaal samajhne aur app ke kaam guide karne ke liye hai. **Robot button** dabane par chat aur voice session khulta hai; mic page load par apne aap start nahi hota.
+Disha Hindi, Hinglish aur English mein inventory ke sawaal, app ke kaam aur rozmarra ki normal baat samajhne ke liye hai. Gemini API key set hone ke baad Disha configured model se chat aur voice use karti hai. **Robot button** dabane par chat aur voice session khulta hai; mic page load par apne aap start nahi hota.
 
 ## Chat se shuru karein
 
@@ -24,6 +24,7 @@ Disha Hindi, Hinglish aur English mein inventory ke sawaal samajhne aur app ke k
 | Aaj ka dispatch | “Aaj ki sales ka short summary do” |
 | Recent changes | “Aaj ke stock changes dikhao” |
 | App ka overview | “App ka status batao” |
+| WhatsApp draft | “+91 98765 43210 ko message bhejo: aaj parcel dispatch ho gaya” |
 | Normal conversation | Seedha apna aam sawaal poochhein; har sawaal inventory ka hona zaroori nahi. |
 
 ## Stock update ko confirm karein
@@ -37,6 +38,10 @@ Stock update se pehle Disha current count aur proposed count dikhata hai. Dhyan 
 - Agar Disha current aur proposed count dikhaye, galat design, colour, size ya number ho to **confirm na karein**. Sahi details dobara bhejein.
 
 Product banana/edit karna, Trash mein bhejna/restore karna, aur order batch dispatch karna bhi action card ke baad hi hota hai. Dispatch se pehle batch number aur units dekh lein. Disha ke paas arbitrary database, file system, ya provider account ka access nahi hai.
+
+## WhatsApp message draft
+
+Recipient ka phone number country code ke saath (+91 98765 43210) aur bhejne wala exact message bolen. Disha draft dikhayegi. **WhatsApp kholen** par click karke recipient aur text jaanchein; message bhejne ke liye WhatsApp mein Send aapko khud dabana hai. App personal WhatsApp notifications ya phone contacts nahi padh sakti.
 
 ## Voice aur earbuds
 

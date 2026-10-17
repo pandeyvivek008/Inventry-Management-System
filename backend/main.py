@@ -630,6 +630,25 @@ async def inventory_assistant_chat(payload: schemas.AssistantChatRequest, reques
             return {"status": "clarify", "reply": f"Batch {order_id} mein koi pending order line nahi hai."}
         units = sum(line.qty_ordered for line in lines)
         return {"status": "confirm_action", "reply": f"Batch {order_id} ({batch.filename or 'orders'}) ke {len(lines)} pending lines, total {units} pieces dispatch honge. Dispatch ke waqt har size ka stock validate hoga; shortage hui to poora batch rukega. Confirm?", "action": {"type": "order_dispatch", "order_id": order_id, "filename": batch.filename, "lines": len(lines), "units": units}}
+    if action == "whatsapp_message":
+        phone = str(intent.get("recipient_phone") or "").strip().translate(str.maketrans("०१२३४५६७८९", "0123456789"))
+        phone = re.sub(r"[\s().-]", "", phone)
+        # A plain 10-digit number is treated as an Indian mobile number.
+        if re.fullmatch(r"[0-9]{10}", phone):
+            phone = "+91" + phone
+        if not re.fullmatch(r"\+[1-9][0-9]{7,14}", phone):
+            return {"status": "clarify", "reply": "WhatsApp draft ke liye 10-digit Indian number ya country code ke saath number batayein, jaise 98765 43210 ya +91 98765 43210. Main aapke contacts ya WhatsApp notifications nahi padh sakti."}
+        message_text = str(intent.get("message_text") or "").strip()
+        if not message_text:
+            return {"status": "clarify", "reply": "Kya message bhejna hai? WhatsApp par bhejne wala exact text batayein."}
+        if len(message_text) > 1000:
+            return {"status": "clarify", "reply": "WhatsApp message 1000 characters se lamba hai. Chhota message batayein."}
+        recipient_name = str(intent.get("recipient_name") or "").strip()[:80]
+        return {
+            "status": "confirm_action",
+            "reply": "WhatsApp draft taiyaar hai. Neeche recipient aur message review karein; bhejne ke liye WhatsApp mein Send dabana hoga.",
+            "action": {"type": "whatsapp_compose", "recipient_name": recipient_name, "phone": phone, "message_text": message_text},
+        }
     if action not in {"stock_add", "stock_set", "stock_check"}:
         reply = intent.get("reply") or "Main Disha hoon. Aap mujhse normal baat kar sakte hain, ya inventory ke baare mein pooch sakte hain."
         return {"status": "reply", "reply": reply}

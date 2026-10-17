@@ -178,7 +178,7 @@ function speakWithBrowserVoice(speechId, message) {
   const utterance = new SpeechSynthesisUtterance(speechText);
   const hasHindi = /[\u0900-\u097F]/.test(speechText);
   utterance.lang = hasHindi ? "hi-IN" : "en-IN";
-  utterance.rate = 0.94;
+  utterance.rate = 0.88;
   utterance.pitch = 1.1;
   const available = window.speechSynthesis.getVoices();
   const matching = available.filter((voice) => hasHindi ? /^hi(-|_)?in/i.test(voice.lang) : /^en(-|_)?in/i.test(voice.lang));
@@ -1863,6 +1863,33 @@ function addAssistantMessage(role, content, options = {}) {
     const action = options.action;
     const card = document.createElement("div");
     card.className = "assistant-action-card";
+    if (action.type === "whatsapp_compose") {
+      const phone = String(action.phone || "").replace(/\D/g, "");
+      const message = String(action.message_text || "").trim();
+      const title = document.createElement("strong");
+      title.textContent = "WhatsApp draft · " + (action.recipient_name ? String(action.recipient_name) + " · " : "") + "+" + phone;
+      const preview = document.createElement("div");
+      preview.className = "assistant-whatsapp-preview";
+      preview.textContent = message;
+      const note = document.createElement("small");
+      note.className = "assistant-whatsapp-note";
+      note.textContent = "WhatsApp mein message review karke Send aap khud dabayein.";
+      card.append(title, preview, note);
+      if (/^[1-9]\d{7,14}$/.test(phone) && message) {
+        const link = document.createElement("a");
+        link.className = "btn-primary assistant-whatsapp-open";
+        link.href = "https://wa.me/" + phone + "?text=" + encodeURIComponent(message);
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = "WhatsApp kholen · bhejne se pehle jaanchein";
+        card.appendChild(link);
+      } else {
+        note.textContent = "Draft details dobara check karein; valid international number aur message chahiye.";
+      }
+      bubble.appendChild(card);
+      messages.scrollTop = messages.scrollHeight;
+      return bubble;
+    }
     const actionText = action.type === "stock_update"
       ? `${esc(action.name)} · ${esc(action.sku)}<div>Size ${esc(action.size)}: ${Number(action.current_stock)} → <b>${Number(action.proposed_stock)}</b> pieces</div>`
       : action.type === "product_create"
@@ -1985,7 +2012,7 @@ function restoreAssistantMessages() {
 function assistantGreeting() {
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "सुप्रभात" : hour < 17 ? "नमस्कार" : "शुभ संध्या";
-  return `${greeting}! मैं दिशा, आपकी इन्वेंटरी सहायक हूँ। प्रोडक्ट, रंग, साइज़ या स्टॉक के बारे में बताइए। मैं पहले मौजूदा स्टॉक जाँचूँगी और बदलाव करने से पहले आपसे पुष्टि करूँगी। आज मैं आपकी क्या मदद करूँ?`;
+  return `${greeting}! मैं दिशा हूँ—इन्वेंटरी के काम और रोज़मर्रा की बातचीत, दोनों में मदद कर सकती हूँ। हिंदी, English या Hinglish में पूछिए; ऐप में बदलाव से पहले पुष्टि लूँगी।`;
 }
 
 function openAssistant({ speakGreeting = true, focusInput = true, greetingText = null } = {}) {
@@ -2005,7 +2032,7 @@ function openAssistant({ speakGreeting = true, focusInput = true, greetingText =
 }
 
 function dishaAutomationHelp() {
-  return "आप कह सकती हैं: ‘डैशबोर्ड खोलो’, ‘प्रोडक्ट खोलो’, ‘स्कैनर खोलो’, ‘अलर्ट दिखाओ’, ‘रीऑर्डर सूची खोलो’, ‘ऑर्डर खोलो’, ‘बल्क स्टॉक खोलो’, ‘हिस्ट्री दिखाओ’, ‘आज की बिक्री बताओ’, या ‘ऐप का स्टेटस बताओ’। स्टॉक या ऑर्डर बदलने से पहले मैं हमेशा पुष्टि माँगूँगी।";
+  return "आप कह सकती हैं: ‘डैशबोर्ड खोलो’, ‘प्रोडक्ट खोलो’, ‘स्कैनर खोलो’, ‘अलर्ट दिखाओ’, ‘रीऑर्डर सूची खोलो’, ‘ऑर्डर खोलो’, ‘बल्क स्टॉक खोलो’, ‘हिस्ट्री दिखाओ’, ‘आज की बिक्री बताओ’, या ‘ऐप का स्टेटस बताओ’। रोज़मर्रा के सवाल भी पूछें। WhatsApp draft के लिए country code वाला नंबर और exact message दें; मैं draft खोलूँगी, भेजने से पहले आप review करके Send दबाएँ।";
 }
 
 async function runDishaLocalAutomation(message) {

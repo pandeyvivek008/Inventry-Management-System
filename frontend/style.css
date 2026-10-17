@@ -706,6 +706,9 @@ img { max-width: 100%; display: block; }
 .assistant-action-card { width:100%; margin-top:7px; padding:11px; border:1px solid #cde8da; border-radius:12px; background:#f0fbf5; }
 .assistant-action-card strong { display:block; margin-bottom:5px; }
 .assistant-action-card button { width:100%; margin-top:8px; }
+.assistant-whatsapp-preview { margin-top:7px; padding:9px; border:1px solid #dcebe4; border-radius:9px; background:#fff; color:#243a32; font-size:12px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; }
+.assistant-whatsapp-note { display:block; margin-top:6px; color:#61756d; font-size:10px; }
+.assistant-action-card .assistant-whatsapp-open { display:block; width:100%; margin-top:9px; text-align:center; text-decoration:none; }
 .assistant-choice-list { display:grid; gap:6px; width:100%; margin-top:7px; }
 .assistant-choice { padding:8px 10px; border:1px solid #dfe8e5; border-radius:10px; background:#fff; text-align:left; color:var(--ink); cursor:pointer; }
 .assistant-choice strong,.assistant-choice small { display:block; }

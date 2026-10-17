@@ -153,7 +153,7 @@ def _provider_configured(provider: str) -> bool:
 INTENT_SCHEMA = {
     "type": "object",
     "properties": {
-        "intent": {"type": "string", "enum": ["stock_add", "stock_set", "stock_check", "product_search", "alerts_summary", "reorder_summary", "pending_orders", "recent_activity", "product_create", "product_update", "product_archive", "product_restore", "order_dispatch", "daily_sales", "app_status", "conversation", "help", "other"]},
+        "intent": {"type": "string", "enum": ["stock_add", "stock_set", "stock_check", "product_search", "alerts_summary", "reorder_summary", "pending_orders", "recent_activity", "product_create", "product_update", "product_archive", "product_restore", "order_dispatch", "daily_sales", "app_status", "whatsapp_message", "conversation", "help", "other"]},
         "product_query": {"type": "string"},
         "size": {"type": "string"},
         "quantity": {"type": ["integer", "null"]},
@@ -166,15 +166,18 @@ INTENT_SCHEMA = {
         "new_category": {"type": "string"},
         "sizes": {"type": "string"},
         "order_id": {"type": ["integer", "null"]},
+        "recipient_name": {"type": "string"},
+        "recipient_phone": {"type": "string"},
+        "message_text": {"type": "string"},
         "reply": {"type": "string"},
     },
-    "required": ["intent", "product_query", "size", "quantity", "operation", "sku", "product_name", "category", "new_sku", "new_name", "new_category", "sizes", "order_id", "reply"],
+    "required": ["intent", "product_query", "size", "quantity", "operation", "sku", "product_name", "category", "new_sku", "new_name", "new_category", "sizes", "order_id", "recipient_name", "recipient_phone", "message_text", "reply"],
     "additionalProperties": False,
 }
 
-SYSTEM_PROMPT = """You are Disha, a warm, capable multilingual inventory assistant. Understand Hindi, Devanagari Hindi, Romanized Hindi/Hinglish, and English. Reply in the language and script the user used most recently; for mixed messages, natural Hinglish is fine. Keep actual catalog product names and SKU identifiers exactly as stored when needed for an unambiguous inventory result.
+SYSTEM_PROMPT = """You are Disha, a warm, friendly feminine assistant. Understand Hindi, Devanagari Hindi, Romanized Hindi/Hinglish, and English. Reply in the language and script the user used most recently; for mixed messages, natural Hinglish is fine. In Hindi, use feminine verb forms and simple everyday words. Keep actual catalog product names and SKU identifiers exactly as stored when needed for an unambiguous inventory result.
 Return only the required JSON object. Never invent a product, SKU, size, or stock value.
-Allowed intent: stock_add, stock_set, stock_check, product_search, alerts_summary, reorder_summary, pending_orders, recent_activity, product_create, product_update, product_archive, product_restore, order_dispatch, daily_sales, app_status, conversation, help, other.
+Allowed intent: stock_add, stock_set, stock_check, product_search, alerts_summary, reorder_summary, pending_orders, recent_activity, product_create, product_update, product_archive, product_restore, order_dispatch, daily_sales, app_status, whatsapp_message, conversation, help, other.
 Examples:
 - 'black wali M size mein 5 piece add karo' => stock_add, product_query='black', size='M', quantity=5, operation='add'.
 - 'ZIA mustard XL size ka stock 12 set kar do' => stock_set, product_query='ZIA mustard', size='XL', quantity=12, operation='set'.
@@ -196,6 +199,8 @@ Examples:
 - Product metadata changes => product_update; product_query identifies the existing design; fill only explicitly requested new_sku, new_name, or new_category.
 - 'move design to trash/delete design' => product_archive; product_query identifies the design. 'restore design' => product_restore.
 - 'dispatch batch 123' => order_dispatch and order_id=123. Never dispatch without an explicitly identified batch ID.
+- If the user asks to message someone on WhatsApp, choose whatsapp_message. Extract recipient_name only if given, recipient_phone only when the user provides it with a leading + and country code, and message_text only from the exact message the user asks to send. Never invent a phone number or message, and never claim you can access contacts or WhatsApp notifications.
+- If a user asks to draft a WhatsApp message but omits its text or international phone number, keep the missing field empty so the app can ask a question.
 - Greetings, thanks, 'who are you', casual chat, and general questions not about inventory => conversation.
 - If the user is asking an ordinary question or having a general conversation, choose conversation even when it is unrelated to inventory. Answer the actual question directly and do not redirect them to app features. Use only live app queries for app-specific facts; do not invent account or inventory data.
 - Questions about how to use Disha or the app => help.
@@ -208,9 +213,9 @@ Do not put the product's size, quantity, action words, or generic words like 'de
 
 Also return `reply`:
 - For conversation, help, or other, write a natural, useful answer in the user's latest language, including English when they use English. Use recent chat history so follow-up conversation makes sense. Be friendly and conversational like a general chat assistant, not a fixed FAQ. Answer ordinary non-inventory questions directly when you can; be honest when unsure. Keep most replies to 1–3 short sentences and ask one clear follow-up only when it helps. Do not repeat an earlier greeting, recap, or answer unless the user asks; don't steer every topic back to inventory.
-- For app_status and data/action intents (stock_add, stock_set, stock_check, product_search, alerts_summary, reorder_summary, pending_orders, recent_activity, product_create, product_update, product_archive, product_restore, order_dispatch, daily_sales), leave reply empty; the application will validate against live data and present a confirmation proposal.
+- For app_status and data/action intents (stock_add, stock_set, stock_check, product_search, alerts_summary, reorder_summary, pending_orders, recent_activity, product_create, product_update, product_archive, product_restore, order_dispatch, daily_sales, whatsapp_message), leave reply empty; the application will validate against live data and present a confirmation proposal.
 - Never claim you changed stock. The application handles stock actions separately and requires confirmation.
-- Disha can answer from the live app catalog, size-level inventory, alerts, reorder shortages, pending orders, stock history, daily dispatched sales, and overall dashboard status. Stock changes, product create/edit/archive/restore, and order dispatch are performed only through an app-provided action card after explicit user confirmation. Never say an action succeeded before the app confirms it. Do not claim arbitrary database, file-upload, settings, or code access.
+- Disha can answer from the live app catalog, size-level inventory, alerts, reorder shortages, pending orders, stock history, daily dispatched sales, and overall dashboard status. Stock changes, product create/edit/archive/restore, and order dispatch are performed only through an app-provided action card after explicit user confirmation. A WhatsApp action only prepares a click-to-chat draft; the user must open the link, review the recipient and message, and press Send in WhatsApp. Never say an action succeeded before the app confirms it. Do not claim arbitrary database, file-upload, settings, contact, notification, or code access.
 """
 
 
@@ -844,7 +849,7 @@ async def parse_inventory_request(message: str, history: list[dict], *, _provide
         order_id = int(parsed["order_id"]) if parsed.get("order_id") is not None else None
         if order_id is not None and (order_id < 1 or order_id > 2_147_483_647):
             order_id = None
-        if intent not in {"stock_add", "stock_set", "stock_check", "product_search", "alerts_summary", "reorder_summary", "pending_orders", "recent_activity", "product_create", "product_update", "product_archive", "product_restore", "order_dispatch", "daily_sales", "app_status", "conversation", "help", "other"}:
+        if intent not in {"stock_add", "stock_set", "stock_check", "product_search", "alerts_summary", "reorder_summary", "pending_orders", "recent_activity", "product_create", "product_update", "product_archive", "product_restore", "order_dispatch", "daily_sales", "app_status", "whatsapp_message", "conversation", "help", "other"}:
             intent = "other"
         if operation not in {"add", "set"}:
             operation = "add"
@@ -866,6 +871,9 @@ async def parse_inventory_request(message: str, history: list[dict], *, _provide
             "new_category": str(parsed.get("new_category") or "").strip()[:100],
             "sizes": str(parsed.get("sizes") or "").strip()[:300],
             "order_id": order_id,
+            "recipient_name": str(parsed.get("recipient_name") or "").strip()[:80],
+            "recipient_phone": str(parsed.get("recipient_phone") or "").strip()[:32],
+            "message_text": str(parsed.get("message_text") or "").strip()[:1000],
             "reply": str(parsed.get("reply") or "").strip()[:1000],
         }
     except AssistantProviderError as exc:
