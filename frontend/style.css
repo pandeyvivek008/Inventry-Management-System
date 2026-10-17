@@ -330,8 +330,14 @@ img { max-width: 100%; display: block; }
    Product detail
    ===================================================================== */
 .detail-head { display: flex; gap: 18px; align-items: flex-start; margin: 14px 0 20px; flex-wrap: wrap; }
-.detail-photo-box { width: 180px; height: 220px; border-radius: 14px; background: var(--paper); border: 1.5px dashed var(--line); display: flex; align-items: center; justify-content: center; cursor: pointer; overflow: hidden; color: var(--ink-faint); font-size: 12px; text-align: center; flex-shrink: 0; }
+.detail-photo-gallery { display:flex; flex-direction:column; gap:7px; width:180px; flex:0 0 180px; }
+.detail-photo-box { width: 100%; height: 220px; border-radius: 14px; background: var(--paper); border: 1.5px dashed var(--line); display: flex; align-items: center; justify-content: center; cursor: pointer; overflow: hidden; color: var(--ink-faint); font-size: 12px; text-align: center; flex-shrink: 0; }
 .detail-photo-box img { width: 100%; height: 100%; object-fit: contain; background: #fafafa; }
+.detail-photo-thumbnails { display:flex; gap:6px; overflow-x:auto; padding:1px 0 4px; }
+.detail-photo-thumb { display:grid; place-items:center; flex:0 0 42px; width:42px; height:50px; padding:2px; overflow:hidden; border:1px solid var(--line); border-radius:7px; background:var(--paper); cursor:pointer; }
+.detail-photo-thumb:hover,.detail-photo-thumb.is-active { border-color:var(--indigo); box-shadow:0 0 0 1px var(--indigo); }
+.detail-photo-thumb img { width:100%; height:100%; object-fit:contain; background:#fff; }
+.detail-photo-thumb.is-unavailable { color:var(--ink-faint); font-size:8px; cursor:not-allowed; }
 .detail-info { flex: 1; min-width: 220px; }
 .detail-info .input { margin-bottom: 8px; }
 .detail-info-row { display: flex; gap: 8px; }
@@ -433,6 +439,7 @@ img { max-width: 100%; display: block; }
   .alert-quick input { flex: 1; width: auto; }
   .filter-bar .input { width: 100%; }
   .detail-head { flex-direction: column; align-items: stretch; text-align: left; }
+  .detail-photo-gallery { width:100%; max-width:260px; flex:0 0 auto; margin:0 auto; }
   .detail-photo-box { width: 100%; max-width: 260px; height: 300px; margin: 0 auto; }
   .detail-info-row { flex-direction: column; }
   .pcard-top { align-items: stretch; }
@@ -525,6 +532,7 @@ img { max-width: 100%; display: block; }
   .tcard-photo-wrap { width:96px; height:135px; }
   .tcard-actions { flex-direction:column; }
   .tcard-actions button { width:100%; }
+  .detail-photo-gallery { max-width:320px; }
   .detail-photo-box { width:100%; max-width:320px; height:360px; }
   .scan-frame, .scan-frame video { min-height:220px; }
   .modal-card { max-height:92dvh; padding:15px; }
@@ -987,6 +995,14 @@ img { max-width: 100%; display: block; }
 .add-product-card #add-photo-placeholder i { font-size:29px; color:var(--indigo); }
 .add-product-card #add-photo-placeholder strong { color:var(--ink); font-size:13px; }
 .add-product-card #add-photo-placeholder small { color:var(--ink-soft); font-size:11px; }
+.add-photo-thumbnails { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:6px; width:100%; max-width:260px; }
+.add-photo-thumbnail { position:relative; min-width:0; padding:4px 4px 5px; border:1px solid var(--line); border-radius:8px; background:var(--paper); }
+.add-photo-thumbnail img { display:block; width:100%; height:48px; object-fit:contain; border-radius:4px; background:#fff; }
+.add-photo-thumbnail > span:not(.add-photo-thumbnail-fallback) { display:block; overflow:hidden; margin-top:3px; color:var(--ink-soft); font-size:8px; line-height:1.2; text-overflow:ellipsis; white-space:nowrap; }
+.add-photo-thumbnail-fallback { display:grid; place-items:center; height:48px; padding:2px; color:var(--ink-faint); text-align:center; font-size:8px; }
+.add-photo-remove { position:absolute; top:2px; right:2px; display:grid; place-items:center; width:19px; height:19px; padding:0; border:1px solid rgba(20,38,60,.12); border-radius:50%; color:#fff; background:rgba(28,42,60,.82); cursor:pointer; }
+.add-photo-remove:hover { background:var(--out); }
+.detail-photo-failed { display:grid; place-items:center; width:100%; height:100%; padding:12px; color:var(--ink-soft); text-align:center; font-size:12px; }
 .photo-pick-note { display:flex; flex-direction:column; gap:3px; text-align:center; color:var(--ink-soft); font-size:10px; line-height:1.4; }
 .photo-pick-note strong { color:var(--indigo); font-size:11px; }
 .product-fields { grid-template-columns:repeat(2,minmax(0,1fr)); align-content:start; gap:12px; }

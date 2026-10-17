@@ -4,6 +4,42 @@ const PAGE_SIZE = 100;
 
 const $ = (id) => document.getElementById(id);
 
+// A saved image can become unavailable if its file was removed or the hosting
+// service lost its local image directory. Keep the product visible and show a
+// clear fallback instead of leaving an empty/broken image area.
+document.addEventListener("error", (event) => {
+  const image = event.target;
+  if (!(image instanceof HTMLImageElement)) return;
+  if (image.classList.contains("pcard-photo")) {
+    const placeholder = document.createElement("div");
+    placeholder.className = "pcard-photo-ph image-unavailable";
+    placeholder.innerHTML = '<i class="fa-solid fa-image" aria-hidden="true"></i><span>Photo unavailable</span>';
+    image.replaceWith(placeholder);
+  } else if (image.matches(".detail-photo-box img")) {
+    const placeholder = document.createElement("span");
+    placeholder.className = "detail-photo-failed";
+    placeholder.textContent = "Photo unavailable · click to replace";
+    image.replaceWith(placeholder);
+  } else if (image.classList.contains("detail-photo-thumb-image")) {
+    const button = image.closest("button");
+    if (button) {
+      button.disabled = true;
+      button.classList.add("is-unavailable");
+      image.remove();
+      button.append("Unavailable");
+    }
+  } else if (image.classList.contains("thumb")) {
+    const placeholder = document.createElement("div");
+    placeholder.className = "thumb-placeholder";
+    image.replaceWith(placeholder);
+  } else if (image.classList.contains("trash-photo")) {
+    const placeholder = document.createElement("div");
+    placeholder.className = "trash-photo placeholder";
+    placeholder.innerHTML = '<i class="fa-solid fa-image" aria-hidden="true"></i>';
+    image.replaceWith(placeholder);
+  }
+}, true);
+
 // A small, non-blocking sweep tells staff when any app API request is taking
 // longer than a quick response. Keep it local to /api so static assets do not
 // flash the indicator while rendering a page.
@@ -480,13 +516,17 @@ function renderDetail(product, container, opts = {}) {
       </div>
       <button class="seat-del" type="button"><i class="fa-solid fa-trash-can"></i> Delete size</button>
     </div>`).join("");
+  const productPhotos = [...new Set([...(product.images || []), product.image_path].filter(Boolean))];
 
   container.innerHTML = `
     <div class="detail-head">
-      <label class="detail-photo-box" id="detail-photo-box">
-        ${product.image_path ? `<img src="${esc(product.image_path)}?v=${Date.now()}" alt="${esc(product.name)}">` : `<i class="fa-solid fa-image"></i><br><small>Add photo</small>`}
-        <input type="file" accept="image/*" id="detail-photo-input" hidden>
-      </label>
+      <div class="detail-photo-gallery">
+        <label class="detail-photo-box" id="detail-photo-box" role="button" tabindex="0" aria-label="Change product photo">
+          ${product.image_path ? `<img src="${esc(product.image_path)}?v=${Date.now()}" alt="${esc(product.name)}">` : `<i class="fa-solid fa-image"></i><br><small>Add photo</small>`}
+          <input type="file" accept="image/*" id="detail-photo-input" hidden>
+        </label>
+        ${productPhotos.length > 1 ? `<div class="detail-photo-thumbnails" aria-label="All product photos">${productPhotos.map((path, index) => `<button type="button" class="detail-photo-thumb${path === product.image_path ? " is-active" : ""}" data-photo-path="${esc(path)}" aria-label="Show photo ${index + 1}"><img class="detail-photo-thumb-image" src="${esc(path)}?v=${Date.now()}" alt="" loading="lazy"></button>`).join("")}</div>` : ""}
+      </div>
       <div class="detail-info">
         <input class="input" id="detail-name" value="${esc(product.name)}" placeholder="Product name">
         <div class="detail-info-row">
@@ -555,7 +595,23 @@ function renderDetail(product, container, opts = {}) {
 
   const photoBox = container.querySelector("#detail-photo-box");
   const photoInput = container.querySelector("#detail-photo-input");
-  photoBox.addEventListener("click", (e) => { if (e.target.tagName !== "INPUT") photoInput.click(); });
+  photoBox.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    photoInput.click();
+  });
+  container.querySelectorAll(".detail-photo-thumb").forEach((button) => button.addEventListener("click", () => {
+    const path = button.dataset.photoPath;
+    let image = photoBox.querySelector("img");
+    if (!image) {
+      photoBox.querySelector(".detail-photo-failed")?.remove();
+      image = document.createElement("img");
+      photoBox.insertBefore(image, photoInput);
+    }
+    image.alt = `${product.name} product photo`;
+    image.src = `${path}?v=${Date.now()}`;
+    container.querySelectorAll(".detail-photo-thumb").forEach((thumbnail) => thumbnail.classList.toggle("is-active", thumbnail === button));
+  }));
   photoInput.addEventListener("change", async () => {
     const file = photoInput.files[0];
     if (!file) return;
@@ -564,9 +620,18 @@ function renderDetail(product, container, opts = {}) {
       const res = await fetch(`${API}/products/${encodeURIComponent(product.sku)}/image`, { method: "POST", body: fd });
       if (!res.ok) throw new Error((await res.json()).detail || res.status);
       const data = await res.json();
-      photoBox.innerHTML = `<img src="${esc(data.image_path)}"><input type="file" accept="image/*" id="detail-photo-input" hidden>`;
+      let image = photoBox.querySelector("img");
+      photoBox.querySelector(".detail-photo-failed")?.remove();
+      if (!image) {
+        image = document.createElement("img");
+        photoBox.insertBefore(image, photoInput);
+      }
+      image.src = `${data.image_path}?v=${Date.now()}`;
+      image.alt = `${product.name} product photo`;
+      product.image_path = data.image_path;
+      photoInput.value = "";
       showToast("Photo updated");
-    } catch (err) { showToast("Upload failed: " + err.message, true); }
+    } catch (err) { photoInput.value = ""; showToast("Upload failed: " + err.message, true); }
   });
 
   container.querySelector("#detail-save").addEventListener("click", async () => {
@@ -657,7 +722,7 @@ $("add-size-form")?.addEventListener("submit", async (event) => {
 // ---------------- Add Product modal ----------------
 let addPhotoFiles = [];
 let addPhotoSlots = { front: null, back: null, closeup: null, extra: [] };
-let addPhotoObjectUrls = [];
+let addPhotoObjectUrls = new Map();
 function selectAddMode(mode) {
   const bulk = mode === "bulk";
   $("bulk-product-panel").hidden = !bulk;
@@ -687,14 +752,26 @@ $("open-add-product").addEventListener("click", () => {
 $("close-add-product").addEventListener("click", () => { $("add-product-modal").hidden = true; });
 $("add-product-modal").addEventListener("click", (e) => { if (e.target.id === "add-product-modal") $("add-product-modal").hidden = true; });
 
-$("add-photo-box").addEventListener("click", () => $("add-photo-input").click());
+$("add-photo-box").addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  $("add-photo-input").click();
+});
 function selectedProductPhotos() {
-  return [addPhotoSlots.front, addPhotoSlots.back, addPhotoSlots.closeup, ...addPhotoSlots.extra].filter(Boolean);
+  return [...new Set([addPhotoSlots.front, addPhotoSlots.back, addPhotoSlots.closeup, ...addPhotoSlots.extra].filter(Boolean))];
 }
 function makePhotoPreviewUrl(file) {
-  const url = URL.createObjectURL(file);
-  addPhotoObjectUrls.push(url);
+  if (!addPhotoObjectUrls.has(file)) addPhotoObjectUrls.set(file, URL.createObjectURL(file));
+  const url = addPhotoObjectUrls.get(file);
   return url;
+}
+function releaseUnusedPhotoPreviewUrls() {
+  const selected = new Set(addPhotoFiles);
+  for (const [file, url] of addPhotoObjectUrls) {
+    if (selected.has(file)) continue;
+    URL.revokeObjectURL(url);
+    addPhotoObjectUrls.delete(file);
+  }
 }
 function updatePhotoAngle(role, file) {
   const key = role === "closeup" ? "closeup" : role;
@@ -718,24 +795,75 @@ function updatePhotoAngle(role, file) {
 }
 function refreshProductPhotoSelection() {
   addPhotoFiles = selectedProductPhotos();
+  releaseUnusedPhotoPreviewUrls();
   $("photo-selection-count").textContent = `${addPhotoFiles.length} of 8 photos`;
   const mainPhoto = addPhotoSlots.front || addPhotoFiles[0] || null;
   $("add-photo-preview").hidden = !mainPhoto;
   $("add-photo-placeholder").hidden = Boolean(mainPhoto);
-  if (mainPhoto) $("add-photo-preview").src = makePhotoPreviewUrl(mainPhoto);
-  else $("add-photo-preview").removeAttribute("src");
+  if (mainPhoto) {
+    const preview = $("add-photo-preview");
+    preview.onerror = () => {
+      preview.hidden = true;
+      $("add-photo-placeholder").hidden = false;
+      $("add-photo-placeholder").querySelector("strong").textContent = "Preview unavailable";
+    };
+    preview.src = makePhotoPreviewUrl(mainPhoto);
+  } else {
+    $("add-photo-preview").removeAttribute("src");
+    $("add-photo-placeholder").querySelector("strong").textContent = "Select product photos";
+  }
   updatePhotoAngle("back", addPhotoSlots.back);
   updatePhotoAngle("closeup", addPhotoSlots.closeup);
-  $("add-extra-photo-label").textContent = addPhotoSlots.extra.length ? `${addPhotoSlots.extra.length} selected` : "Add up to 5 more";
+  const thumbnailStrip = $("add-photo-thumbnails");
+  thumbnailStrip.replaceChildren();
+  for (const [index, file] of addPhotoFiles.entries()) {
+    const role = file === addPhotoSlots.front ? "Main" : file === addPhotoSlots.back ? "Back" : file === addPhotoSlots.closeup ? "Close-up" : "Other";
+    const card = document.createElement("div");
+    card.className = "add-photo-thumbnail";
+    const image = document.createElement("img");
+    image.src = makePhotoPreviewUrl(file);
+    image.alt = `${role} photo preview ${index + 1}`;
+    image.onerror = () => { image.replaceWith(Object.assign(document.createElement("span"), { className: "add-photo-thumbnail-fallback", textContent: "Preview unavailable" })); };
+    const caption = document.createElement("span");
+    caption.textContent = `${role} · ${file.name}`;
+    caption.title = file.name;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "add-photo-remove";
+    remove.setAttribute("aria-label", `Remove ${file.name}`);
+    remove.innerHTML = '<i class="fa-solid fa-xmark" aria-hidden="true"></i>';
+    remove.addEventListener("click", () => removeProductPhoto(file));
+    card.append(image, caption, remove);
+    thumbnailStrip.appendChild(card);
+  }
+  $("add-extra-photo-label").textContent = addPhotoSlots.extra.length ? `${addPhotoSlots.extra.length} selected` : "Add more views";
+}
+function removeProductPhoto(file) {
+  for (const role of ["front", "back", "closeup"]) {
+    if (addPhotoSlots[role] === file) addPhotoSlots[role] = null;
+  }
+  addPhotoSlots.extra = addPhotoSlots.extra.filter((photo) => photo !== file);
+  refreshProductPhotoSelection();
 }
 function handleProductPhotoInput(event, role) {
   const files = Array.from(event.target.files || []);
   if (!files.length) return;
-  const selectedFixed = [addPhotoSlots.front, addPhotoSlots.back, addPhotoSlots.closeup].filter(Boolean).length;
-  if (role === "extra") {
-    const allowed = Math.min(5, Math.max(0, 8 - selectedFixed));
-    addPhotoSlots.extra = files.slice(0, allowed);
-    if (files.length > allowed) showToast("Up to 8 photos total are allowed for one product.", "info");
+  if (role === "front") {
+    addPhotoSlots.front = files[0];
+    const otherFixed = [addPhotoSlots.back, addPhotoSlots.closeup].filter(Boolean).length;
+    const extraCapacity = Math.max(0, 8 - otherFixed - 1);
+    addPhotoSlots.extra = files.slice(1, 1 + extraCapacity);
+    if (files.length > extraCapacity + 1) showToast("Only the first 8 selected photos can be used for one product.", "info");
+  } else if (role === "extra") {
+    const selectedFixed = [addPhotoSlots.front, addPhotoSlots.back, addPhotoSlots.closeup].filter(Boolean).length;
+    const capacity = Math.max(0, 8 - selectedFixed);
+    const isAlreadySelected = (file) => [addPhotoSlots.front, addPhotoSlots.back, addPhotoSlots.closeup, ...addPhotoSlots.extra].some((selected) =>
+      selected && selected.name === file.name && selected.size === file.size && selected.lastModified === file.lastModified
+    );
+    const additions = files.filter((file) => !isAlreadySelected(file));
+    const room = Math.max(0, capacity - addPhotoSlots.extra.length);
+    addPhotoSlots.extra = [...addPhotoSlots.extra, ...additions.slice(0, room)];
+    if (additions.length > room) showToast("Up to 8 photos total are allowed for one product.", "info");
   } else {
     const replacing = Boolean(addPhotoSlots[role]);
     if (addPhotoFiles.length - (replacing ? 1 : 0) >= 8) {
@@ -745,6 +873,7 @@ function handleProductPhotoInput(event, role) {
     }
     addPhotoSlots[role] = files[0];
   }
+  event.target.value = "";
   refreshProductPhotoSelection();
 }
 $("add-photo-input").addEventListener("change", (event) => handleProductPhotoInput(event, "front"));
@@ -789,17 +918,19 @@ function resetAddForm() {
   addPhotoFiles = [];
   addPhotoSlots = { front: null, back: null, closeup: null, extra: [] };
   addPhotoObjectUrls.forEach((url) => URL.revokeObjectURL(url));
-  addPhotoObjectUrls = [];
+  addPhotoObjectUrls = new Map();
   $("add-photo-preview").src = "";
   $("add-photo-preview").hidden = true;
   $("add-photo-placeholder").hidden = false;
+  $("add-photo-placeholder").querySelector("strong").textContent = "Select product photos";
   $("add-photo-input").value = "";
   $("add-back-photo-input").value = "";
   $("add-closeup-photo-input").value = "";
   $("add-extra-photo-input").value = "";
   updatePhotoAngle("back", null);
   updatePhotoAngle("closeup", null);
-  $("add-extra-photo-label").textContent = "Add up to 5 more";
+  $("add-extra-photo-label").textContent = "Add more views";
+  $("add-photo-thumbnails").replaceChildren();
   $("photo-selection-count").textContent = "0 of 8 photos";
 }
 resetAddForm();

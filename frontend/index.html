@@ -273,18 +273,19 @@
     <form id="add-product-form">
       <div class="product-main-fields">
         <div class="photo-pick">
-          <label class="photo-pick-box" id="add-photo-box">
-            <span id="add-photo-placeholder"><i class="fa-solid fa-camera"></i><br><strong>Add front photo</strong><small>Main catalog image</small></span>
+          <label class="photo-pick-box" id="add-photo-box" role="button" tabindex="0" aria-label="Select product photos">
+            <span id="add-photo-placeholder"><i class="fa-solid fa-camera"></i><br><strong>Select product photos</strong><small>First selected photo becomes the main image</small></span>
             <img id="add-photo-preview" alt="Front view preview" hidden>
-            <input type="file" id="add-photo-input" accept="image/jpeg,image/png,image/webp" hidden>
+            <input type="file" id="add-photo-input" accept="image/jpeg,image/png,image/webp" multiple hidden>
           </label>
-          <div class="photo-pick-note"><strong id="photo-selection-count">0 of 8 photos</strong><span>Front photo is used as the main product image.</span></div>
+          <div class="photo-pick-note"><strong id="photo-selection-count">0 of 8 photos</strong><span>Select several photos together; the first is used as the main product image.</span></div>
+          <div id="add-photo-thumbnails" class="add-photo-thumbnails" aria-label="Selected product photo previews" aria-live="polite"></div>
         </div>
         <div class="product-fields">
           <div class="product-photo-angles" aria-label="Product photo angles">
             <label class="photo-angle-card" for="add-back-photo-input"><span class="photo-angle-thumb" id="add-back-photo-thumb"><i class="fa-solid fa-shirt"></i></span><span><strong>Back photo</strong><small id="add-back-photo-label">Add back view</small></span><input type="file" id="add-back-photo-input" accept="image/jpeg,image/png,image/webp" hidden></label>
             <label class="photo-angle-card" for="add-closeup-photo-input"><span class="photo-angle-thumb" id="add-closeup-photo-thumb"><i class="fa-solid fa-magnifying-glass-plus"></i></span><span><strong>Close-up</strong><small id="add-closeup-photo-label">Fabric or detail</small></span><input type="file" id="add-closeup-photo-input" accept="image/jpeg,image/png,image/webp" hidden></label>
-            <label class="photo-angle-card" for="add-extra-photo-input"><span class="photo-angle-thumb" id="add-extra-photo-thumb"><i class="fa-solid fa-images"></i></span><span><strong>Other views</strong><small id="add-extra-photo-label">Add up to 5 more</small></span><input type="file" id="add-extra-photo-input" accept="image/jpeg,image/png,image/webp" multiple hidden></label>
+            <label class="photo-angle-card" for="add-extra-photo-input"><span class="photo-angle-thumb" id="add-extra-photo-thumb"><i class="fa-solid fa-images"></i></span><span><strong>Other views</strong><small id="add-extra-photo-label">Add more views</small></span><input type="file" id="add-extra-photo-input" accept="image/jpeg,image/png,image/webp" multiple hidden></label>
           </div>
           <p class="hint product-photo-hint">Use clear front, back, and fabric-detail photos. Up to 8 photos can help visual product search.</p>
           <label class="field">SKU / Style Code<input name="sku" required placeholder="e.g. STYLE_001" class="input"></label>

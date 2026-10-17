@@ -5,7 +5,7 @@
 The PostgreSQL production setup runs the inventory API and SigLIP 2 in the **same Railway Inventory service**. When the app is in SQLite local mode, it can use the private model service in the private-service section below instead; this does not require changing the inventory database. In either semantic mode, both the packaging/query photo and every saved catalog photo are embedded by the same SigLIP model.
 
 1. Keep the existing Inventory service's `DATABASE_URL` and product-image volume unchanged. Do not point it at a new empty PostgreSQL database: SQLite rows and uploaded photos do not move automatically. Back up and migrate catalog, variants, orders, history, and image files before any database change.
-2. Set Railway **Root Directory** to blank (repository root). Mount a persistent volume at `/data`, set `HF_HOME=/data/huggingface`, and keep the existing product-photo volume mounted at its current path.
+2. Set Railway **Root Directory** to blank (repository root). Mount a persistent volume at `/data`, set `HF_HOME=/data/huggingface`, and keep the existing product-photo volume mounted at its current path. Set `PRODUCT_IMAGE_DIR` to the absolute mount path used for product photos (for example, `/data/product_images` only when that is where the photo volume is mounted). Without this variable the app saves photos under `backend/static/product_images`, which is local to the deploy and can disappear on redeploy.
 3. Use the repository root as **Root Directory**. The root `requirements.txt` installs the CPU PyTorch wheel and SigLIP runtime dependencies during the normal Railway Python build. If you have a custom Build Command, use:
 
    ```sh
