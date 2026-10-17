@@ -30,6 +30,14 @@ _SIZE_ORDER = (
     "XXXS", "XXS", "XS", "S", "M", "L", "XL", "XXL", "2XL", "3XL", "4XL", "5XL",
     "FREE SIZE", "FREESIZE", "ONE SIZE", "OS",
 )
+_TARGET_REORDER_BRAND = "TWINS"
+_SOURCE_BRAND_PREFIXES = (
+    "TWINS LADY", "TWINS(A)", "TWINS(B)", "TWINS(C)", "TWINSLADY",
+    "MODA_V", "H&N", "ANOUK", "FUSION", "TWINS", "DRIP", "GIRL", "PULSE",
+    "DAMAN", "GIRLL", "GL", "MVT", "KINDA DESI", "KINDA", "LP",
+    "SHORTKURTA", "ATHARV", "PRAGATI", "ZARNA", "JANNAT", "TL", "SZN",
+    "TANISHA", "VANSHIKA", "AENA", "SOFIA",
+)
 
 
 def _identity_words(value: str | None) -> str:
@@ -39,58 +47,73 @@ def _identity_words(value: str | None) -> str:
 
 
 def _product_party(item: dict) -> str:
-    party = str(item.get("party") or "").strip()
-    if party:
-        return party
-    # Marketplace codes commonly use BRAND_PARTY_PRODUCT_COLOUR_SIZE. The
-    # product SKU has already had its final size suffix separated into Variant.
-    sku_parts = [part for part in re.split(r"[_\s]+", str(item.get("sku") or "").strip()) if part]
-    return sku_parts[1].replace("-", " ").title() if len(sku_parts) >= 3 else "Unassigned"
+    # A second SKU token can be the product/style name (e.g. HELLY), not the
+    # party. Only use an explicitly assigned party/vendor for matching.
+    return str(item.get("party") or "").strip()
+
+
+def _strip_source_brand(sku: str) -> str:
+    """Remove a known source-brand prefix from the product SKU."""
+    normalized = _identity_words(sku)
+    for brand in sorted(_SOURCE_BRAND_PREFIXES, key=lambda value: len(_identity_words(value)), reverse=True):
+        prefix = _identity_words(brand)
+        if normalized == prefix:
+            return ""
+        if normalized.startswith(prefix + " "):
+            return normalized[len(prefix):].strip()
+    # Unlisted seller brands still conventionally occupy the first SKU token.
+    return normalized.split(" ", 1)[1].strip() if " " in normalized else ""
+
+
+def _remove_leading_words(value: str, prefix: str) -> str:
+    words = value.split()
+    prefix_words = _identity_words(prefix).split()
+    if prefix_words and words[:len(prefix_words)] == prefix_words:
+        return " ".join(words[len(prefix_words):])
+    return value
+
+
+def _remove_size_suffix(value: str, size: str) -> str:
+    words = value.split()
+    size_words = _identity_words(size).split()
+    if size_words and words[-len(size_words):] == size_words:
+        return " ".join(words[:-len(size_words)])
+    return value
 
 
 def _product_name_and_colour(item: dict) -> tuple[str, str]:
     name = str(item.get("name") or item.get("sku") or "Unknown product").strip()
+    sku_body = _strip_source_brand(str(item.get("sku") or ""))
+    sku_body = _remove_size_suffix(sku_body, str(item.get("size") or ""))
+    party = _identity_words(str(item.get("party") or ""))
+    sku_body = _remove_leading_words(sku_body, party)
     normalized_name = _identity_words(name)
-    normalized_sku = _identity_words(str(item.get("sku") or ""))
-    sku_words = normalized_sku.split()
-    sku_product_words = sku_words[2:] if len(sku_words) >= 3 else sku_words
-    name_words = normalized_name.split()
-    original_name_words = re.findall(r"[\w]+", name.replace("_", " "), flags=re.UNICODE)
-    stripped_prefix_words = 0
-    if len(sku_words) >= 3 and name_words and name_words[0] == sku_words[0]:
-        # Drop a matching brand prefix from names that contain it. For SKU-as-
-        # name imports, also drop the following party token. Full variant SKUs
-        # stay visible in the code column below.
-        stripped_prefix_words = 1
-        if len(name_words) > 1 and name_words[1] == sku_words[1]:
-            stripped_prefix_words = 2
-        name_words = name_words[stripped_prefix_words:]
-        original_name_words = original_name_words[stripped_prefix_words:]
-        normalized_name = " ".join(name_words)
-    found_colour = ""
+    # Product names imported as a copy of the SKU need the same brand/party
+    # cleanup as the code; descriptive listing titles remain untouched.
+    normalized_name = _remove_leading_words(normalized_name, _identity_words(str(item.get("sku") or "")).split(" ", 1)[0])
+    normalized_name = _remove_leading_words(normalized_name, party)
     colour_pattern = re.compile(
         r"(?<!\w)(" + "|".join(re.escape(colour) for colour in sorted(_COLOR_NAMES, key=len, reverse=True)) + r")(?!\w)",
         re.IGNORECASE,
     )
-    match = colour_pattern.search(normalized_name)
-    source = normalized_name
-    if not match:
-        match = colour_pattern.search(" ".join(sku_product_words))
-        source = " ".join(sku_product_words)
-    if match:
-        found_colour = " ".join(match.group(1).casefold().split()).title()
-        if source == normalized_name:
-            normalized_name = " ".join((normalized_name[:match.start()] + " " + normalized_name[match.end():]).split())
+    sku_colour_match = colour_pattern.search(sku_body)
+    name_colour_match = colour_pattern.search(normalized_name)
+    colour_match = sku_colour_match or name_colour_match
+    if colour_match:
+        colour = " ".join(colour_match.group(1).casefold().split()).title()
+        source = sku_body if sku_colour_match else normalized_name
+        product_identity = " ".join((source[:colour_match.start()] + " " + source[colour_match.end():]).split())
+    else:
+        colour = "—"
+        product_identity = sku_body or normalized_name
 
-    # Use a clean, stable label in the sheet. If the entire name was a colour,
-    # preserve the original name so that the product remains identifiable.
-    display_name = " ".join(original_name_words).strip()
-    original_colour_match = colour_pattern.search(display_name.casefold())
-    if original_colour_match:
-        display_name = " ".join((display_name[:original_colour_match.start()] + " " + display_name[original_colour_match.end():]).split())
-    if not display_name:
-        display_name = name
-    colour = found_colour or "—"
+    # Prefer the style code body for cross-brand matching; marketplace listing
+    # descriptions can differ even when the underlying style and colour match.
+    if sku_body:
+        sku_colour_match = colour_pattern.search(sku_body)
+        product_identity = " ".join((sku_body[:sku_colour_match.start()] + " " + sku_body[sku_colour_match.end():]).split()) if sku_colour_match else sku_body
+    product_identity = _remove_leading_words(product_identity, party)
+    display_name = " ".join(product_identity.split()).title()
     return display_name, colour
 
 
@@ -105,7 +128,7 @@ def _size_sort_key(size: str):
 
 
 def _sku_component(value: str | None) -> str:
-    """Normalize a display value for the brand-free SKU written to the sheet."""
+    """Normalize a display value for the consolidated TWINS SKU."""
     return "_".join(re.findall(r"[\w]+", str(value or "").strip().upper(), flags=re.UNICODE))
 
 
@@ -243,9 +266,9 @@ def generate_reorder_list(db: Session, save_batch: bool = True, part: str | None
 def reorder_list_to_excel(items: list[dict]) -> bytes:
     """Export shortages in the picklist's SKU / Size / Quantity layout.
 
-    Matching brand SKUs are grouped by party, product and colour. Their
-    quantities are added by size, and the output SKU is built from those
-    brand-free product details plus the size. No grand-total row is written.
+    Matching source brands are grouped by party, product and colour. Their
+    quantities are added by size and emitted using the TWINS brand SKU. No
+    grand-total row is written.
     """
     wb = Workbook()
     ws = wb.active
@@ -262,8 +285,10 @@ def reorder_list_to_excel(items: list[dict]) -> bytes:
             key = ("__unmapped__", sku.casefold(), "", "")
             party, product_name, colour = "Unmapped", sku or "Unknown SKU", "—"
         else:
-            unassigned_guard = sku.casefold() if party == "Unassigned" else ""
-            key = (_identity_words(party), _identity_words(product_name), _identity_words(colour), unassigned_guard)
+            # If the SKU contributes neither a party nor a product token, keep
+            # it isolated instead of merging unrelated products by colour.
+            identity_guard = sku.casefold() if not party and not product_name else ""
+            key = (_identity_words(party), _identity_words(product_name), _identity_words(colour), identity_guard)
         row = grouped.setdefault(key, {
             "party": party,
             "product": product_name,
@@ -300,7 +325,8 @@ def reorder_list_to_excel(items: list[dict]) -> bytes:
 
         if not item["is_new"]:
             sku_parts = [
-                _sku_component(item["party"] if item["party"] != "Unassigned" else ""),
+                _TARGET_REORDER_BRAND,
+                _sku_component(item["party"]),
                 _sku_component(" ".join(product_words)),
                 _sku_component(item["colour"] if item["colour"] != "—" else ""),
             ]
