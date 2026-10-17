@@ -104,6 +104,19 @@ def _size_sort_key(size: str):
         return (2, 0, normalized)
 
 
+def _sku_component(value: str | None) -> str:
+    """Normalize a display value for the brand-free SKU written to the sheet."""
+    return "_".join(re.findall(r"[\w]+", str(value or "").strip().upper(), flags=re.UNICODE))
+
+
+def _sku_has_size_suffix(sku: str, size: str) -> bool:
+    normalized_sku = _sku_component(sku)
+    normalized_size = _sku_component(size)
+    return bool(normalized_size and (
+        normalized_sku == normalized_size or normalized_sku.endswith(f"_{normalized_size}")
+    ))
+
+
 def generate_reorder_list(db: Session, save_batch: bool = True, part: str | None = None):
     """Return one row per stockable size with replenishment demand.
 
@@ -228,11 +241,11 @@ def generate_reorder_list(db: Session, save_batch: bool = True, part: str | None
 
 
 def reorder_list_to_excel(items: list[dict]) -> bytes:
-    """Export shortages grouped by party, product and colour, with one column per size.
+    """Export shortages in the picklist's SKU / Size / Quantity layout.
 
-    Brand is deliberately excluded from the matching key. Size quantities are
-    added across matching brand SKUs, while the original size-specific variant
-    codes remain visible for lookup. No grand-total row is written.
+    Matching brand SKUs are grouped by party, product and colour. Their
+    quantities are added by size, and the output SKU is built from those
+    brand-free product details plus the size. No grand-total row is written.
     """
     wb = Workbook()
     ws = wb.active
@@ -256,19 +269,18 @@ def reorder_list_to_excel(items: list[dict]) -> bytes:
             "product": product_name,
             "colour": colour,
             "quantities": {},
-            "codes": {},
+            "source_skus": {},
             "is_new": bool(item.get("is_new")),
         })
         row["quantities"][size] = row["quantities"].get(size, 0) + int(item.get("required_qty") or 0)
-        variant_code = str(item.get("variant_code") or "").strip()
-        if variant_code:
-            row["codes"].setdefault(size, set()).add(variant_code)
+        source_sku = str(item.get("sku") or "").strip()
+        if source_sku:
+            row["source_skus"].setdefault(size, set()).add(source_sku)
 
     rows = sorted(grouped.values(), key=lambda row: (
         _identity_words(row["party"]), _identity_words(row["product"]), _identity_words(row["colour"])
     ))
-    sizes = sorted({size for row in rows for size in row["quantities"]}, key=_size_sort_key)
-    headers = ["Party", "Product", "Colour", "SKU codes by size", *sizes]
+    headers = ["SKU", "Size", "Quantity"]
     header_font = Font(name="Aptos", bold=True, size=11, color="FFFFFF")
     header_fill = PatternFill(start_color="24466C", end_color="24466C", fill_type="solid")
     thin_line = Side(style="thin", color="D8E2EC")
@@ -279,33 +291,53 @@ def reorder_list_to_excel(items: list[dict]) -> bytes:
 
     row_idx = 2
     for index, item in enumerate(rows):
-        code_lines = [
-            f"{size}: {', '.join(sorted(codes))}"
-            for size, codes in sorted(item["codes"].items(), key=lambda pair: _size_sort_key(pair[0]))
-        ]
-        values = [item["party"], item["product"], item["colour"], "\n".join(code_lines)]
-        values.extend(item["quantities"].get(size, "") for size in sizes)
-        for col, value in enumerate(values, start=1):
-            cell = ws.cell(row=row_idx, column=col, value=value)
-            cell.font = Font(name="Aptos", size=10, color="172B4D")
-            cell.alignment = Alignment(vertical="center", wrap_text=(col <= 4))
-            cell.border = Border(bottom=thin_line)
-            if index % 2 == 0:
-                cell.fill = PatternFill("solid", fgColor="F2F7FC")
-            if col >= 5:
-                cell.alignment = Alignment(horizontal="center", vertical="center")
-                if value != "":
+        product_words = _identity_words(item["product"]).split()
+        party_words = _identity_words(item["party"]).split()
+        # Some imported product names still start with the party token. Keep it
+        # only once in the generated SKU.
+        if party_words and product_words[:len(party_words)] == party_words:
+            product_words = product_words[len(party_words):]
+
+        if not item["is_new"]:
+            sku_parts = [
+                _sku_component(item["party"] if item["party"] != "Unassigned" else ""),
+                _sku_component(" ".join(product_words)),
+                _sku_component(item["colour"] if item["colour"] != "—" else ""),
+            ]
+            base_sku = "_".join(part for part in sku_parts if part)
+            if not base_sku:
+                base_sku = next(iter(sorted(next(iter(item["source_skus"].values()), {"UNKNOWN"}))))
+
+        sizes = sorted(item["quantities"], key=_size_sort_key)
+        for size in sizes:
+            quantity = item["quantities"][size]
+            size_sku = _sku_component(size)
+            if item["is_new"]:
+                # Unmapped lines have no safe product identity yet. Preserve
+                # the source SKU for that size so it can be reconciled.
+                sku = next(iter(sorted(item["source_skus"].get(size) or {"UNKNOWN"})))
+            else:
+                sku = base_sku
+            if size_sku and not _sku_has_size_suffix(sku, size):
+                sku = f"{sku}_{size_sku}" if sku else size_sku
+            values = [sku, size, quantity]
+            for col, value in enumerate(values, start=1):
+                cell = ws.cell(row=row_idx, column=col, value=value)
+                cell.font = Font(name="Aptos", size=10, color="172B4D")
+                cell.alignment = Alignment(vertical="center", horizontal="right" if col == 3 else "left")
+                cell.border = Border(bottom=thin_line)
+                if index % 2 == 0:
+                    cell.fill = PatternFill("solid", fgColor="F2F7FC")
+                if col == 3:
                     cell.font = Font(name="Aptos", size=11, bold=True, color="173B63")
-        ws.row_dimensions[row_idx].height = max(28, min(84, 15 * max(1, len(code_lines))))
-        row_idx += 1
-        # A blank separator after every product makes each design block easy to scan.
-        if index < len(rows):
+            ws.row_dimensions[row_idx].height = 22
+            row_idx += 1
+        # Keep each product / colour block visually separate in Excel.
+        if index < len(rows) - 1:
             row_idx += 1
 
-    for column, width in {"A": 21, "B": 30, "C": 18, "D": 48}.items():
+    for column, width in {"A": 48, "B": 16, "C": 18}.items():
         ws.column_dimensions[column].width = width
-    for col in range(5, len(headers) + 1):
-        ws.column_dimensions[ws.cell(row=1, column=col).column_letter].width = 12
     ws.row_dimensions[1].height = 30
     ws.freeze_panes = "A2"
     ws.sheet_view.showGridLines = False
@@ -315,7 +347,7 @@ def reorder_list_to_excel(items: list[dict]) -> bytes:
     ws.page_setup.orientation = "landscape"
     ws.print_title_rows = "1:1"
     ws.sheet_properties.outlinePr.summaryBelow = True
-    ws.auto_filter.ref = f"A1:{ws.cell(row=1, column=len(headers)).column_letter}{max(1, row_idx - 1)}"
+    ws.auto_filter.ref = f"A1:C{max(1, ws.max_row)}"
 
     buf = BytesIO()
     wb.save(buf)
