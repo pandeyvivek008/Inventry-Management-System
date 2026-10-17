@@ -35,6 +35,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
 
 from models import Product, Variant, OrderUpload, OrderLine, OrderLineStatus, TransactionType
+from services import reorder_service
 from services.inventory_service import apply_stock_change, InsufficientStockError
 from services.alert_service import check_variant_alert
 from services.table_reader import read_table, to_int, clean_code
@@ -77,6 +78,14 @@ def _chunks(items, size=CHUNK):
         yield items[i:i + size]
 
 
+def _is_plausible_size(value: str | None) -> bool:
+    normalized = str(value or "").strip().upper()
+    return bool(
+        normalized in {"XXXS", "XXS", "XS", "S", "M", "L", "XL", "XXL", "2XL", "3XL", "4XL", "5XL", "FREE SIZE", "FREESIZE", "ONE SIZE", "OS"}
+        or re.fullmatch(r"\d{1,3}(?:-\d{1,3})?Y|\d{1,3}", normalized)
+    )
+
+
 def _code_aliases(value: str | None) -> set[str]:
     """Return stable aliases for legacy `SKU-SIZE` and canonical `SKU_SIZE`."""
     if not value:
@@ -114,7 +123,20 @@ def _infer_size_from_code(code: str | None, explicit_size: str | None = None):
         # trailing size so product SKU matching can work with full Master SKU.
         suffix = re.escape(size)
         stripped = re.sub(rf"(?:[_\-\s]+){suffix}$", "", value, flags=re.IGNORECASE)
-        return stripped or value, size
+        if stripped != value:
+            return stripped or value, size
+        if not _is_plausible_size(size):
+            # Some marketplace summary sheets misplace a price (for example
+            # 2499) under Size while the SKU still ends in the real size.
+            # Prefer that valid SKU suffix so the correct variant can match.
+            suffix_match = re.search(
+                r"(?:^|[_\-\s])(5XL|4XL|3XL|XXXL|XXL|2XL|XL|XS|XXS|L|M|S|\d{1,3}(?:-\d{1,3})?Y|\d{1,3})$",
+                value,
+                flags=re.IGNORECASE,
+            )
+            if suffix_match:
+                return value[:suffix_match.start()].rstrip("_- "), suffix_match.group(1).upper()
+        return value, size
 
     # Without a Size column, support the common apparel + kids + numeric sizes.
     m = re.search(
@@ -159,6 +181,52 @@ def _fuzzy_score(candidate: str, variant) -> int:
     return best
 
 
+def _cross_brand_variant_key(sku: str | None, size: str | None):
+    """Return a conservative product/colour/size key for seller-brand aliases."""
+    base, inferred_size = _infer_size_from_code(sku, size)
+    effective_size = inferred_size or str(size or "").strip().upper()
+    if not effective_size:
+        return None
+
+    identity_input = {"sku": base, "name": base, "size": effective_size}
+    product_key, colour_key, _ = reorder_service._reorder_identity(identity_input)
+    if not product_key or not colour_key:
+        return None
+
+    # Recognized marketplace brands can use short style names. For an unknown
+    # prefix, require a structured code with brand + product + colour tokens
+    # before allowing the cross-brand fallback.
+    raw_tokens = reorder_service._identity_words(base).split()
+    if not reorder_service._has_known_source_brand(str(sku or "")) and len(raw_tokens) < 3:
+        return None
+    return product_key, colour_key, effective_size
+
+
+def _build_cross_brand_variant_index(variants):
+    index: dict[tuple[str, str, str], dict[int, Variant]] = defaultdict(dict)
+    for variant in variants:
+        key = _cross_brand_variant_key(variant.product.sku, variant.size)
+        if key:
+            index[key][variant.id] = variant
+    return index
+
+
+def _cross_brand_variant(index, sku: str | None, size: str | None):
+    key = _cross_brand_variant_key(sku, size)
+    candidates = list(index.get(key, {}).values()) if key else []
+    twins_candidates = [
+        variant for variant in candidates
+        if reorder_service._identity_words(variant.product.sku).startswith("twins ")
+    ]
+    if len(twins_candidates) == 1:
+        return twins_candidates[0]
+    if len(twins_candidates) > 1:
+        # Duplicate canonical designs are ambiguous; do not guess which stock
+        # row should be deducted.
+        return None
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def reconcile_unmapped_order_lines(db: Session) -> int:
     """Repair older SKU_NOT_FOUND lines after the catalog/matcher is fixed.
 
@@ -187,6 +255,7 @@ def reconcile_unmapped_order_lines(db: Session) -> int:
             for alias in _code_aliases(key):
                 exact.setdefault(alias, {})[v.id] = v
         pair[(v.product.sku.upper(), v.size.upper())] = v
+    cross_brand_index = _build_cross_brand_variant_index(variants)
 
     changed = 0
     for line in lines:
@@ -212,6 +281,8 @@ def reconcile_unmapped_order_lines(db: Session) -> int:
                         scored.append((score, candidate))
                 scored.sort(key=lambda x: x[0], reverse=True)
                 v = scored[0][1] if scored and (len(scored) == 1 or scored[0][0] > scored[1][0]) else None
+        if not v:
+            v = _cross_brand_variant(cross_brand_index, line.sku, line.size)
         if not v:
             continue
         line.variant_id = v.id
@@ -326,6 +397,7 @@ def process_order_excel(db: Session, file_bytes: bytes, filename: str, created_b
         .filter(Variant.is_deleted == False, Product.is_deleted == False)  # noqa: E712
         .all()
     )
+    cross_brand_index = _build_cross_brand_variant_index(fuzzy_variants)
 
     def resolve(cands, size):
         ambiguous = False
@@ -375,6 +447,10 @@ def process_order_excel(db: Session, file_bytes: bytes, filename: str, created_b
                     tied = True
         if best and best_score >= 28 and not tied:
             return best, False
+        for raw, base, effective_size in prepared:
+            candidate = _cross_brand_variant(cross_brand_index, raw or base, effective_size)
+            if candidate:
+                return candidate, False
         return None, ambiguous or bool(best_score >= 20)
 
     # --- Step 3: aggregate per resolved variant (or per unresolved code) ---

@@ -33,8 +33,8 @@ _SIZE_ORDER = (
 _TARGET_REORDER_BRAND = "TWINS"
 _SOURCE_BRAND_PREFIXES = (
     "TWINS LADY", "TWINS(A)", "TWINS(B)", "TWINS(C)", "TWINSLADY",
-    "MODA_V", "H&N", "ANOUK", "FUSION", "TWINS", "DRIP", "GIRL", "PULSE",
-    "DAMAN", "GIRLL", "GL", "MVT", "KINDA DESI", "KINDA", "LP",
+    "MODA_V", "MODA(A)", "MODA(B)", "MDOA", "H&N", "ANOUK", "FUSION", "TWINS", "DRIP", "GIRL", "PULSE",
+    "DAMAN", "FENY", "SNGR", "PRACHI", "KASHI", "NARI", "M", "GIRLL", "GL", "MVT", "KINDA DESI", "KINDA", "LP",
     "SHORTKURTA", "ATHARV", "PRAGATI", "ZARNA", "JANNAT", "TL", "SZN",
     "TANISHA", "VANSHIKA", "AENA", "SOFIA",
 )
@@ -177,15 +177,24 @@ def consolidate_reorder_items(items: list[dict], part: str | None = None) -> lis
     for item in items:
         source_sku = str(item.get("sku") or "").strip()
         size = " ".join(str(item.get("size") or "—").upper().split())
-        mergeable = False
         if item.get("is_new"):
-            key = ("__unmapped__", source_sku.casefold(), size)
-            product, colour = source_sku or "Unknown SKU", "—"
+            product_key, colour_key, colour = _reorder_identity(item)
+            # An unmapped SKU can still be grouped safely when its code carries
+            # a clear product + colour identity (for example ANOUK_HELLY_PURPLE).
+            # Generic or incomplete codes stay separate so we do not merge
+            # unrelated products just because their sizes happen to match.
+            mergeable = bool(product_key and colour_key) and (
+                _has_known_source_brand(source_sku)
+                or product_key != _identity_words(source_sku)
+            )
+            if mergeable:
+                key = (product_key, colour_key, size)
+                product, _ = _product_name_and_colour(item)
+            else:
+                key = ("__unmapped__", source_sku.casefold(), size)
+                product = source_sku or "Unknown SKU"
         else:
             product_key, colour_key, colour = _reorder_identity(item)
-            # Rebrand only rows with a recognized source brand or a sufficiently
-            # clear product+colour identity. Generic catalog SKUs (for example
-            # RS1) keep their real SKU/variant codes and never become TWINS_*.
             mergeable = bool(product_key and colour_key) and (
                 _has_known_source_brand(source_sku)
                 or product_key != _identity_words(source_sku)
@@ -208,11 +217,14 @@ def consolidate_reorder_items(items: list[dict], part: str | None = None) -> lis
             "required_qty": 0,
             "image_path": None,
             "is_new": bool(item.get("is_new")),
-            "_mergeable": bool(not item.get("is_new") and mergeable),
+            "_mergeable": bool(mergeable),
             "_sources": [],
             "_source_skus": set(),
             "_variant_codes": set(),
         })
+        # If any catalog-backed row exists in a consolidated group, treat the
+        # group as mapped; a stale unmapped alias must not label the real SKU NEW.
+        row["is_new"] = row["is_new"] and bool(item.get("is_new"))
         row["current_stock"] += int(item.get("current_stock") or 0)
         row["ordered_qty"] += int(item.get("ordered_qty") or 0)
         row["dispatched_qty"] += int(item.get("dispatched_qty") or 0)
@@ -229,7 +241,7 @@ def consolidate_reorder_items(items: list[dict], part: str | None = None) -> lis
     query_tokens = re.findall(r"[\w]+", str(part or "").casefold())
     result = []
     for row in groups.values():
-        if row["is_new"]:
+        if row["is_new"] and not row["_mergeable"]:
             base_sku = next(iter(sorted(row["_source_skus"])), "UNKNOWN")
             searchable = " ".join((base_sku, row["name"], row["size"]))
         elif not row["_mergeable"]:
@@ -265,7 +277,7 @@ def consolidate_reorder_items(items: list[dict], part: str | None = None) -> lis
             ))
         if query_tokens and not all(token in _identity_words(searchable) for token in query_tokens):
             continue
-        if row["is_new"]:
+        if row["is_new"] and not row["_mergeable"]:
             row["sku"] = base_sku
             row["variant_code"] = base_sku
         row.pop("_sources", None)
@@ -275,7 +287,7 @@ def consolidate_reorder_items(items: list[dict], part: str | None = None) -> lis
         result.append(row)
 
     def _row_sort_key(row: dict):
-        if row["is_new"]:
+        if row["is_new"] and not row.get("_mergeable"):
             return ("~unmapped", _identity_words(row.get("sku")), _size_sort_key(row["size"]))
         product_key, colour_key, _ = _reorder_identity(row)
         return (product_key, colour_key, _size_sort_key(row["size"]))
@@ -446,15 +458,16 @@ def reorder_list_to_excel(items: list[dict]) -> bytes:
 
     blocks: dict[tuple[str, str], list[dict]] = {}
     for item in items:
-        if item.get("is_new"):
-            block_key = ("__unmapped__", str(item.get("sku") or "UNKNOWN").casefold())
+        product_key, colour_key, _ = _reorder_identity(item)
+        sku = str(item.get("sku") or "").strip()
+        mergeable = bool(product_key and colour_key) and (
+            _has_known_source_brand(sku) or product_key != _identity_words(sku)
+        )
+        if mergeable:
+            block_key = (product_key, colour_key)
         else:
-            product_key, colour_key, _ = _reorder_identity(item)
-            sku = str(item.get("sku") or "").strip()
-            mergeable = bool(product_key and colour_key) and (
-                _has_known_source_brand(sku) or product_key != _identity_words(sku)
-            )
-            block_key = (product_key, colour_key) if mergeable else ("__raw__", sku.casefold())
+            source_base = _remove_size_suffix(sku, str(item.get("size") or ""))
+            block_key = ("__unmapped__" if item.get("is_new") else "__raw__", source_base.casefold())
         blocks.setdefault(block_key, []).append(item)
     ordered_blocks = sorted(blocks.items(), key=lambda entry: entry[0])
     headers = ["SKU", "Size", "Quantity"]

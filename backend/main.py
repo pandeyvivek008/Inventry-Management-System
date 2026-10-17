@@ -299,7 +299,10 @@ def _open_alert_count(db: Session) -> int:
     }
     shortage_codes = {
         item["variant_code"] for item in reorder_service.generate_reorder_list(db, save_batch=False)
-        if item["required_qty"] > 0
+        # Unmapped order lines cannot be tied to a stock size, so they are
+        # shown in Process Orders as SKU NOT FOUND rather than as Alerts.
+        # Keep the badge consistent with _collect_alerts(), which omits them.
+        if item["required_qty"] > 0 and not item.get("is_new")
     }
     return len(physical_codes | shortage_codes)
 
@@ -1007,6 +1010,8 @@ def update_variant(variant_code: str, payload: schemas.VariantUpdate, db: Sessio
     db.flush()
     alert_service.check_variant_alert(db, variant)
     db.commit()
+    # Variant metadata may add a seller-SKU alias that lets old batches resolve.
+    excel_service.reconcile_unmapped_order_lines(db)
     db.refresh(variant)
     return _variant_out(variant)
 
@@ -1473,6 +1478,9 @@ def adjust_stock(payload: schemas.StockAdjustment, db: Session = Depends(get_db)
         raise HTTPException(409, f"Stock changed since this update was prepared. Current stock is {exc.current}; refresh and try again.") from exc
     alert_service.check_variant_alert(db, variant)
     db.commit()
+    # Map older marketplace lines now that stock has been counted or adjusted;
+    # the next history refresh can show precisely which pieces are dispatchable.
+    excel_service.reconcile_unmapped_order_lines(db)
     db.refresh(variant)
     return _variant_out(variant)
 
@@ -1487,7 +1495,10 @@ def count_sheet(only_uncounted: bool = False, db: Session = Depends(get_db)):
 async def bulk_set(file: UploadFile = File(...), db: Session = Depends(get_db)):
     content = await file.read()
     try:
-        return bulk_stock_service.bulk_set_stock(db, content, file.filename or "")
+        result = bulk_stock_service.bulk_set_stock(db, content, file.filename or "")
+        if result.get("updated_count") or result.get("created_variants_count"):
+            excel_service.reconcile_unmapped_order_lines(db)
+        return result
     except ValueError as e:
         raise HTTPException(400, str(e))
 
