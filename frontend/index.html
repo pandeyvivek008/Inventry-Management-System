@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Inventory Management System</title>
 <script>try{if(localStorage.getItem("inventoryTheme")==="dark")document.documentElement.dataset.theme="dark"}catch{}</script>
-<link rel="stylesheet" href="style.css?v=orders-dispatch-controls-20261018">
+<link rel="stylesheet" href="style.css?v=repeat-dispatch-paging-20261018">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
 </head>
 <body>
@@ -180,7 +180,7 @@
 
     <!-- ================= ORDERS ================= -->
     <section id="view-orders" class="view">
-      <header class="view-head"><div><h1>Process Orders</h1><p class="sub">Upload marketplace orders. Dispatch deducts only counted stock that is ready; any remaining quantity stays pending.</p></div><button id="retry-order-matches" class="btn-secondary" type="button"><i class="fa-solid fa-rotate"></i> Retry SKU matching</button></header>
+      <header class="view-head"><div><h1>Process Orders</h1><p class="sub">Upload marketplace orders. Dispatch deducts only counted stock that is ready; any remaining quantity stays pending.</p></div><div class="order-head-actions"><button id="refresh-order-readiness" class="btn-secondary" type="button"><i class="fa-solid fa-arrows-rotate"></i> Refresh readiness</button><button id="retry-order-matches" class="btn-secondary" type="button"><i class="fa-solid fa-rotate"></i> Retry SKU matching</button></div></header>
       <div class="panel" style="text-align:center;">
         <label id="dropzone" class="dropzone">
           <input type="file" id="order-file-input" accept=".xlsx,.xls,.csv" hidden>
@@ -387,6 +387,6 @@
 <div id="toast" class="toast" hidden></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
-<script src="app.js?v=orders-dispatch-controls-20261018"></script>
+<script src="app.js?v=repeat-dispatch-paging-20261018"></script>
 </body>
 </html>

@@ -32,6 +32,10 @@ from services import (
 
 Base.metadata.create_all(bind=engine)
 logger = logging.getLogger(__name__)
+ACTIVE_ORDER_STATUSES = (
+    models.OrderLineStatus.PENDING,
+    models.OrderLineStatus.INSUFFICIENT_STOCK,
+)
 
 
 def _index_product_photo_background(product_id: int, image_id: int, content: bytes, image_path: str) -> None:
@@ -138,7 +142,7 @@ def _order_line_dispatchability(db: Session, target_lines) -> dict[int, int]:
     line. Looking across batches prevents the same physical pieces from making
     every pending batch appear ready at once.
     """
-    target_ids = {line.id for line in target_lines if line.status == models.OrderLineStatus.PENDING}
+    target_ids = {line.id for line in target_lines if line.status in ACTIVE_ORDER_STATUSES}
     variant_ids = {line.variant_id for line in target_lines if line.variant_id is not None}
     if not target_ids or not variant_ids:
         return {}
@@ -148,7 +152,7 @@ def _order_line_dispatchability(db: Session, target_lines) -> dict[int, int]:
         .join(models.OrderUpload, models.OrderLine.order_upload_id == models.OrderUpload.id)
         .options(joinedload(models.OrderLine.variant))
         .filter(
-            models.OrderLine.status == models.OrderLineStatus.PENDING,
+            models.OrderLine.status.in_(ACTIVE_ORDER_STATUSES),
             models.OrderLine.variant_id.in_(variant_ids),
         )
         .order_by(models.OrderUpload.uploaded_at.asc(), models.OrderUpload.id.asc(), models.OrderLine.id.asc())
@@ -535,7 +539,7 @@ async def inventory_assistant_chat(payload: schemas.AssistantChatRequest, reques
         pending_line_count, pending_units = db.query(
             func.count(models.OrderLine.id),
             func.coalesce(func.sum(models.OrderLine.qty_ordered - models.OrderLine.qty_fulfilled), 0),
-        ).filter(models.OrderLine.status == models.OrderLineStatus.PENDING).one()
+        ).filter(models.OrderLine.status.in_(ACTIVE_ORDER_STATUSES)).one()
         total_stock = db.query(func.coalesce(func.sum(models.Variant.current_stock), 0)).join(models.Product).filter(
             models.Variant.is_deleted == False, models.Product.is_deleted == False  # noqa: E712
         ).scalar()
@@ -595,8 +599,8 @@ async def inventory_assistant_chat(payload: schemas.AssistantChatRequest, reques
         more = f" Aur {len(needed) - 8} sizes hain." if len(needed) > 8 else ""
         return {"status": "reorder_summary", "reply": f"{len(needed)} sizes mein restock chahiye. " + "; ".join(lines) + "." + more, "total": len(needed)}
     if action == "pending_orders":
-        pending_lines, pending_units = db.query(func.count(models.OrderLine.id), func.coalesce(func.sum(models.OrderLine.qty_ordered - models.OrderLine.qty_fulfilled), 0)).filter(models.OrderLine.status == models.OrderLineStatus.PENDING).one()
-        batches = db.query(models.OrderUpload).join(models.OrderLine).filter(models.OrderLine.status == models.OrderLineStatus.PENDING).distinct().order_by(models.OrderUpload.uploaded_at.desc()).limit(5).all()
+        pending_lines, pending_units = db.query(func.count(models.OrderLine.id), func.coalesce(func.sum(models.OrderLine.qty_ordered - models.OrderLine.qty_fulfilled), 0)).filter(models.OrderLine.status.in_(ACTIVE_ORDER_STATUSES)).one()
+        batches = db.query(models.OrderUpload).join(models.OrderLine).filter(models.OrderLine.status.in_(ACTIVE_ORDER_STATUSES)).distinct().order_by(models.OrderUpload.uploaded_at.desc()).limit(5).all()
         batch_text = ", ".join(f"batch {b.id} ({b.filename or 'orders'})" for b in batches) or "koi pending batch nahi"
         return {"status": "pending_orders", "reply": f"{int(pending_lines or 0)} pending order lines hain, total {int(pending_units or 0)} pieces baaki hain. Recent batches: {batch_text}. Available counted stock dispatch hoga; baaki pieces pending rahenge."}
     if action == "recent_activity":
@@ -668,7 +672,7 @@ async def inventory_assistant_chat(payload: schemas.AssistantChatRequest, reques
         batch = db.query(models.OrderUpload).filter(models.OrderUpload.id == order_id).first()
         if not batch:
             return {"status": "not_found", "reply": f"Order batch {order_id} nahi mila."}
-        lines = db.query(models.OrderLine).options(joinedload(models.OrderLine.variant)).filter(models.OrderLine.order_upload_id == order_id, models.OrderLine.status == models.OrderLineStatus.PENDING).all()
+        lines = db.query(models.OrderLine).options(joinedload(models.OrderLine.variant)).filter(models.OrderLine.order_upload_id == order_id, models.OrderLine.status.in_(ACTIVE_ORDER_STATUSES)).all()
         if not lines:
             return {"status": "clarify", "reply": f"Batch {order_id} mein koi pending order line nahi hai."}
         pending_units = sum(max(line.qty_ordered - line.qty_fulfilled, 0) for line in lines)
@@ -1557,7 +1561,7 @@ def order_history(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, g
     dispatchable_by_line = _order_line_dispatchability(db, page_lines)
     result = []
     for u in uploads:
-        pending_lines = [line for line in u.lines if line.status == models.OrderLineStatus.PENDING]
+        pending_lines = [line for line in u.lines if line.status in ACTIVE_ORDER_STATUSES]
         pending = len(pending_lines)
         fulfilled = sum(1 for line in u.lines if line.qty_fulfilled > 0)
         insufficient = sum(1 for line in u.lines if line.status == models.OrderLineStatus.INSUFFICIENT_STOCK)
@@ -1577,9 +1581,13 @@ def order_history(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, g
         for line in sorted(u.lines, key=lambda x: x.id):
             product_name = line.variant.product.name if line.variant and line.variant.product else None
             variant_code = line.variant.variant_code if line.variant else None
-            pending_qty = max(line.qty_ordered - line.qty_fulfilled, 0) if line.status == models.OrderLineStatus.PENDING else 0
+            pending_qty = max(line.qty_ordered - line.qty_fulfilled, 0) if line.status in ACTIVE_ORDER_STATUSES else 0
             dispatchable_qty = dispatchable_by_line.get(line.id, 0)
-            line_status = "PARTIALLY_DISPATCHED" if pending_qty and line.qty_fulfilled else line.status.value
+            line_status = (
+                "PARTIALLY_DISPATCHED" if pending_qty and line.qty_fulfilled
+                else "PENDING" if pending_qty and dispatchable_qty > 0
+                else line.status.value
+            )
             lines.append({
                 "id": line.id, "sku": line.sku, "size": line.size, "variant_code": variant_code,
                 "product_name": product_name, "qty_ordered": line.qty_ordered,
@@ -1611,7 +1619,25 @@ def order_history(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, g
 async def upload_orders(file: UploadFile = File(...), db: Session = Depends(get_db)):
     content = await file.read()
     try:
-        return excel_service.process_order_excel(db, content, file.filename or "")
+        result = excel_service.process_order_excel(db, content, file.filename or "")
+        # Return line ids and freshly computed readiness so the just-uploaded
+        # batch can use the same per-line selection and dispatch flow as history.
+        order_lines = (
+            db.query(models.OrderLine)
+            .options(joinedload(models.OrderLine.variant))
+            .filter(models.OrderLine.order_upload_id == result["order_upload_id"])
+            .order_by(models.OrderLine.id.asc())
+            .all()
+        )
+        dispatchable_by_line = _order_line_dispatchability(db, order_lines)
+        for line_result, line in zip(result["lines"], order_lines):
+            pending_qty = max(line.qty_ordered - line.qty_fulfilled, 0) if line.status in ACTIVE_ORDER_STATUSES else 0
+            line_result.update({
+                "id": line.id,
+                "pending_qty": pending_qty,
+                "dispatchable_qty": dispatchable_by_line.get(line.id, 0),
+            })
+        return result
     except excel_service.DuplicateUploadError as e:
         raise HTTPException(409, str(e))
     except (excel_service.BadOrderFileError, ValueError) as e:
@@ -1779,7 +1805,7 @@ def dispatch_order_upload(
         .options(joinedload(models.OrderLine.variant).joinedload(models.Variant.product))
         .filter(
             models.OrderLine.order_upload_id == order_upload_id,
-            models.OrderLine.status == models.OrderLineStatus.PENDING,
+            models.OrderLine.status.in_(ACTIVE_ORDER_STATUSES),
             models.OrderLine.variant_id.isnot(None),
         )
         # Serialize concurrent attempts to dispatch the same batch on databases
@@ -1829,6 +1855,8 @@ def dispatch_order_upload(
             if line.qty_fulfilled >= line.qty_ordered:
                 line.qty_fulfilled = line.qty_ordered
                 line.status = models.OrderLineStatus.FULFILLED
+            else:
+                line.status = models.OrderLineStatus.PENDING
             alert_service.check_variant_alert(db, variant)
         db.commit()
     except inventory_service.InsufficientStockError as exc:
@@ -1841,7 +1869,7 @@ def dispatch_order_upload(
         db.rollback()
         raise
 
-    remaining_lines = [line for line in pending_lines if line.status == models.OrderLineStatus.PENDING]
+    remaining_lines = [line for line in pending_lines if line.status in ACTIVE_ORDER_STATUSES]
     remaining_units = sum(max(line.qty_ordered - line.qty_fulfilled, 0) for line in remaining_lines)
     dispatched_units = sum(quantity for _, quantity in plan)
     return {
@@ -1957,7 +1985,7 @@ def movers(days: int = Query(30, ge=1, le=365), limit: int = Query(10, ge=1, le=
             models.OrderUpload.uploaded_at >= since,
             models.Variant.is_deleted == False,  # noqa: E712
             models.Product.is_deleted == False,  # noqa: E712
-            models.OrderLine.status.in_([models.OrderLineStatus.PENDING, models.OrderLineStatus.FULFILLED]),
+            models.OrderLine.status.in_([*ACTIVE_ORDER_STATUSES, models.OrderLineStatus.FULFILLED]),
         )
         .group_by(models.Product.sku, models.Product.name, models.Product.image_path)
         .order_by(func.sum(models.OrderLine.qty_ordered).desc())

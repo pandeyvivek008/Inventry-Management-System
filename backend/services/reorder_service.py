@@ -334,7 +334,7 @@ def generate_reorder_list(db: Session, save_batch: bool = True, part: str | None
         db.query(
             Variant,
             func.coalesce(func.sum(case(
-                (OrderLine.status == OrderLineStatus.PENDING,
+                (OrderLine.status.in_([OrderLineStatus.PENDING, OrderLineStatus.INSUFFICIENT_STOCK]),
                  OrderLine.qty_ordered - OrderLine.qty_fulfilled), else_=0
             )), 0).label("ordered_qty"),
             func.coalesce(func.sum(OrderLine.qty_fulfilled), 0).label("dispatched_qty"),
@@ -344,7 +344,7 @@ def generate_reorder_list(db: Session, save_batch: bool = True, part: str | None
         .outerjoin(
             OrderLine,
             (OrderLine.variant_id == Variant.id)
-            & (OrderLine.status.in_([OrderLineStatus.PENDING, OrderLineStatus.FULFILLED])),
+            & (OrderLine.status.in_([OrderLineStatus.PENDING, OrderLineStatus.INSUFFICIENT_STOCK, OrderLineStatus.FULFILLED])),
         )
         .filter(
             Variant.last_counted_at.isnot(None),

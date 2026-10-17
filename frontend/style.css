@@ -109,6 +109,8 @@ img { max-width: 100%; display: block; }
 .view-head { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 20px; gap: 16px; flex-wrap: wrap; }
 .view-head h1 { font-size: 21px; font-weight: 700; letter-spacing: -0.01em; }
 .view-head .sub { margin: 4px 0 0; color: var(--ink-soft); font-size: 13.2px; max-width: 54ch; }
+.order-head-actions { display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:wrap; }
+.upload-order-actions { margin:0 0 10px; }
 .sub-head { font-size: 13.5px; font-weight: 700; color: var(--ink); margin: 18px 0 8px; }
 .hint { color: var(--ink-soft); font-size: 12.5px; }
 .hint.center { text-align: center; padding: 30px 10px; }
@@ -450,6 +452,7 @@ img { max-width: 100%; display: block; }
   .tcard-actions > * { flex: 1; }
   .order-batch-head { align-items: stretch; flex-direction: column; }
   .order-batch-actions { align-items:center; }
+  .order-head-actions { justify-content:flex-start; }
   .order-batch-actions .batch-delete { margin-left:auto; }
   .print-label-options { gap:5px; }
   .print-label-options .product-label-link { min-height:34px; padding:6px 8px; }

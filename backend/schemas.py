@@ -95,10 +95,13 @@ class AssistantIntent(BaseModel):
 
 
 class OrderLineResult(BaseModel):
+    id: Optional[int] = None
     sku: str
     size: Optional[str] = None
     qty_ordered: int
     qty_fulfilled: int
+    pending_qty: int = 0
+    dispatchable_qty: int = 0
     remaining_stock: Optional[int] = None
     status: str
     product_name: Optional[str] = None
