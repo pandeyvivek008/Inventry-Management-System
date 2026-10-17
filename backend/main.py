@@ -1618,6 +1618,16 @@ async def upload_orders(file: UploadFile = File(...), db: Session = Depends(get_
         raise HTTPException(400, str(e))
 
 
+@app.post("/api/orders/reconcile-unmapped")
+def reconcile_unmapped_orders(db: Session = Depends(get_db)):
+    """Retry safe catalog matching for old SKU_NOT_FOUND lines; never deduct stock."""
+    matched_lines = excel_service.reconcile_unmapped_order_lines(db)
+    return {
+        "matched_lines": matched_lines,
+        "message": f"{matched_lines} previously unmatched order lines matched to inventory. No stock was deducted.",
+    }
+
+
 @app.delete("/api/orders/{order_upload_id}")
 def delete_order_upload(order_upload_id: int, db: Session = Depends(get_db)):
     """Remove a processed file and all its order demand, safely reversing dispatch stock."""

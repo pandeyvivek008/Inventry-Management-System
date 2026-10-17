@@ -109,7 +109,11 @@ def _product_name_and_colour(item: dict) -> tuple[str, str]:
     name_colour_match = colour_pattern.search(normalized_name)
     colour_match = sku_colour_match or name_colour_match
     if colour_match:
-        colour = " ".join(colour_match.group(1).casefold().split()).title()
+        colour_key = " ".join(colour_match.group(1).casefold().split())
+        # Marketplace catalogs use both "Gold" and "Golden" for the same
+        # apparel colour. Canonicalize the alias so equal sizes share the same
+        # inventory variant across sellers.
+        colour = {"golden": "gold"}.get(colour_key, colour_key).title()
         source = sku_body if sku_colour_match else normalized_name
         product_identity = " ".join((source[:colour_match.start()] + " " + source[colour_match.end():]).split())
     else:

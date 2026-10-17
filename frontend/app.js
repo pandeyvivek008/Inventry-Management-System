@@ -1563,6 +1563,18 @@ const orderLinePageSize = 25;
 const orderLinePages = new Map();
 const selectedOrderLineIdsByBatch = new Map();
 let lastProcessedOrderUploadId = null;
+$("retry-order-matches").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  if (button.disabled) return;
+  button.disabled = true;
+  try {
+    const result = await apiPost(`${API}/orders/reconcile-unmapped`, {});
+    showToast(`${result.matched_lines} order lines matched. Stock was not changed.`, "success", 3200);
+    await Promise.all([loadOrderHistory(), loadReorderList(), loadSummary()]);
+  } catch (error) {
+    showToast(`SKU matching retry failed: ${error.message}`, true);
+  } finally { button.disabled = false; }
+});
 $("orders-prev").addEventListener("click", () => { ordersPage.offset = Math.max(0, ordersPage.offset - ordersPage.limit); loadOrderHistory(); });
 $("orders-next").addEventListener("click", () => { ordersPage.offset += ordersPage.limit; loadOrderHistory(); });
 function orderBatchSelection(batchId) {
