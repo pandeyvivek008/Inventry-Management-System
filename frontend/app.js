@@ -1984,6 +1984,12 @@ let assistantHistory = [];
 let assistantSessions = [];
 let assistantSessionId = localStorage.getItem(assistantSessionIdKey) || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 let assistantBusy = false;
+let dishaDograhEnabled = false;
+let dishaDograhReady = false;
+let dishaDograhStarted = false;
+let dishaDograhGreetingPending = false;
+let dishaDograhSeenTurns = new Set();
+let dishaDograhLoadPromise = null;
 let assistantRequestSequence = 0;
 let assistantMicStream = null;
 let assistantMicContext = null;
@@ -2074,6 +2080,13 @@ function openAssistantSession(sessionId) {
 }
 
 function startNewAssistantConversation({ fromVoice = false } = {}) {
+  if (dishaDograhEnabled) {
+    // Dograh's headless widget creates a new chat after a page reload.
+    localStorage.setItem(assistantHistoryKey, "[]");
+    localStorage.setItem(assistantSessionIdKey, "");
+    window.location.reload();
+    return;
+  }
   if (assistantHistory.length) saveAssistantHistory();
   assistantRequestSequence += 1;
   assistantBusy = false;
@@ -2371,19 +2384,135 @@ function assistantGreeting() {
   return `${greeting}! मैं दिशा हूँ—इन्वेंटरी के काम और रोज़मर्रा की बातचीत, दोनों में मदद कर सकती हूँ। हिंदी, English या Hinglish में पूछिए; ऐप में बदलाव से पहले पुष्टि लूँगी।`;
 }
 
+function dograhTranscriptTurns(transcript = null) {
+  const turns = Array.isArray(transcript) ? transcript : (window.DograhWidget?.getMessages?.() || []);
+  return Array.isArray(turns) ? turns : [];
+}
+
+function syncDograhTranscript(transcript = null, speakLatest = false) {
+  const turns = dograhTranscriptTurns(transcript);
+  let latest = "";
+  let latestNew = "";
+  turns.forEach((turn, index) => {
+    const text = String(turn?.assistant_message?.text || "").trim();
+    if (!text) return;
+    latest = text;
+    const key = `${turn?.id != null ? `id:${turn.id}` : `index:${index}`}|${text}`;
+    if (dishaDograhSeenTurns.has(key)) return;
+    dishaDograhSeenTurns.add(key);
+    latestNew = text;
+    assistantHistory.push({ role: "assistant", content: text });
+    addAssistantMessage("assistant", text);
+  });
+  if (latestNew) {
+    saveAssistantHistory();
+    if (speakLatest) speakAssistantMessage(latestNew);
+  }
+  return latest;
+}
+
+async function startDograhChat() {
+  if (!dishaDograhEnabled || !dishaDograhReady || dishaDograhStarted) return;
+  try {
+    dishaDograhGreetingPending = true;
+    const transcript = await window.DograhWidget.startChat();
+    dishaDograhStarted = true;
+    syncDograhTranscript(transcript, false);
+    $("assistant-state").textContent = "Disha · Dograh ready";
+  } catch (error) {
+    dishaDograhGreetingPending = false;
+    $("assistant-state").textContent = "Dograh connection problem";
+    addAssistantMessage("system", "Disha se connection nahi ho paaya: " + (error.message || error) + ". Dobara kholkar try karein.");
+  }
+}
+
+async function initializeDograhWidget() {
+  if (dishaDograhLoadPromise) return dishaDograhLoadPromise;
+  dishaDograhLoadPromise = (async () => {
+    try {
+      const config = await getJSON(API + "/assistant/runtime-config");
+      const scriptUrl = String(config.dograh_widget_script_url || "");
+      let parsedScriptUrl;
+      try { parsedScriptUrl = new URL(scriptUrl, window.location.href); } catch (_) { return; }
+      const localHttp = parsedScriptUrl.protocol === "http:" && ["localhost", "127.0.0.1"].includes(parsedScriptUrl.hostname);
+      if (!config.dograh_chat_enabled || (parsedScriptUrl.protocol !== "https:" && !localHttp)
+          || parsedScriptUrl.username || parsedScriptUrl.password || parsedScriptUrl.hash) return;
+      const script = document.createElement("script");
+      script.async = true;
+      script.src = parsedScriptUrl.href;
+      script.id = "disha-dograh-widget";
+      script.setAttribute("data-dograh-context", JSON.stringify({ assistant_name: "Disha", application: "Inventory Management System" }));
+      await new Promise((resolve, reject) => {
+        script.onload = resolve;
+        script.onerror = () => reject(new Error("Dograh widget did not load"));
+        document.head.appendChild(script);
+      });
+      if (!window.DograhWidget?.startChat || !window.DograhWidget?.sendMessage || !window.DograhWidget?.getMessages) {
+        throw new Error("Dograh widget is not configured for Headless Chat");
+      }
+      const pendingUserMessage = assistantBusy && assistantHistory.at(-1)?.role === "user"
+        ? assistantHistory.at(-1) : null;
+      if (assistantHistory.length) saveAssistantHistory();
+      dishaDograhEnabled = true;
+      dishaDograhReady = true;
+      document.documentElement.dataset.dishaAgent = "dograh";
+      assistantHistory = pendingUserMessage ? [pendingUserMessage] : [];
+      localStorage.setItem(assistantHistoryKey, JSON.stringify(assistantHistory));
+      if ($("assistant-history-button")) $("assistant-history-button").hidden = true;
+      if ($("assistant-history-list")) $("assistant-history-list").hidden = true;
+      $("assistant-messages")?.replaceChildren();
+      if (pendingUserMessage) addAssistantMessage("user", pendingUserMessage.content);
+      const powered = document.querySelector(".assistant-powered");
+      if (powered) powered.textContent = "Powered by Dograh · Disha";
+      window.DograhWidget.onMessage?.((text, turn) => {
+        const transcript = [...dograhTranscriptTurns()];
+        const message = String(text || turn?.assistant_message?.text || "").trim();
+        const speakGreeting = dishaDograhGreetingPending && Boolean(message);
+        if (speakGreeting) dishaDograhGreetingPending = false;
+        if (message && !transcript.some((item) => item?.id === turn?.id && item?.assistant_message?.text === message)) {
+          transcript.push({ ...turn, assistant_message: { ...(turn?.assistant_message || {}), text: message } });
+        }
+        syncDograhTranscript(transcript, speakGreeting);
+      });
+      window.DograhWidget.onChatStateChange?.((state) => {
+        const status = $("assistant-state");
+        if (state === "ready") {
+          dishaDograhStarted = true;
+          if (status) status.textContent = "Disha · Dograh ready";
+        } else if (state === "expired" || state === "ended" || state === "error") {
+          dishaDograhStarted = false;
+          if (state === "expired" && status) status.textContent = "Nayi Disha chat shuru karne ke liye message bhejein";
+        }
+      });
+      window.DograhWidget.onError?.((error) => {
+        const state = $("assistant-state");
+        if (state) state.textContent = error?.message || "Dograh connection problem";
+      });
+      if (!$("assistant-panel")?.hidden) await startDograhChat();
+    } catch (error) {
+      dishaDograhEnabled = false;
+      dishaDograhReady = false;
+      document.documentElement.dataset.dishaAgent = "gemini";
+      console.warn("Disha Dograh chat could not be initialized; using the configured Disha provider.", error);
+    }
+  })();
+  return dishaDograhLoadPromise;
+}
+
 function openAssistant({ speakGreeting = true, focusInput = true, greetingText = null } = {}) {
   const panel = $("assistant-panel"), launcher = $("assistant-launcher");
   if (!panel || !launcher) return;
   panel.hidden = false;
   launcher.setAttribute("aria-expanded", "true");
   restoreAssistantMessages();
-  if (!assistantHistory.length) {
+  if (!assistantHistory.length && !dishaDograhEnabled) {
     const greeting = greetingText || assistantGreeting();
     assistantHistory.push({ role: "assistant", content: greeting });
     saveAssistantHistory();
     addAssistantMessage("assistant", greeting);
     if (speakGreeting) speakAssistantMessage(greeting);
   }
+  if (dishaDograhEnabled) startDograhChat();
   if (focusInput) $("assistant-chat-input")?.focus({ preventScroll: true });
 }
 
@@ -2453,6 +2582,17 @@ async function sendAssistantMessage(message, selectedSku = null, { fromVoice = f
       assistantHistory.push({ role: "assistant", content: reply });
       saveAssistantHistory();
       addAssistantMessage("assistant", reply);
+      speakAssistantMessage(reply);
+      return;
+    }
+    if (dishaDograhEnabled) {
+      await initializeDograhWidget();
+      if (!dishaDograhReady) throw new Error("Disha's Dograh chat is not connected. Check the Dograh widget settings.");
+      await startDograhChat();
+      const transcript = await window.DograhWidget.sendMessage(clean);
+      if (requestSequence !== assistantRequestSequence || requestSessionId !== assistantSessionId) return;
+      const reply = syncDograhTranscript(transcript, false);
+      if (!reply) throw new Error("Dograh did not return a text reply. Try again.");
       speakAssistantMessage(reply);
       return;
     }
@@ -3011,4 +3151,5 @@ if (!window.location.hash || !APP_VIEW_NAMES.has(decodeURIComponent(window.locat
   window.history.replaceState({ view: initialView }, "", `#${encodeURIComponent(initialView)}`);
 }
 switchView(initialView, { updateUrl: false });
+initializeDograhWidget();
 if (initialView !== "dashboard") loadSummary();

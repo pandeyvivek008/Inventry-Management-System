@@ -374,3 +374,9 @@ today (`backend/static/product_images/`) - fine for now, but on Railway/Render t
 folder resets on redeploy unless you attach a persistent volume or move image storage
 to something like S3/Cloudinary - a reasonable next step once real product photos are
 in the system.
+
+## Disha + Dograh and inventory MCP
+
+Disha can use a Dograh headless chat widget while keeping the existing Disha UI. The app also provides a key-protected Streamable HTTP MCP server for live inventory, order batches, analytics, and confirmation-gated changes.
+
+See [DOGRAH_INTEGRATION_HI.md](DOGRAH_INTEGRATION_HI.md) for setup steps, Railway variables, the Dograh widget, the MCP URL/header, the available tools, and the Hindi confirmation rules. Dograh runs as a separate service; its workspace MCP endpoint and this app's inventory MCP endpoint are different integrations.

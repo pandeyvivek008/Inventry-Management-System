@@ -6,6 +6,7 @@ import uuid
 import re
 import time
 import logging
+from contextlib import asynccontextmanager
 from importlib.util import find_spec
 from difflib import SequenceMatcher
 from collections import defaultdict, deque
@@ -13,6 +14,7 @@ from threading import Lock
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Query, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,6 +31,8 @@ from services import (
     barcode_service, bulk_stock_service, bulk_product_service, assistant_service,
     visual_match_service, visual_search_service,
 )
+import disha_mcp
+from mcp.server.transport_security import TransportSecuritySettings
 
 Base.metadata.create_all(bind=engine)
 logger = logging.getLogger(__name__)
@@ -82,14 +86,60 @@ def migrate_legacy_brand_data_explicitly(target_engine=engine):
         """))
         connection.execute(text("ALTER TABLE products DROP COLUMN brand"))
 
-app = FastAPI(title="Inventory Management System", version="1.4")
+def _mcp_transport_security():
+    allowed_hosts = {"localhost", "localhost:*", "127.0.0.1", "127.0.0.1:*", "[::1]", "[::1]:*"}
+    public_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip().lower().rstrip(".")
+    if public_domain:
+        allowed_hosts.update({public_domain, f"{public_domain}:*"})
+    allowed_hosts.update(
+        value.strip().lower() for value in os.getenv("DISHA_MCP_ALLOWED_HOSTS", "").split(",") if value.strip()
+    )
+    allowed_origins = {
+        f"https://{public_domain}", f"http://{public_domain}"} if public_domain else set()
+    allowed_origins.update(
+        value.strip() for value in os.getenv("DISHA_MCP_ALLOWED_ORIGINS", "").split(",") if value.strip()
+    )
+    return TransportSecuritySettings(allowed_hosts=sorted(allowed_hosts), allowed_origins=sorted(allowed_origins))
+
+
+_disha_mcp_http_app = disha_mcp.mcp.streamable_http_app(
+    streamable_http_path="/", json_response=True,
+    transport_security=_mcp_transport_security(),
+)
+
+
+@asynccontextmanager
+async def _app_lifespan(_app):
+    async with disha_mcp.mcp.session_manager.run():
+        yield
+
+
+app = FastAPI(title="Inventory Management System", version="1.4", lifespan=_app_lifespan)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # tighten to your actual frontend origin before exposing beyond localhost
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Mcp-Session-Id"],
 )
+
+
+@app.middleware("http")
+async def protect_disha_mcp(request: Request, call_next):
+    """Require a private key for the entire MCP transport; never log credentials."""
+    if (request.url.path == "/api/mcp" or request.url.path.startswith("/api/mcp/")) and request.method != "OPTIONS":
+        expected = os.getenv("DISHA_MCP_API_KEY", "").strip()
+        if len(expected) < 32:
+            return Response(status_code=404)
+        supplied = request.headers.get("x-api-key", "").strip()
+        if not supplied:
+            authorization = request.headers.get("authorization", "")
+            if authorization.lower().startswith("bearer "):
+                supplied = authorization[7:].strip()
+        if not supplied or not hmac.compare_digest(supplied, expected):
+            return Response(status_code=401, headers={"WWW-Authenticate": "Bearer"})
+    return await call_next(request)
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -103,6 +153,8 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 FRONTEND_DIR = BASE_DIR.parent / "frontend"
 if FRONTEND_DIR.exists():
     app.mount("/app", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+
+app.mount("/api/mcp", _disha_mcp_http_app, name="disha-mcp")
 
 
 @app.get("/", include_in_schema=False)
@@ -485,6 +537,28 @@ def _daily_sales_summary(db: Session) -> dict:
 @app.get("/api/analytics/daily-sales")
 def daily_sales_summary(db: Session = Depends(get_db)):
     return _daily_sales_summary(db)
+
+
+@app.get("/api/assistant/runtime-config")
+def assistant_runtime_config():
+    """Expose only Dograh's public embed URL; API keys always stay server-side."""
+    widget_url = os.getenv("DOGRAH_WIDGET_SCRIPT_URL", "").strip()
+    mode = os.getenv("DOGRAH_WIDGET_MODE", "headless-chat").strip().lower()
+    valid_url = False
+    if widget_url and mode == "headless-chat":
+        try:
+            parsed = urlsplit(widget_url)
+            local_http = parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1"}
+            valid_url = bool(parsed.hostname and (parsed.scheme == "https" or local_http)
+                             and not parsed.username and not parsed.password and not parsed.fragment)
+        except ValueError:
+            valid_url = False
+    return {
+        "assistant_name": "Disha",
+        "dograh_chat_enabled": valid_url,
+        "dograh_widget_script_url": widget_url if valid_url else None,
+        "dograh_mode": "headless-chat" if valid_url else None,
+    }
 
 
 @app.post("/api/assistant/chat")
