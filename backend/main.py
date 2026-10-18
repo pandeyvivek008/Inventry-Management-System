@@ -102,10 +102,13 @@ def _mcp_transport_security():
     return TransportSecuritySettings(allowed_hosts=sorted(allowed_hosts), allowed_origins=sorted(allowed_origins))
 
 
-_disha_mcp_http_app = disha_mcp.mcp.streamable_http_app(
-    streamable_http_path="/", json_response=True,
-    transport_security=_mcp_transport_security(),
-)
+# FastMCP 1.x takes transport configuration in its constructor/settings;
+# streamable_http_app() itself takes no keyword arguments in the deployed SDK.
+# Configure the mounted endpoint before the session manager is initialized.
+disha_mcp.mcp.settings.streamable_http_path = "/"
+disha_mcp.mcp.settings.json_response = True
+disha_mcp.mcp.settings.transport_security = _mcp_transport_security()
+_disha_mcp_http_app = disha_mcp.mcp.streamable_http_app()
 
 
 @asynccontextmanager
