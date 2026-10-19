@@ -2356,17 +2356,19 @@ function mountDograhVoiceWidget(rawUrl, chatUrl = "") {
   const safeScriptUrl = JSON.stringify(scriptUrl).replace(/</g, "\\u003c");
   iframe.srcdoc = `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
     *{box-sizing:border-box}body{margin:0;padding:5px;background:transparent;color:#18344a;font:13px system-ui,-apple-system,"Segoe UI",sans-serif}
-    .row{display:flex;align-items:center;gap:10px}button{min-height:42px;padding:0 15px;border:0;border-radius:12px;background:linear-gradient(110deg,#159a68,#0e7d60);color:#fff;font:600 13px system-ui;cursor:pointer}
-    button:disabled{opacity:.62;cursor:wait}.state{color:#496173;font-size:12px;line-height:1.35}
+    .row{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:11px;min-height:54px}
+    button{min-height:44px;padding:0 15px;border:0;border-radius:13px;background:linear-gradient(110deg,#159a68,#0e7d60);color:#fff;font:700 13px system-ui;cursor:pointer;box-shadow:0 5px 14px rgba(18,111,83,.18);white-space:nowrap}
+    button:hover{filter:brightness(1.05)}button:focus-visible{outline:3px solid #7ce5ba;outline-offset:2px}
+    button:disabled{opacity:.62;cursor:wait}.state{color:#496173;font-size:12px;line-height:1.4;overflow-wrap:anywhere}
     @media(prefers-color-scheme:dark){body{color:#e9f2f8}.state{color:#bdcbd4}}
   </style><body><div class="row"><button id="call" type="button" disabled>Loading Dograh voice…</button><span class="state" id="state">Voice is handled by your Dograh agent.</span></div><script>
     const src=${safeScriptUrl};let callStatus='idle';const button=document.getElementById('call');const label=document.getElementById('state');
-    function report(status,text){callStatus=status;const isActive=status==='connecting'||status==='connected';button.disabled=status==='connecting';button.textContent=status==='connected'?'End voice call':status==='connecting'?'Connecting…':status==='failed'?'Retry voice call':'Start voice call';label.textContent=text|| (status==='connected'?'Dograh voice is listening. Speak naturally.':'Voice is handled by your Dograh agent.');window.parent.postMessage({source:'inventory-dograh-voice',status,label:label.textContent},'*');}
+    function report(status,text){callStatus=status;button.disabled=false;button.textContent=status==='connected'?'End voice call':status==='connecting'?'Cancel call':status==='failed'?'Retry voice call':'Start voice call';label.textContent=text||(status==='connected'?'Connected. Speak naturally; the Dograh workflow supplies its configured voice.':status==='connecting'?'Connecting… tap Cancel call to stop.':status==='failed'?'Could not connect. Check microphone permission and try again.':'Hindi, English, Hinglish and other languages supported by your Dograh workflow.');window.parent.postMessage({source:'inventory-dograh-voice',status,label:label.textContent},window.location.origin);}
     function fail(text){report('failed',text||'Dograh voice could not connect. Check its widget and provider settings.');button.disabled=false;}
-    button.addEventListener('click',async()=>{const widget=window.DograhWidget;if(!widget?.start){fail('Dograh Voice widget is unavailable.');return;}if(callStatus==='connected'||callStatus==='connecting'){widget.end();return;}report('connecting','Connecting securely to Dograh…');try{const started=widget.start();if(started&&typeof started.then==='function')await started;}catch(error){fail(error?.message||'Could not start the voice call.');}});
-    window.addEventListener('message',event=>{if(event.data?.source==='inventory-dograh-app'&&event.data?.action==='end')window.DograhWidget?.end?.();});
-    const script=document.createElement('script');script.async=true;script.src=src;script.id='dograh-voice-widget';script.setAttribute('data-dograh-context',JSON.stringify({assistant_name:'Dograh',application:'Inventory Management System',language_mode:'auto_detect',reply_language:'match_latest_user_turn_and_script',hindi_response_script:'devanagari',spoken_pace:'clear_unhurried'}));
-    script.onload=()=>{const widget=window.DograhWidget;if(!widget?.start||!widget?.end){fail('This Dograh embed is not configured as a Headless Voice widget.');return;}widget.onStatusChange?.((status,text,subtext)=>report(status,[text,subtext].filter(Boolean).join(' · ')));widget.onError?.(error=>fail(error?.message));report('idle','Hindi, English, Hinglish and other configured Dograh languages.');button.disabled=false;};
+    button.addEventListener('click',async()=>{const widget=window.DograhWidget;if(!widget?.start){fail('Dograh Voice widget is unavailable.');return;}if(callStatus==='connected'||callStatus==='connecting'){try{widget.end();}finally{report('idle','Call ended. Start again whenever you are ready.');}return;}report('connecting','Connecting securely to Dograh… tap Cancel call if you want to stop.');try{const started=widget.start();if(started&&typeof started.then==='function')await started;}catch(error){fail(error?.message||'Could not start the voice call.');}});
+    window.addEventListener('message',event=>{if(event.origin!==window.location.origin||event.source!==window.parent||event.data?.source!=='inventory-dograh-app'||event.data?.action!=='end')return;try{window.DograhWidget?.end?.();}finally{report('idle','Call ended. Start again whenever you are ready.');}});
+    const script=document.createElement('script');script.async=true;script.src=src;script.id='dograh-voice-widget';script.setAttribute('data-dograh-context',JSON.stringify({assistant_name:'Dograh',application:'Inventory Management System',language_mode:'auto_detect',reply_language:'match_latest_user_turn_and_script',hindi_response_script:'devanagari',spoken_pace:'clear_unhurried',speech_guidance:'Speak complete words and full product or design names naturally. Do not spell ordinary words, names, colours, sizes, or quantities letter by letter. Spell a SKU or code only when the user asks.'}));
+    script.onload=()=>{const widget=window.DograhWidget;if(!widget?.start||!widget?.end){fail('This Dograh embed is not configured as a Headless Voice widget.');return;}widget.onStatusChange?.((status,text,subtext)=>report(status,[text,subtext].filter(Boolean).join(' · ')||undefined));widget.onCallEnd?.(()=>report('idle','Call ended. Start again whenever you are ready.'));widget.onError?.(error=>fail(error?.message));report('idle');button.disabled=false;};
     script.onerror=()=>fail('Dograh voice script did not load.');document.head.appendChild(script);
   </script></body></html>`;
   dograhVoiceFrame = iframe;
@@ -2374,12 +2376,12 @@ function mountDograhVoiceWidget(rawUrl, chatUrl = "") {
 }
 
 function stopDograhVoiceCall() {
-  dograhVoiceFrame?.contentWindow?.postMessage({ source: "inventory-dograh-app", action: "end" }, "*");
+  dograhVoiceFrame?.contentWindow?.postMessage({ source: "inventory-dograh-app", action: "end" }, window.location.origin);
 }
 
 window.addEventListener("message", (event) => {
   if (!dograhVoiceFrame || event.source !== dograhVoiceFrame.contentWindow
-      || event.data?.source !== "inventory-dograh-voice") return;
+      || event.origin !== window.location.origin || event.data?.source !== "inventory-dograh-voice") return;
   dograhVoiceStatus = String(event.data.status || "idle");
   const state = $("assistant-state");
   if (state && ["connecting", "connected", "failed"].includes(dograhVoiceStatus)) {
@@ -2412,6 +2414,7 @@ async function initializeDograhWidget() {
         reply_language: "match_latest_user_turn_and_script",
         hindi_response_script: "devanagari",
         spoken_pace: "clear_unhurried",
+        speech_guidance: "Speak complete words and full product or design names naturally. Do not spell ordinary words, names, colours, sizes, or quantities letter by letter. Spell a SKU or code only when the user asks.",
       }));
       await new Promise((resolve, reject) => {
         script.onload = resolve;
@@ -2480,6 +2483,17 @@ function openAssistant({ focusInput = true } = {}) {
   if (focusInput) $("assistant-chat-input")?.focus({ preventScroll: true });
 }
 
+function closeAssistantPanel({ returnFocus = true } = {}) {
+  const panel = $("assistant-panel"), launcher = $("assistant-launcher");
+  if (!panel || !launcher) return;
+  stopDograhVoiceCall();
+  panel.hidden = true;
+  $("assistant-photo-preview").hidden = true;
+  $("assistant-history-list").hidden = true;
+  launcher.setAttribute("aria-expanded", "false");
+  if (returnFocus) launcher.focus({ preventScroll: true });
+}
+
 async function sendAssistantMessage(message, selectedSku = null) {
   const clean = String(message || "").trim().slice(0, 500);
   if (!clean) return;
@@ -2531,17 +2545,15 @@ $("assistant-launcher")?.addEventListener("click", () => {
     openAssistant();
   }
   else {
-    stopDograhVoiceCall();
-    $("assistant-panel").hidden = true;
-    $("assistant-photo-preview").hidden = true;
-    $("assistant-launcher").setAttribute("aria-expanded", "false");
+    closeAssistantPanel({ returnFocus: true });
   }
 });
 $("assistant-close")?.addEventListener("click", () => {
-  setDograhPaused(true);
-  $("assistant-panel").hidden = true;
-  $("assistant-photo-preview").hidden = true;
-  $("assistant-launcher").setAttribute("aria-expanded", "false");
+  closeAssistantPanel({ returnFocus: true });
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || event.defaultPrevented || $("assistant-panel")?.hidden) return;
+  closeAssistantPanel({ returnFocus: true });
 });
 $("assistant-new-chat")?.addEventListener("click", () => startNewAssistantConversation());
 $("assistant-history-button")?.addEventListener("click", () => {

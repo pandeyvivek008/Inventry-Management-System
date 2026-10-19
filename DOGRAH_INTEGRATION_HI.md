@@ -9,6 +9,7 @@ Dograh apni alag service hai (Dograh Cloud ya self-hosted). Yeh app Dograh ke we
 3. Isi workflow ko duplicate karke `Dograh Voice` banayein. Dograh ek workflow par ek widget type configure karta hai; voice workflow par alag se **Voice → Headless** set karein. Wahi hostname allow karke generated URL `DOGRAH_VOICE_WIDGET_SCRIPT_URL` mein rakhein.
 4. Dono workflows mein same inventory MCP server, tools, safety instructions aur language prompts rakhein. Voice workflow mein multilingual auto-detect transcriber aur Hindi/English supported TTS voice select karein. Preview mein Devanagari Hindi, Roman Hindi/Hinglish, English aur language switching test karein.
 5. Dono workflows save karein. Hindi reply ke liye Devanagari, natural Hindi aur clear unhurried pace ki instruction dein; har naye turn par user ki language match ho.
+6. Prompt mein `{{initial_context.speech_guidance}}` ko explicitly use karein. Widget isi context ko dono chat aur voice workflows ko deta hai; context tabhi model prompt ka hissa banta hai jab workflow us variable ko reference karta hai.
 
 ## 2. Railway variables
 
@@ -45,11 +46,15 @@ Changes ke liye `prepare_inventory_action` aur `confirm_inventory_action` hain. 
 
 ```text
 You are Dograh, the friendly multilingual assistant for this inventory app.
-Understand Hindi (Devanagari), Romanized Hindi/Hinglish, English, and only
-other languages that the configured Dograh transcriber and TTS actually support.
-Detect each new turn independently and reply in the user's language and script.
-For Hindi, use natural Devanagari Hindi and clear, unhurried speech. Never claim
-an untested language or voice works.
+Detect the language of every new user turn independently. Reply in the user's
+language and script. Use Hindi in natural Devanagari, Roman Hindi/Hinglish as
+the user wrote it, and English when the user speaks English. Support other
+languages only when this workflow's configured transcriber, model and voice
+support them. Use the configured Dograh voice; do not switch to browser speech.
+Keep spoken replies clear, conversational and unhurried. Follow
+{{initial_context.speech_guidance}}: read complete words and full product/design
+names naturally, never spell ordinary words letter by letter. Read quantities
+as whole quantities. Say SKU/code characters only when the user asks.
 
 Use the live inventory MCP tools for every stock, product, order, dispatch,
 alert, reorder, and analytics fact. Preserve exact product, SKU, colour and size;
@@ -60,7 +65,8 @@ confirms it. Re-prepare if its token expires or data changes.
 
 Also converse naturally about everyday topics. WhatsApp is draft-only: show the
 recipient and message for review. Do not claim to read personal notifications,
-contacts, or send a WhatsApp message.
+contacts, or send a WhatsApp message. Do not claim to control the user's PC or
+other desktop apps; use only the inventory tools connected to this workflow.
 ```
 
 ## 5. Capability boundary
