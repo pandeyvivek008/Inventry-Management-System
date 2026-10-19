@@ -24,4 +24,8 @@ Official setup: [Dograh website voice widget](https://docs.dograh.com/voice-agen
 - **Hindi ko galat bolta/samajhta hai:** Dograh Voice workflow ke transcriber ka auto-detect, selected TTS voice ki Hindi support, aur reply-language prompt ko check karein. App mein text chat `Dograh` workflow aur voice `Dograh Voice` workflow use karte hain; dono mein same MCP tools/prompts rakhein.
 - **Inventory action:** confirmation se pehle SKU, size aur quantity verify karein. Dograh ko `prepare_inventory_action` ke baad explicit confirmation ke bina `confirm_inventory_action` nahi karna chahiye.
 
+## Personal WhatsApp Web se Disha ko selected text dena
+
+Optional Chrome companion sirf wahi text padhta hai jo aap WhatsApp Web ke khule chat mein select karte hain. Extension popup mein text review karne ke baad **Share with Disha** dabane par text Disha ke input box mein aata hai; Disha ko bhejne ke liye app mein **Send** aap khud dabate hain. Disha ka reply WhatsApp click-to-chat draft hota hai; WhatsApp mein check karke **Send** aap khud dabayen. Extension notifications, doosre messages ya contacts nahi padhta aur message auto-send nahi karta. Setup ke liye README ka **Optional local WhatsApp Web companion** section dekhein.
+
 Secrets ko frontend ya chat mein na daalein. Inventory MCP `X-API-Key` ka secret Railway aur Dograh credential vault mein hi rakhein. Full setup: [DOGRAH_INTEGRATION_HI.md](DOGRAH_INTEGRATION_HI.md).

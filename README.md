@@ -241,6 +241,22 @@ for you to review and send; it cannot read personal WhatsApp notifications or
 contacts. Automatic low-stock alert delivery still requires a business messaging
 service.
 
+### Optional local WhatsApp Web companion
+
+The unpacked Chrome extension in `companion/chrome-extension` can copy only text
+that you select in an already-open WhatsApp Web conversation into the Disha chat
+input. You review the selected text in the extension, then review and submit it
+to Disha yourself. Disha's reply remains a WhatsApp click-to-chat draft; you
+review and press Send in WhatsApp. The extension does not scrape notifications,
+read other messages, or send messages automatically.
+
+To enable it, open `chrome://extensions`, turn on **Developer mode**, choose
+**Load unpacked**, and select `E:\Inventry-Management-System\companion\chrome-extension`.
+Keep the signed-in inventory app open in one tab and WhatsApp Web open in another.
+In WhatsApp Web, select the text you want help with, click the companion icon,
+review the selection, then choose **Share with Disha**. The text appears in the
+Disha input box; edit it if needed and press Send yourself.
+
 Hindi examples, confirmation steps, microphone/earbud setup, and language
 troubleshooting are in [VOICE_AUTOMATION_HI.md](VOICE_AUTOMATION_HI.md).
 

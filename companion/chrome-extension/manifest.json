@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "Disha Local WhatsApp Companion",
+  "version": "1.0.0",
+  "description": "Share only WhatsApp Web text you select with your Disha chat input.",
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://inventry-management-system-production.up.railway.app/*"
+  ],
+  "action": {
+    "default_title": "Share selected WhatsApp text with Disha",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://inventry-management-system-production.up.railway.app/app/*"
+      ],
+      "js": ["app-bridge.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
