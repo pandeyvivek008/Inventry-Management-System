@@ -6,7 +6,7 @@ importer for your marketplace seller-listings export, Excel/CSV order deduction 
 matches on your actual marketplace SKU codes, QR-code scan-to-recount, bulk physical
 stock counting, Excel bulk product/size import, automatic low-stock alerts, a daily reorder list, a searchable
 **Products** view with photo upload and delete, a modern Tailwind CSS interface, and a
-Hindi conversational Disha assistant, safe voice stock/product operations, and
+Hindi conversational Dograh assistant, safe voice stock/product operations, and
 photo-to-catalog visual search with size-wise live stock.
 
 ## 1. Architecture
@@ -36,8 +36,8 @@ SERVICE LAYER  backend/services/
   reorder_service       pending marketplace orders -> a shortage picklist / vendor-ready reorder list
   barcode_service        one Code128 barcode per design; scan it to open all
                        sizes together
-  assistant_service      Gemini/OpenAI intent parsing or optional self-hosted Ollama,
-                         Hindi transcription fallback and local Piper speech output
+  Dograh assistant         Dograh Chat + Voice widgets; live inventory tools use
+                         the key-protected Streamable HTTP MCP endpoint
   visual_search_service  SigLIP 2 embeddings for product-linked reference images + versioned pgvector index
         |  SQLAlchemy ORM
 DATA LAYER  backend/models.py
@@ -210,58 +210,39 @@ to process that subset. Deleting a partially dispatched batch restores every alr
   appending the style id), and one design with two rows both claiming the same size
   (kept the first, flagged the rest for you to check in your seller panel).
 
-## 7. Disha AI and visual product search
+## 7. Dograh AI and visual product search
 
 ### Conversational stock assistant
 
-The floating Disha assistant understands Hindi, Romanized Hindi, Hinglish, and
-English, then the app resolves inventory requests against its own catalog and
-stock ledger. Inventory and product changes are validated by the app and shown
-for confirmation; the model does not write directly to the database.
+The floating assistant is named **Dograh** and uses Dograh for both text chat and
+live voice. The app keeps separate public embed
+URLs for Dograh's Chat/Headless and Voice/Headless widgets; a chat-only embed
+cannot start a microphone call. Supported recognition and spoken languages
+depend on the transcriber and TTS voice selected in Dograh. Configure auto-detect
+and test Hindi, Romanized Hindi/Hinglish, English, and mid-conversation language
+switches before relying on them.
 
-Legacy `AI_PROVIDER=gemini` keeps the existing Gemini setup. For a configurable
-Strata/OpenAI-compatible endpoint, set `DISHA_AI_PROVIDER=strata`,
-`DISHA_AI_BASE_URL`, and `DISHA_AI_MODEL`. Add `DISHA_AI_API_KEY` only when the
-endpoint requires it. Remote endpoints are blocked by default; explicitly set
-`DISHA_AI_ALLOW_EXTERNAL_INFERENCE=true` only when you trust the provider and
-have secured its connection. Private/local Strata endpoints work with the safe
-default. `DISHA_AI_ENABLED=false` disables Disha chat. See
-[SELF_HOSTED_AI_HI.md](SELF_HOSTED_AI_HI.md) for exact Railway examples.
+Dograh reads live inventory through the app's authenticated Streamable HTTP MCP
+endpoint. It exposes 12 tools: ten read tools and `prepare_inventory_action` /
+`confirm_inventory_action` for confirmation-gated changes. Product/stock/size
+updates and partial/full dispatch require a prepared action and explicit user
+confirmation. Never put the MCP key in frontend code, Git, or a widget URL. See
+[DOGRAH_INTEGRATION_HI.md](DOGRAH_INTEGRATION_HI.md) for Railway variables,
+voice-language setup, the MCP header, tools, and workflow instructions.
 
-An optional admin-only provider probe is available at
-`POST /api/assistant/diagnostics` when `DISHA_AI_DIAGNOSTICS_TOKEN` is set. Send
-that token as a Bearer authorization header. It makes one minimal inference
-request with no inventory or conversation data and returns only safe status
-flags; diagnostics are hidden when no token is configured. The app has no user
-accounts or roles, so keep the token private and do not expose it in the UI.
+The microphone starts only after the user clicks **Start voice call**; HTTPS and
+browser microphone permission are required. Closing the panel or hiding the tab
+ends the Dograh call. Daily dispatch summaries count dispatched units, not
+pending orders; the app does not currently store sales prices or revenue.
 
-Optional `AI_PROVIDER=local` routes structured intent to Ollama. Voice input
-uses embedded `faster-whisper` on CPU by default (Hindi, English, and Hinglish;
-no transcription API); `LOCAL_STT_URL` can override it with a private service.
-Voice output can use Piper or browser speech. Never place API keys in HTML,
-JavaScript, Git, or screenshots. Local setup and
-the deployment boundary are documented in [SELF_HOSTED_AI_HI.md](SELF_HOSTED_AI_HI.md).
-
-Chat history currently stays in that browser's local storage. It is not shared
-between browsers or devices; user accounts and server-side chat history are not
-implemented yet. Disha's microphone starts only after the user opens/taps Disha;
-browser permission is required. Speech transcription defaults to local Whisper,
-which auto-detects Hindi/English; Strata recordings are not sent to a cloud API.
-Gemini's temporary audio 5xx errors retry a bounded number of times, then use
-local Whisper. Say
-**haan/yes** to confirm a pending action or **nahi/no** to cancel. The mic pauses
-when Disha is closed or the tab goes to the background. Daily sales summaries
-count dispatched inventory units (not pending orders); the app does not currently
-store sales prices or revenue.
-
-For WhatsApp, Disha can prepare a click-to-chat draft when you provide an
+For WhatsApp, Dograh can prepare a click-to-chat draft when you provide an
 international-format phone number and the exact message. The app opens WhatsApp
 for you to review and send; it cannot read personal WhatsApp notifications or
 contacts. Automatic low-stock alert delivery still requires a business messaging
 service.
 
-Hindi examples, confirmation steps, photo controls, microphone and earbud setup,
-and troubleshooting are in [VOICE_AUTOMATION_HI.md](VOICE_AUTOMATION_HI.md).
+Hindi examples, confirmation steps, microphone/earbud setup, and language
+troubleshooting are in [VOICE_AUTOMATION_HI.md](VOICE_AUTOMATION_HI.md).
 
 The app also includes visual product search using the multilingual SigLIP 2
 image-language encoder over saved product reference photos. Add up to eight
@@ -292,18 +273,12 @@ pip install -r requirements.txt
 python tests/test_core_flow.py
 ```
 
-Run the Disha service, voice, provider, and visual-search checks separately:
-
-```bash
-python tests/test_assistant_flow.py
-python tests/test_assistant_audio_fallback.py
-python tests/test_assistant_gemini_tts.py
-python tests/test_self_hosted_ai.py
-python -m pytest tests/test_visual_match.py -q
-```
-
-The first four files are standalone integration scripts; run each in its own
-Python process. test_visual_match.py is the pytest module.
+The removed `test_assistant_*` and `test_self_hosted_ai.py` scripts covered the
+retired provider adapter; they did not exercise Dograh. Verify the active assistant by
+checking `/api/dograh/runtime-config`, confirming the 12 MCP tools appear in
+the Dograh agent, and testing read-only inventory questions in the published
+workflow. Keep any write/dispatch check uncommitted unless an authorized user
+explicitly confirms the operation.
 
 ## 9. Natural next steps (not built, in priority order)
 
@@ -319,9 +294,8 @@ Python process. test_visual_match.py is the pytest module.
    a direct pull; the service layer underneath doesn't need to change, only how order
    rows arrive.
 5. **WhatsApp/SMS alert delivery** - automatic low-stock alerts still need a
-   configured business messaging service; Disha's current WhatsApp feature opens
+   configured business messaging service; Dograh's current WhatsApp feature opens
    a user-reviewed draft.
-6. **Phase 2 AI activation** - see #7.
 
 ## 10. Putting it online (GitHub + Railway or Render, not Vercel)
 
@@ -375,8 +349,8 @@ folder resets on redeploy unless you attach a persistent volume or move image st
 to something like S3/Cloudinary - a reasonable next step once real product photos are
 in the system.
 
-## Disha + Dograh and inventory MCP
+## Dograh and inventory MCP
 
-Disha can use a Dograh headless chat widget while keeping the existing Disha UI. The app also provides a key-protected Streamable HTTP MCP server for live inventory, order batches, analytics, and confirmation-gated changes.
+Dograh can use a Dograh headless chat widget while keeping the existing Dograh UI. The app also provides a key-protected Streamable HTTP MCP server for live inventory, order batches, analytics, and confirmation-gated changes.
 
 See [DOGRAH_INTEGRATION_HI.md](DOGRAH_INTEGRATION_HI.md) for setup steps, Railway variables, the Dograh widget, the MCP URL/header, the available tools, and the Hindi confirmation rules. Dograh runs as a separate service; its workspace MCP endpoint and this app's inventory MCP endpoint are different integrations.

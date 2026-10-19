@@ -80,13 +80,13 @@ History mein stock changes, order deductions aur manual adjustments newest first
 
 Trash mein archived designs ko review karein. Restore karne se design wapas active list mein aata hai. **Delete forever/empty** jaisa permanent action recover nahi hota—SKU, sizes aur history par uska asar check kiye bina use na karein.
 
-## 11. Disha Assistant
+## 11. Dograh Assistant
 
-Robot icon dabane par Disha panel khulta hai aur voice session shuru hota hai. Pehle browser mein microphone permission allow karni hogi. Hindi, Hinglish ya English mein seedha bol sakte hain; mic ko har sentence ke baad dabane ki zaroorat nahi. Pause se listening/voice rukti hai; panel close ya tab background karne par mic off hota hai. Text chat mein type karke Enter/send dabayen.
+Robot icon dabane par Dograh panel khulta hai. Voice ke liye panel mein **Start voice call** dabayen aur browser microphone permission allow karein. Hindi, Hinglish ya English mein seedha bol sakte hain; mic ko har sentence ke baad dabane ki zaroorat nahi. **End voice call**, panel close, ya tab background karne par mic off hota hai. Text chat mein type karke Enter/send dabayen.
 
-Examples: “Blue kurta size M ka stock batao”, “Mustard wali M size mein 5 add karo”, “Kids NK 101 ki photo dikhao”, “Sab sizes batao”, “Aaj ki dispatched sales ka summary do”. Disha action se pehle current aur proposed values dikhati hai. **Confirm** ya “haan” se update hota hai; **Cancel** ya “nahi” se rukta hai. Product create/edit/archive/restore aur order dispatch bhi confirmation card ke baad hi execute hone chahiye. Agar match clear na ho to color/name/SKU aur size clarify karein.
+Examples: “Blue kurta size M ka stock batao”, “Mustard wali M size mein 5 add karo”, “Kids NK 101 ki photo dikhao”, “Sab sizes batao”, “Aaj ki dispatched sales ka summary do”. Dograh action se pehle current aur proposed values dikhati hai. **Confirm** ya “haan” se update hota hai; **Cancel** ya “nahi” se rukta hai. Product create/edit/archive/restore aur order dispatch bhi confirmation card ke baad hi execute hone chahiye. Agar match clear na ho to color/name/SKU aur size clarify karein.
 
-Disha ka text/voice cloud AI provider ko bheja ja sakta hai. API key server environment mein rakhein; browser code, Excel, screenshots ya GitHub par key na likhein. API unavailable ho to manual app pages kaam karte rehte hain. Disha-specific steps ke liye [Disha manual](DISHA_USER_MANUAL_HI.md) dekhein.
+Dograh ka text/voice cloud AI provider ko bheja ja sakta hai. API key server environment mein rakhein; browser code, Excel, screenshots ya GitHub par key na likhein. API unavailable ho to manual app pages kaam karte rehte hain. Dograh-specific steps ke liye [Dograh manual](DOGRAH_USER_MANUAL_HI.md) dekhein.
 
 ## 12. Production data safety
 

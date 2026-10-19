@@ -20,7 +20,6 @@ psycopg[binary]>=3.1   # PostgreSQL driver - needed once DATABASE_URL points at 
 
 qrcode[pil]>=7.4
 redis>=5.0
-faster-whisper>=1.1,<2
 
 # CPU-only SigLIP 2 runtime for visual product photo matching. These install
 # the model code; public weights are cached on first search (set HF_HOME to a

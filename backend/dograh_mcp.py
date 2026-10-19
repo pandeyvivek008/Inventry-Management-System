@@ -1,4 +1,4 @@
-"""Streamable HTTP MCP tools for Disha's inventory assistant.
+"""Streamable HTTP MCP tools for Dograh's inventory assistant.
 
 Writes are two-step: prepare_inventory_action returns a short-lived signed
 confirmation token, and confirm_inventory_action applies that exact action.
@@ -29,9 +29,9 @@ from services import alert_service, excel_service, inventory_service, reorder_se
 
 
 mcp = FastMCP(
-    "Disha Inventory MCP",
+    "Dograh Inventory MCP",
     instructions=(
-        "You are Disha, the inventory assistant. Use these tools for all live inventory facts. "
+        "You are Dograh, the inventory assistant. Use these tools for all live inventory facts. "
         "Never guess stock or report a write as complete before confirm_inventory_action succeeds. "
         "For every stock, product, size, order import, or dispatch change, call prepare_inventory_action, show "
         "the exact details, obtain the user's explicit confirmation, then call "
@@ -43,6 +43,20 @@ mcp = FastMCP(
 ACTIVE_ORDER_STATUSES = (models.OrderLineStatus.PENDING, models.OrderLineStatus.INSUFFICIENT_STOCK)
 TOKEN_TTL_SECONDS = 600
 logger = logging.getLogger(__name__)
+
+_INVENTORY_QUERY_STOPWORDS = {
+    # English and common Roman Hindi/Hinglish question words. Keep catalog
+    # identity terms (design, colour, brand fragments, and SKU words) intact.
+    "a", "an", "and", "are", "available", "batao", "bataye", "can", "check",
+    "chahiye", "de", "dikhao", "do", "does", "for", "hai", "hain", "how",
+    "in", "inventory", "is", "ka", "kar", "ke", "ki", "kitna", "kitne",
+    "kitni", "ko", "me", "mein", "mujhe", "my", "of", "please", "show",
+    "size", "sizes", "stock", "tell", "the", "what", "which", "with", "your",
+}
+_INVENTORY_SIZE_TOKENS = {
+    "xs", "s", "m", "l", "xl", "xxl", "xxxl", "2xs", "xxs", "2xl",
+    "3xl", "4xl", "5xl", "3xs", "small", "medium", "large", "size",
+}
 
 
 def _session():
@@ -145,7 +159,7 @@ def _order_import_csv(lines: list[dict[str, Any]]) -> bytes:
 
 
 def _confirmation_token(action: str, payload: dict[str, Any]) -> str:
-    secret = os.getenv("DISHA_MCP_API_KEY", "").strip().encode("utf-8")
+    secret = os.getenv("DOGRAH_MCP_API_KEY", "").strip().encode("utf-8")
     if len(secret) < 32:
         raise ValueError("The MCP API key is not configured or is too short.")
     body = json.dumps({"v": 1, "action": action, "payload": payload,
@@ -159,7 +173,7 @@ def _confirmation_token(action: str, payload: dict[str, Any]) -> str:
 def _decode_confirmation_token(token: str) -> tuple[str, dict[str, Any]]:
     try:
         encoded, supplied_signature = str(token or "").split(".", 1)
-        secret = os.getenv("DISHA_MCP_API_KEY", "").strip().encode("utf-8")
+        secret = os.getenv("DOGRAH_MCP_API_KEY", "").strip().encode("utf-8")
         expected = hmac.new(secret, encoded.encode("ascii"), hashlib.sha256).hexdigest()
         if len(secret) < 32 or not hmac.compare_digest(supplied_signature, expected):
             raise ValueError("Invalid confirmation token.")
@@ -176,12 +190,25 @@ def _decode_confirmation_token(token: str) -> tuple[str, dict[str, Any]]:
 
 @mcp.tool()
 def search_inventory(query: str = "", limit: int = 25, offset: int = 0) -> dict[str, Any]:
-    """Search products by name, SKU, category, or color and return live stock per size."""
+    """Search product/name/SKU/color terms and return live stock by size.
+
+    Natural-language request words in English or Roman Hindi and size labels are
+    ignored so callers may pass a full question such as "Mewari Gold ka size M
+    stock batao" without those words preventing a product match.
+    """
     limit, offset = min(max(int(limit), 1), 50), max(int(offset), 0)
+    raw_query = str(query or "").strip()
+    tokens = list(dict.fromkeys(
+        token for token in re.findall(r"[\w]+", raw_query.casefold(), flags=re.UNICODE)
+        if token not in _INVENTORY_QUERY_STOPWORDS and token not in _INVENTORY_SIZE_TOKENS
+    ))
+    if raw_query and not tokens:
+        return {"items": [], "total": 0, "limit": limit, "offset": offset,
+                "message": "Include a product name, colour, category, or SKU."}
     db = _session()
     try:
         q = db.query(models.Product).options(selectinload(models.Product.variants)).filter(models.Product.is_deleted.is_(False))
-        for token in re.findall(r"[\w]+", str(query or "").casefold(), flags=re.UNICODE):
+        for token in tokens:
             like = f"%{token}%"
             q = q.filter(or_(models.Product.sku.ilike(like), models.Product.name.ilike(like), models.Product.category.ilike(like)))
         total = q.count()
@@ -544,7 +571,7 @@ def _validate_prepare(action: str, payload: dict[str, Any], db) -> tuple[str, di
             if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity < 1 or quantity > 1_000_000:
                 raise ValueError(f"Order row {index} quantity must be a whole number from 1 to 1000000.")
             lines.append({"sku": sku, "size": size, "quantity": quantity})
-        filename = str(payload.get("filename") or "Disha orders.csv").strip().replace("/", "_").replace("\\", "_")[:250]
+        filename = str(payload.get("filename") or "Dograh orders.csv").strip().replace("/", "_").replace("\\", "_")[:250]
         file_bytes = _order_import_csv(lines)
         file_hash = hashlib.sha256(file_bytes).hexdigest()
         if db.query(models.OrderUpload.id).filter(models.OrderUpload.file_hash == file_hash).first():
@@ -626,7 +653,7 @@ def _reconcile_after_commit(db, result: dict[str, Any]) -> dict[str, Any]:
         result["reconciled_order_lines"] = int(excel_service.reconcile_unmapped_order_lines(db))
     except Exception as exc:
         db.rollback()
-        logger.warning("Disha MCP action committed; unmapped order reconciliation failed (%s).", type(exc).__name__)
+        logger.warning("Dograh MCP action committed; unmapped order reconciliation failed (%s).", type(exc).__name__)
         result["warning"] = "The action succeeded, but some previously unmatched order lines could not be refreshed."
     return result
 
@@ -647,18 +674,18 @@ def _confirm_stock(payload: dict[str, Any]) -> dict[str, Any]:
             if not variant.last_counted_at:
                 raise ValueError("This size has no physical count. Set its verified total first.")
             inventory_service.apply_stock_change(db, variant, quantity, models.TransactionType.RESTOCK,
-                reference="Disha MCP confirmed stock add", created_by="disha_mcp",
+                reference="Dograh MCP confirmed stock add", created_by="dograh_mcp",
                 expected_current_stock=int(payload["expected_stock"]))
             variant.last_counted_at = datetime.now(timezone.utc)
         elif operation == "remove":
             if quantity > int(variant.current_stock):
                 raise ValueError("There is not enough stock for this removal.")
             inventory_service.apply_stock_change(db, variant, -quantity, models.TransactionType.MANUAL_ADJUSTMENT,
-                reference="Disha MCP confirmed stock removal", created_by="disha_mcp",
+                reference="Dograh MCP confirmed stock removal", created_by="dograh_mcp",
                 expected_current_stock=int(payload["expected_stock"]))
         else:
-            inventory_service.set_absolute_stock(db, variant, quantity, created_by="disha_mcp",
-                note="Disha MCP confirmed physical count", expected_current_stock=int(payload["expected_stock"]))
+            inventory_service.set_absolute_stock(db, variant, quantity, created_by="dograh_mcp",
+                note="Dograh MCP confirmed physical count", expected_current_stock=int(payload["expected_stock"]))
         alert_service.check_variant_alert(db, variant)
         result = {"status": "completed", "variant_code": variant.variant_code, "sku": variant.product.sku,
             "product": variant.product.name, "size": variant.size, "current_stock": int(variant.current_stock)}
@@ -773,7 +800,7 @@ def _confirm_size(action: str, payload: dict[str, Any]) -> dict[str, Any]:
             initial = int(payload["initial_stock"])
             if initial:
                 inventory_service.apply_stock_change(db, variant, initial, models.TransactionType.INITIAL_STOCK,
-                    reference="Disha MCP confirmed size creation", created_by="disha_mcp")
+                    reference="Dograh MCP confirmed size creation", created_by="dograh_mcp")
                 variant.last_counted_at = now
             alert_service.check_variant_alert(db, variant)
             result = {"status": "completed", "product": _product_data(product)}
@@ -864,7 +891,7 @@ def _confirm_order_import(payload: dict[str, Any]) -> dict[str, Any]:
         if file_hash != payload["content_hash"] or db.query(models.OrderUpload.id).filter(
             models.OrderUpload.file_hash == file_hash).first():
             raise ValueError("This order list changed or was already imported. Prepare it again.")
-        result = excel_service.process_order_excel(db, file_bytes, payload["filename"], created_by="disha_mcp")
+        result = excel_service.process_order_excel(db, file_bytes, payload["filename"], created_by="dograh_mcp")
         return {"status": "completed", "batch_id": result["order_upload_id"], "filename": result["filename"],
             "rows": result["total_rows"], "matched_lines": result["pending_count"],
             "unmatched_lines": result["not_found_count"], "pending_units": sum(

@@ -19,6 +19,7 @@ from openpyxl import Workbook, load_workbook  # noqa: E402
 from sqlalchemy import create_engine, inspect, text  # noqa: E402
 
 import main  # noqa: E402
+import dograh_mcp  # noqa: E402
 from database import SessionLocal  # noqa: E402
 from models import ReorderBatch  # noqa: E402
 from scripts.import_seller_listings import import_csv, _clean_product_title  # noqa: E402
@@ -74,6 +75,9 @@ by_size = {v["size"]: v for v in body["variants"]}
 expect(by_size["S"]["variant_code"] == "T1_S", "variant_code is canonical SKU_Size")
 expect(by_size["S"]["status"] == "OK", "T1-S status OK (10 > 5)")
 expect(by_size["L"]["status"] == "LOW", "T1-L status LOW (2 <= 5): typed-in starting stock counts as counted")
+mcp_search = dograh_mcp.search_inventory("Please tell me Test Kurta ka size M stock batao")
+expect(mcp_search["total"] == 1 and mcp_search["items"][0]["sku"] == "T1",
+       "Dograh MCP ignores English/Hinglish request words and size labels when matching a product")
 
 r = client.post("/api/products", json={"sku": "T2", "name": "Test Suit B",
                                         "variants": [{"size": "M", "initial_stock": 6, "reorder_threshold": 5}]})

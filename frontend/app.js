@@ -181,82 +181,8 @@ function noteAlertCount(n) {
   setAlertBadge(n);
 }
 
-let assistantSpeaking = false;
-let assistantSpeechId = 0;
-let assistantSpeechGuardTimer = null;
-let assistantIgnoreTranscriptUntil = 0;
 let assistantCurrentPhotoProduct = null;
 let assistantPhotoZoom = 1;
-let assistantAudioPlayer = null;
-let assistantAudioObjectUrl = null;
-function setDishaSpeakingUI(speaking) {
-  document.getElementById("assistant-widget")?.classList.toggle("is-speaking", speaking);
-  const state = document.getElementById("assistant-state");
-  if (state && speaking) state.textContent = "दिशा बोल रही है…";
-  else if (state && !assistantPaused) updateDishaListeningUI();
-}
-function finishAssistantSpeech(speechId) {
-  if (speechId !== assistantSpeechId) return;
-  assistantSpeaking = false;
-  setDishaSpeakingUI(false);
-  assistantIgnoreTranscriptUntil = Date.now() + 900;
-  clearTimeout(assistantSpeechGuardTimer);
-  assistantAudioPlayer = null;
-  if (assistantAudioObjectUrl) URL.revokeObjectURL(assistantAudioObjectUrl);
-  assistantAudioObjectUrl = null;
-}
-function speakWithBrowserVoice(speechId, message) {
-  if (speechId !== assistantSpeechId || assistantPaused || !window.speechSynthesis || !window.SpeechSynthesisUtterance) {
-    finishAssistantSpeech(speechId);
-    return;
-  }
-  const speechText = makeSpeechFriendly(message);
-  const utterance = new SpeechSynthesisUtterance(speechText);
-  const hasHindi = /[\u0900-\u097F]/.test(speechText);
-  utterance.lang = hasHindi ? "hi-IN" : "en-IN";
-  utterance.rate = 0.88;
-  utterance.pitch = 1.1;
-  const available = window.speechSynthesis.getVoices();
-  const matching = available.filter((voice) => hasHindi ? /^hi(-|_)?in/i.test(voice.lang) : /^en(-|_)?in/i.test(voice.lang));
-  const friendlyVoice = matching.find((voice) => /female|coral|shimmer|google हिन्दी|google hindi|swara|kalpana|heera|priya|neerja/i.test(voice.name));
-  // Never substitute a Hindi voice for English (or vice versa): that was the
-  // source of the noticeably different accent in the browser fallback.
-  if (friendlyVoice) utterance.voice = friendlyVoice;
-  utterance.onend = () => finishAssistantSpeech(speechId);
-  utterance.onerror = () => finishAssistantSpeech(speechId);
-  window.speechSynthesis.cancel();
-  window.speechSynthesis.speak(utterance);
-  assistantSpeechGuardTimer = setTimeout(() => finishAssistantSpeech(speechId), Math.max(10000, speechText.length * 180));
-}
-async function speakAssistantMessage(message) {
-  if (assistantPaused) return;
-  const speechId = ++assistantSpeechId;
-  window.speechSynthesis?.cancel();
-  assistantAudioPlayer?.pause();
-  if (assistantAudioObjectUrl) URL.revokeObjectURL(assistantAudioObjectUrl);
-  assistantAudioObjectUrl = null;
-  clearTimeout(assistantSpeechGuardTimer);
-  assistantSpeaking = true;
-  setDishaSpeakingUI(true);
-  try {
-    const response = await fetch(`${API}/assistant/speech`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: makeSpeechFriendly(message).slice(0, 1200) }),
-    });
-    if (!response.ok) throw new Error(`Speech API ${response.status}`);
-    if (speechId !== assistantSpeechId || assistantPaused) return;
-    const audioBlob = await response.blob();
-    assistantAudioObjectUrl = URL.createObjectURL(audioBlob);
-    const player = new Audio(assistantAudioObjectUrl);
-    assistantAudioPlayer = player;
-    player.onended = () => finishAssistantSpeech(speechId);
-    player.onerror = () => finishAssistantSpeech(speechId);
-    await player.play();
-    assistantSpeechGuardTimer = setTimeout(() => finishAssistantSpeech(speechId), Math.max(15000, String(message).length * 240));
-  } catch (_) {
-    speakWithBrowserVoice(speechId, message);
-  }
-}
 function setAlertBadge(n) {
   [$("alert-count"), $("alert-count-mobile")].forEach((el) => { if (el) { el.textContent = n; el.hidden = !(n > 0); } });
 }
@@ -1984,32 +1910,14 @@ let assistantHistory = [];
 let assistantSessions = [];
 let assistantSessionId = localStorage.getItem(assistantSessionIdKey) || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 let assistantBusy = false;
-let dishaDograhEnabled = false;
-let dishaDograhReady = false;
-let dishaDograhStarted = false;
-let dishaDograhGreetingPending = false;
-let dishaDograhSeenTurns = new Set();
-let dishaDograhLoadPromise = null;
+let dograhEnabled = false;
+let dograhReady = false;
+let dograhStarted = false;
+let dograhSeenTurns = new Set();
+let dograhLoadPromise = null;
+let dograhVoiceFrame = null;
+let dograhVoiceStatus = "idle";
 let assistantRequestSequence = 0;
-let assistantMicStream = null;
-let assistantMicContext = null;
-let assistantMicAnalyser = null;
-let assistantMicFrame = 0;
-let assistantMicRecorder = null;
-let assistantMicChunks = [];
-let assistantMicStarting = false;
-let assistantMicSpeakingSince = 0;
-let assistantMicLastVoiceAt = 0;
-let assistantMicRecordingStartedAt = 0;
-let assistantVoiceProcessing = false;
-let assistantWakeArmed = false;
-let assistantLastVoiceErrorAt = 0;
-// Privacy by default: opening the app never turns on the microphone.
-// The user must tap the Disha launcher (or Start voice) for each session.
-let assistantPaused = true;
-let assistantWakeEnabled = false;
-let assistantMicBlocked = false;
-let assistantPermissionNoticeShown = false;
 let assistantConfirmationButton = null;
 try {
   const saved = JSON.parse(localStorage.getItem(assistantHistoryKey) || "[]");
@@ -2079,8 +1987,8 @@ function openAssistantSession(sessionId) {
   restoreAssistantMessages();
 }
 
-function startNewAssistantConversation({ fromVoice = false } = {}) {
-  if (dishaDograhEnabled) {
+function startNewAssistantConversation() {
+  if (dograhEnabled) {
     // Dograh's headless widget creates a new chat after a page reload.
     localStorage.setItem(assistantHistoryKey, "[]");
     localStorage.setItem(assistantSessionIdKey, "");
@@ -2099,7 +2007,7 @@ function startNewAssistantConversation({ fromVoice = false } = {}) {
   localStorage.setItem(assistantSessionIdKey, assistantSessionId);
   $("assistant-messages")?.replaceChildren();
   $("assistant-history-list").hidden = true;
-  openAssistant({ speakGreeting: true, focusInput: !fromVoice, greetingText: fromVoice ? "Ji, nayi conversation shuru kar di. Ab pehle se alag baat kar sakte hain." : undefined });
+  openAssistant();
 }
 
 function isNewConversationRequest(message) {
@@ -2175,7 +2083,7 @@ function setAssistantPhotoPreview(product) {
   preview.querySelector("[data-photo-change]").addEventListener("click", () => $("assistant-photo-input").click());
   preview.querySelector("[data-photo-details]").addEventListener("click", () => {
     preview.hidden = true;
-    setDishaPaused(true);
+    stopDograhVoiceCall();
     $("assistant-panel").hidden = true;
     $("assistant-launcher").setAttribute("aria-expanded", "false");
     openProductDetail(product.sku);
@@ -2312,7 +2220,6 @@ function addAssistantMessage(role, content, options = {}) {
         assistantHistory.push({ role: "assistant", content: success });
         saveAssistantHistory();
         addAssistantMessage("assistant", success);
-        speakAssistantMessage(success);
         playSuccessSound();
         showToast(success, "success", 3200);
         await refreshInventoryViews();
@@ -2378,18 +2285,12 @@ function restoreAssistantMessages() {
   assistantHistory.forEach((item) => addAssistantMessage(item.role, item.content));
 }
 
-function assistantGreeting() {
-  const hour = new Date().getHours();
-  const greeting = hour < 12 ? "सुप्रभात" : hour < 17 ? "नमस्कार" : "शुभ संध्या";
-  return `${greeting}! मैं दिशा हूँ—इन्वेंटरी के काम और रोज़मर्रा की बातचीत, दोनों में मदद कर सकती हूँ। हिंदी, English या Hinglish में पूछिए; ऐप में बदलाव से पहले पुष्टि लूँगी।`;
-}
-
 function dograhTranscriptTurns(transcript = null) {
   const turns = Array.isArray(transcript) ? transcript : (window.DograhWidget?.getMessages?.() || []);
   return Array.isArray(turns) ? turns : [];
 }
 
-function syncDograhTranscript(transcript = null, speakLatest = false) {
+function syncDograhTranscript(transcript = null) {
   const turns = dograhTranscriptTurns(transcript);
   let latest = "";
   let latestNew = "";
@@ -2398,50 +2299,120 @@ function syncDograhTranscript(transcript = null, speakLatest = false) {
     if (!text) return;
     latest = text;
     const key = `${turn?.id != null ? `id:${turn.id}` : `index:${index}`}|${text}`;
-    if (dishaDograhSeenTurns.has(key)) return;
-    dishaDograhSeenTurns.add(key);
+    if (dograhSeenTurns.has(key)) return;
+    dograhSeenTurns.add(key);
     latestNew = text;
     assistantHistory.push({ role: "assistant", content: text });
     addAssistantMessage("assistant", text);
   });
   if (latestNew) {
     saveAssistantHistory();
-    if (speakLatest) speakAssistantMessage(latestNew);
   }
   return latest;
 }
 
 async function startDograhChat() {
-  if (!dishaDograhEnabled || !dishaDograhReady || dishaDograhStarted) return;
+  if (!dograhEnabled || !dograhReady || dograhStarted) return;
   try {
-    dishaDograhGreetingPending = true;
     const transcript = await window.DograhWidget.startChat();
-    dishaDograhStarted = true;
-    syncDograhTranscript(transcript, false);
-    $("assistant-state").textContent = "Disha · Dograh ready";
+    dograhStarted = true;
+    syncDograhTranscript(transcript);
+    $("assistant-state").textContent = "Dograh ready";
   } catch (error) {
-    dishaDograhGreetingPending = false;
     $("assistant-state").textContent = "Dograh connection problem";
-    addAssistantMessage("system", "Disha se connection nahi ho paaya: " + (error.message || error) + ". Dobara kholkar try karein.");
+    addAssistantMessage("system", "Dograh se connection nahi ho paaya: " + (error.message || error) + ". Dobara kholkar try karein.");
   }
 }
 
+function dograhEmbedUrl(raw, siblingRaw = "") {
+  try {
+    const url = new URL(String(raw || ""), window.location.href);
+    const localHttp = url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname);
+    if ((url.protocol !== "https:" && !localHttp) || url.username || url.password || url.hash) return null;
+    if (siblingRaw) {
+      const sibling = new URL(siblingRaw, window.location.href);
+      if (url.origin !== sibling.origin) return null;
+    } else if (url.hostname !== "app.dograh.com" && !localHttp) return null;
+    return url.href;
+  } catch (_) { return null; }
+}
+
+function mountDograhVoiceWidget(rawUrl, chatUrl = "") {
+  const container = $("assistant-voice-container");
+  if (!container) return;
+  const scriptUrl = dograhEmbedUrl(rawUrl, chatUrl);
+  container.hidden = false;
+  if (!scriptUrl) {
+    container.innerHTML = '<p class="assistant-voice-note">Dograh voice setup pending. Text chat Dograh se available hai.</p>';
+    return;
+  }
+  if (dograhVoiceFrame) return;
+  const iframe = document.createElement("iframe");
+  iframe.className = "assistant-voice-frame";
+  iframe.title = "Dograh voice call";
+  iframe.setAttribute("allow", "microphone; autoplay");
+  iframe.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms");
+  iframe.setAttribute("referrerpolicy", "strict-origin");
+  const safeScriptUrl = JSON.stringify(scriptUrl).replace(/</g, "\\u003c");
+  iframe.srcdoc = `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
+    *{box-sizing:border-box}body{margin:0;padding:5px;background:transparent;color:#18344a;font:13px system-ui,-apple-system,"Segoe UI",sans-serif}
+    .row{display:flex;align-items:center;gap:10px}button{min-height:42px;padding:0 15px;border:0;border-radius:12px;background:linear-gradient(110deg,#159a68,#0e7d60);color:#fff;font:600 13px system-ui;cursor:pointer}
+    button:disabled{opacity:.62;cursor:wait}.state{color:#496173;font-size:12px;line-height:1.35}
+    @media(prefers-color-scheme:dark){body{color:#e9f2f8}.state{color:#bdcbd4}}
+  </style><body><div class="row"><button id="call" type="button" disabled>Loading Dograh voice…</button><span class="state" id="state">Voice is handled by your Dograh agent.</span></div><script>
+    const src=${safeScriptUrl};let callStatus='idle';const button=document.getElementById('call');const label=document.getElementById('state');
+    function report(status,text){callStatus=status;const isActive=status==='connecting'||status==='connected';button.disabled=status==='connecting';button.textContent=status==='connected'?'End voice call':status==='connecting'?'Connecting…':status==='failed'?'Retry voice call':'Start voice call';label.textContent=text|| (status==='connected'?'Dograh voice is listening. Speak naturally.':'Voice is handled by your Dograh agent.');window.parent.postMessage({source:'inventory-dograh-voice',status,label:label.textContent},'*');}
+    function fail(text){report('failed',text||'Dograh voice could not connect. Check its widget and provider settings.');button.disabled=false;}
+    button.addEventListener('click',async()=>{const widget=window.DograhWidget;if(!widget?.start){fail('Dograh Voice widget is unavailable.');return;}if(callStatus==='connected'||callStatus==='connecting'){widget.end();return;}report('connecting','Connecting securely to Dograh…');try{const started=widget.start();if(started&&typeof started.then==='function')await started;}catch(error){fail(error?.message||'Could not start the voice call.');}});
+    window.addEventListener('message',event=>{if(event.data?.source==='inventory-dograh-app'&&event.data?.action==='end')window.DograhWidget?.end?.();});
+    const script=document.createElement('script');script.async=true;script.src=src;script.id='dograh-voice-widget';script.setAttribute('data-dograh-context',JSON.stringify({assistant_name:'Dograh',application:'Inventory Management System',language_mode:'auto_detect',reply_language:'match_latest_user_turn_and_script',hindi_response_script:'devanagari',spoken_pace:'clear_unhurried'}));
+    script.onload=()=>{const widget=window.DograhWidget;if(!widget?.start||!widget?.end){fail('This Dograh embed is not configured as a Headless Voice widget.');return;}widget.onStatusChange?.((status,text,subtext)=>report(status,[text,subtext].filter(Boolean).join(' · ')));widget.onError?.(error=>fail(error?.message));report('idle','Hindi, English, Hinglish and other configured Dograh languages.');button.disabled=false;};
+    script.onerror=()=>fail('Dograh voice script did not load.');document.head.appendChild(script);
+  </script></body></html>`;
+  dograhVoiceFrame = iframe;
+  container.replaceChildren(iframe);
+}
+
+function stopDograhVoiceCall() {
+  dograhVoiceFrame?.contentWindow?.postMessage({ source: "inventory-dograh-app", action: "end" }, "*");
+}
+
+window.addEventListener("message", (event) => {
+  if (!dograhVoiceFrame || event.source !== dograhVoiceFrame.contentWindow
+      || event.data?.source !== "inventory-dograh-voice") return;
+  dograhVoiceStatus = String(event.data.status || "idle");
+  const state = $("assistant-state");
+  if (state && ["connecting", "connected", "failed"].includes(dograhVoiceStatus)) {
+    state.textContent = dograhVoiceStatus === "connected" ? "Dograh voice · listening" : dograhVoiceStatus === "connecting" ? "Dograh voice · connecting" : "Dograh voice · retry needed";
+  }
+});
+
 async function initializeDograhWidget() {
-  if (dishaDograhLoadPromise) return dishaDograhLoadPromise;
-  dishaDograhLoadPromise = (async () => {
+  if (dograhLoadPromise) return dograhLoadPromise;
+  dograhLoadPromise = (async () => {
     try {
-      const config = await getJSON(API + "/assistant/runtime-config");
+      const config = await getJSON(API + "/dograh/runtime-config");
       const scriptUrl = String(config.dograh_widget_script_url || "");
-      let parsedScriptUrl;
-      try { parsedScriptUrl = new URL(scriptUrl, window.location.href); } catch (_) { return; }
-      const localHttp = parsedScriptUrl.protocol === "http:" && ["localhost", "127.0.0.1"].includes(parsedScriptUrl.hostname);
-      if (!config.dograh_chat_enabled || (parsedScriptUrl.protocol !== "https:" && !localHttp)
-          || parsedScriptUrl.username || parsedScriptUrl.password || parsedScriptUrl.hash) return;
+      mountDograhVoiceWidget(config.dograh_voice_widget_script_url, scriptUrl);
+      const safeChatUrl = dograhEmbedUrl(scriptUrl);
+      if (!config.dograh_chat_enabled || !safeChatUrl) {
+        document.documentElement.dataset.dograhAgent = "unavailable";
+        const powered = document.querySelector(".assistant-powered");
+        if (powered) powered.textContent = "Dograh chat not configured";
+        return;
+      }
       const script = document.createElement("script");
       script.async = true;
-      script.src = parsedScriptUrl.href;
-      script.id = "disha-dograh-widget";
-      script.setAttribute("data-dograh-context", JSON.stringify({ assistant_name: "Disha", application: "Inventory Management System" }));
+      script.src = safeChatUrl;
+      script.id = "dograh-chat-widget";
+      script.setAttribute("data-dograh-context", JSON.stringify({
+        assistant_name: "Dograh",
+        application: "Inventory Management System",
+        language_mode: "auto_detect",
+        reply_language: "match_latest_user_turn_and_script",
+        hindi_response_script: "devanagari",
+        spoken_pace: "clear_unhurried",
+      }));
       await new Promise((resolve, reject) => {
         script.onload = resolve;
         script.onerror = () => reject(new Error("Dograh widget did not load"));
@@ -2453,9 +2424,9 @@ async function initializeDograhWidget() {
       const pendingUserMessage = assistantBusy && assistantHistory.at(-1)?.role === "user"
         ? assistantHistory.at(-1) : null;
       if (assistantHistory.length) saveAssistantHistory();
-      dishaDograhEnabled = true;
-      dishaDograhReady = true;
-      document.documentElement.dataset.dishaAgent = "dograh";
+      dograhEnabled = true;
+      dograhReady = true;
+      document.documentElement.dataset.dograhAgent = "dograh";
       assistantHistory = pendingUserMessage ? [pendingUserMessage] : [];
       localStorage.setItem(assistantHistoryKey, JSON.stringify(assistantHistory));
       if ($("assistant-history-button")) $("assistant-history-button").hidden = true;
@@ -2463,25 +2434,23 @@ async function initializeDograhWidget() {
       $("assistant-messages")?.replaceChildren();
       if (pendingUserMessage) addAssistantMessage("user", pendingUserMessage.content);
       const powered = document.querySelector(".assistant-powered");
-      if (powered) powered.textContent = "Powered by Dograh · Disha";
+      if (powered) powered.textContent = "Dograh agent";
       window.DograhWidget.onMessage?.((text, turn) => {
         const transcript = [...dograhTranscriptTurns()];
         const message = String(text || turn?.assistant_message?.text || "").trim();
-        const speakGreeting = dishaDograhGreetingPending && Boolean(message);
-        if (speakGreeting) dishaDograhGreetingPending = false;
         if (message && !transcript.some((item) => item?.id === turn?.id && item?.assistant_message?.text === message)) {
           transcript.push({ ...turn, assistant_message: { ...(turn?.assistant_message || {}), text: message } });
         }
-        syncDograhTranscript(transcript, speakGreeting);
+        syncDograhTranscript(transcript);
       });
       window.DograhWidget.onChatStateChange?.((state) => {
         const status = $("assistant-state");
         if (state === "ready") {
-          dishaDograhStarted = true;
-          if (status) status.textContent = "Disha · Dograh ready";
+          dograhStarted = true;
+          if (status) status.textContent = "Dograh ready";
         } else if (state === "expired" || state === "ended" || state === "error") {
-          dishaDograhStarted = false;
-          if (state === "expired" && status) status.textContent = "Nayi Disha chat shuru karne ke liye message bhejein";
+          dograhStarted = false;
+          if (state === "expired" && status) status.textContent = "Start a new Dograh chat after this session expires";
         }
       });
       window.DograhWidget.onError?.((error) => {
@@ -2490,78 +2459,32 @@ async function initializeDograhWidget() {
       });
       if (!$("assistant-panel")?.hidden) await startDograhChat();
     } catch (error) {
-      dishaDograhEnabled = false;
-      dishaDograhReady = false;
-      document.documentElement.dataset.dishaAgent = "gemini";
-      console.warn("Disha Dograh chat could not be initialized; using the configured Disha provider.", error);
+      dograhEnabled = false;
+      dograhReady = false;
+      document.documentElement.dataset.dograhAgent = "unavailable";
+      const powered = document.querySelector(".assistant-powered");
+      if (powered) powered.textContent = "Dograh connection problem";
+      console.warn("Dograh chat could not be initialized.", error);
     }
   })();
-  return dishaDograhLoadPromise;
+  return dograhLoadPromise;
 }
 
-function openAssistant({ speakGreeting = true, focusInput = true, greetingText = null } = {}) {
+function openAssistant({ focusInput = true } = {}) {
   const panel = $("assistant-panel"), launcher = $("assistant-launcher");
   if (!panel || !launcher) return;
   panel.hidden = false;
   launcher.setAttribute("aria-expanded", "true");
   restoreAssistantMessages();
-  if (!assistantHistory.length && !dishaDograhEnabled) {
-    const greeting = greetingText || assistantGreeting();
-    assistantHistory.push({ role: "assistant", content: greeting });
-    saveAssistantHistory();
-    addAssistantMessage("assistant", greeting);
-    if (speakGreeting) speakAssistantMessage(greeting);
-  }
-  if (dishaDograhEnabled) startDograhChat();
+  if (dograhEnabled) startDograhChat();
   if (focusInput) $("assistant-chat-input")?.focus({ preventScroll: true });
 }
 
-function dishaAutomationHelp() {
-  return "आप कह सकती हैं: ‘डैशबोर्ड खोलो’, ‘प्रोडक्ट खोलो’, ‘स्कैनर खोलो’, ‘अलर्ट दिखाओ’, ‘रीऑर्डर सूची खोलो’, ‘ऑर्डर खोलो’, ‘बल्क स्टॉक खोलो’, ‘हिस्ट्री दिखाओ’, ‘आज की बिक्री बताओ’, या ‘ऐप का स्टेटस बताओ’। रोज़मर्रा के सवाल भी पूछें। WhatsApp draft के लिए country code वाला नंबर और exact message दें; मैं draft खोलूँगी, भेजने से पहले आप review करके Send दबाएँ।";
-}
-
-async function runDishaLocalAutomation(message) {
-  const text = String(message || "").trim().toLocaleLowerCase("hi-IN");
-  const moveTo = (view, reply) => { switchView(view); return reply; };
-  if (/^(?:voice\s+commands?|commands?|automation|help\s+commands?)\b|(?:कमान्ड|कमांड|आदेश|ऑटोमेशन).*(?:बताओ|दिखाओ|help)/u.test(text)) return dishaAutomationHelp();
-  if (/(?:dashboard|home|overview|डैशबोर्ड|होम).*(?:kholo|open|dikhao|दिखाओ|खोलो)|^(?:dashboard|home|डैशबोर्ड)$/u.test(text)) return moveTo("dashboard", "डैशबोर्ड खोल दिया है। यहाँ इन्वेंटरी का लाइव सारांश है।");
-  if (/(?:products?|catalog|प्रोडक्ट|कैटलॉग).*(?:kholo|open|dikhao|दिखाओ|खोलो)|^(?:products?|प्रोडक्ट)$/u.test(text)) return moveTo("products", "प्रोडक्ट सूची खोल दी है। नाम, रंग या SKU से खोज सकते हैं।");
-  if (/(?:scanner|scan|camera|स्कैनर|कैमरा).*(?:kholo|open|dikhao|दिखाओ|खोलो)|^(?:scanner|scan|स्कैनर)$/u.test(text)) return moveTo("scan", "स्कैन पेज खोल दिया है। QR/बारकोड स्कैन करें या नाम से प्रोडक्ट खोजें। कैमरे के लिए browser permission Allow करना होगा।");
-  if (/(?:alerts?|low stock|अलर्ट|लो स्टॉक).*(?:kholo|open|dikhao|दिखाओ|खोलो)|^(?:alerts?|अलर्ट)$/u.test(text)) return moveTo("alerts", "स्टॉक अलर्ट खोल दिए हैं।");
-  if (/(?:reorder|restock|रीऑर्डर|रीस्टॉक).*(?:kholo|open|dikhao|दिखाओ|खोलो)|^(?:reorder|रीऑर्डर)$/u.test(text)) return moveTo("reorder", "रीऑर्डर सूची खोल दी है।");
-  if (/(?:orders?|order processing|ऑर्डर).*(?:kholo|open|dikhao|दिखाओ|खोलो)|^(?:orders?|ऑर्डर)$/u.test(text)) return moveTo("orders", "ऑर्डर पेज खोल दिया है। भेजने से पहले पुष्टि जरूरी है।");
-  if (/(?:bulk stock|bulk count|bulk|बल्क स्टॉक|बल्क काउंट).*(?:kholo|open|dikhao|दिखाओ|खोलो)|^(?:bulk|बल्क)$/u.test(text)) return moveTo("bulk", "बल्क स्टॉक काउंट खोल दिया है।");
-  if (/(?:history|recent activity|हिस्ट्री|इतिहास).*(?:kholo|open|dikhao|दिखाओ|खोलो)|^(?:history|हिस्ट्री|इतिहास)$/u.test(text)) return moveTo("history", "स्टॉक बदलाव का इतिहास खोल दिया है।");
-  if (isDailySalesRequest(text)) {
-    try { const summary = await getJSON(`${API}/analytics/daily-sales`); switchView("dashboard"); return formatDailySalesSummary(summary); }
-    catch (_) { return "आज की बिक्री का सारांश अभी नहीं मिल पाया। थोड़ी देर बाद फिर पूछें।"; }
-  }
-  if (/(?:app|inventory|system|एप|इन्वेंटरी|सिस्टम).*(?:status|स्थिति|कैसी है|summary|सारांश)/u.test(text)) {
-    try {
-      const summary = await getJSON(`${API}/summary`);
-      switchView("dashboard");
-      return `अभी ${summary.products} डिज़ाइन और ${summary.variants} साइज़ हैं। ${summary.ok} स्टॉक में, ${summary.low} कम स्टॉक, ${summary.out} स्टॉक खत्म, और ${summary.open_alerts} खुले अलर्ट हैं।`;
-    } catch (_) { return "ऐप का स्टेटस अभी नहीं मिल पाया। थोड़ी देर बाद फिर पूछें।"; }
-  }
-  return null;
-}
-
-async function sendAssistantMessage(message, selectedSku = null, { fromVoice = false } = {}) {
+async function sendAssistantMessage(message, selectedSku = null) {
   const clean = String(message || "").trim().slice(0, 500);
   if (!clean) return;
-  if (isNewConversationRequest(clean)) { startNewAssistantConversation({ fromVoice }); return; }
+  if (isNewConversationRequest(clean)) { startNewAssistantConversation(); return; }
   if (assistantBusy) return;
-  if (handlePendingAssistantConfirmation(clean)) return;
-  const localReply = await runDishaLocalAutomation(clean);
-  if (localReply) {
-    addAssistantMessage("user", clean);
-    assistantHistory.push({ role: "user", content: clean });
-    assistantHistory.push({ role: "assistant", content: localReply });
-    saveAssistantHistory();
-    addAssistantMessage("assistant", localReply);
-    speakAssistantMessage(localReply);
-    return;
-  }
   assistantBusy = true;
   const requestSequence = ++assistantRequestSequence;
   const requestSessionId = assistantSessionId;
@@ -2572,81 +2495,50 @@ async function sendAssistantMessage(message, selectedSku = null, { fromVoice = f
   saveAssistantHistory();
   const typing = document.createElement("div");
   typing.className = "assistant-message assistant-typing";
-  typing.textContent = "Samajh rahi hoon…";
+  typing.textContent = "Dograh is replying…";
   $("assistant-messages")?.appendChild(typing);
   try {
-    if (isDailySalesRequest(clean)) {
-      const summary = await getJSON(`${API}/analytics/daily-sales`);
-      if (requestSequence !== assistantRequestSequence || requestSessionId !== assistantSessionId) return;
-      const reply = formatDailySalesSummary(summary);
-      assistantHistory.push({ role: "assistant", content: reply });
-      saveAssistantHistory();
-      addAssistantMessage("assistant", reply);
-      speakAssistantMessage(reply);
-      return;
+    await initializeDograhWidget();
+    if (!dograhEnabled || !dograhReady || !window.DograhWidget?.sendMessage) {
+      throw new Error("Dograh chat widget is not configured or could not connect.");
     }
-    if (dishaDograhEnabled) {
-      await initializeDograhWidget();
-      if (!dishaDograhReady) throw new Error("Disha's Dograh chat is not connected. Check the Dograh widget settings.");
-      await startDograhChat();
-      const transcript = await window.DograhWidget.sendMessage(clean);
-      if (requestSequence !== assistantRequestSequence || requestSessionId !== assistantSessionId) return;
-      const reply = syncDograhTranscript(transcript, false);
-      if (!reply) throw new Error("Dograh did not return a text reply. Try again.");
-      speakAssistantMessage(reply);
-      return;
-    }
-    const history = assistantHistory.slice(0, -1).slice(-12);
-    const response = await fetch(`${API}/assistant/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: clean, history, selected_sku: selectedSku }),
-    });
-    const result = await response.json().catch(() => ({}));
+    await startDograhChat();
+    const transcript = await window.DograhWidget.sendMessage(clean);
     if (requestSequence !== assistantRequestSequence || requestSessionId !== assistantSessionId) return;
-    if (!response.ok) throw new Error(result.detail || `Assistant request failed (${response.status})`);
-    registerAssistantProducts(result.products || result.choices || []);
-    if (result.action?.sku && result.action?.name) registerAssistantProducts([{ sku: result.action.sku, name: result.action.name }]);
-    if (result.stock?.sku && result.stock?.name) registerAssistantProducts([result.stock]);
-    const reply = String(result.reply || "Is request ko samajhne mein dikkat hui. Product aur size dobara batayein.");
-    assistantHistory.push({ role: "assistant", content: reply });
-    saveAssistantHistory();
-    addAssistantMessage("assistant", reply, { action: ["confirm_stock", "confirm_action"].includes(result.status) ? { type: result.status === "confirm_stock" ? "stock_update" : result.action.type, ...result.action } : null, choices: result.status === "choose_product" ? result.choices : null, products: result.status === "product_search" ? result.products : null });
-    const spokenReply = result.status === "product_search" && result.products?.length
-      ? result.products.map((product) => product.name).filter(Boolean).join(". ")
-      : reply;
-    speakAssistantMessage(spokenReply);
+    if (!Array.isArray(transcript)) throw new Error("Dograh did not accept this message. Please retry.");
+    const reply = syncDograhTranscript(transcript);
+    if (!reply) throw new Error("Dograh did not return a reply. Please retry.");
   } catch (error) {
     if (requestSequence !== assistantRequestSequence || requestSessionId !== assistantSessionId) return;
-    const reply = `Assistant abhi connect nahi ho paayi: ${error.message || error}. Manual stock entry abhi use kar sakte hain.`;
+    const reply = `Dograh se connect nahi ho paayi: ${error.message || error}. AI fallback is disabled; thodi der baad dobara bhejein.`;
     assistantHistory.push({ role: "assistant", content: reply });
     saveAssistantHistory();
     addAssistantMessage("assistant", reply);
-    speakAssistantMessage(reply);
+    const state = $("assistant-state");
+    if (state) state.textContent = "Dograh connection problem";
   } finally {
     typing.remove();
     if (requestSequence === assistantRequestSequence && requestSessionId === assistantSessionId) {
       assistantBusy = false;
       if (send) send.disabled = false;
-      if (input && !fromVoice) input.focus({ preventScroll: true });
+      if (input) input.focus({ preventScroll: true });
     }
   }
 }
 
 $("assistant-launcher")?.addEventListener("click", () => {
   if ($("assistant-panel").hidden) {
-    setDishaPaused(false);
     openAssistant();
   }
   else {
-    setDishaPaused(true);
+    stopDograhVoiceCall();
     $("assistant-panel").hidden = true;
     $("assistant-photo-preview").hidden = true;
     $("assistant-launcher").setAttribute("aria-expanded", "false");
   }
 });
 $("assistant-close")?.addEventListener("click", () => {
-  setDishaPaused(true);
+  setDograhPaused(true);
   $("assistant-panel").hidden = true;
   $("assistant-photo-preview").hidden = true;
   $("assistant-launcher").setAttribute("aria-expanded", "false");
@@ -2664,293 +2556,11 @@ $("assistant-chat-form")?.addEventListener("submit", (event) => {
   input.value = "";
   sendAssistantMessage(message);
 });
-function updateDishaListeningUI(message = "") {
-  const indicator = $("assistant-mic-status"), state = $("assistant-state"), dot = document.querySelector(".assistant-online-dot");
-  const button = $("assistant-pause");
-  const isListening = assistantWakeEnabled && !assistantPaused && !assistantMicBlocked && Boolean(assistantMicStream);
-  indicator?.classList.toggle("is-listening", isListening);
-  if (state) state.textContent = message || (assistantPaused ? "दिशा को आवाज़ देने के लिए टैप करें" : assistantMicBlocked ? "ब्राउज़र में माइक्रोफ़ोन की अनुमति दें" : isListening ? (assistantWakeArmed ? "सुन रही हूँ · ‘हाय दिशा’ बोलें" : "हिंदी में बोलें") : assistantMicStarting ? "माइक्रोफ़ोन जुड़ रहा है…" : "वॉइस चैट शुरू हो रही है…");
-  dot?.classList.toggle("is-listening", isListening);
-  if (button) {
-    button.classList.toggle("is-paused", assistantPaused);
-    button.setAttribute("aria-label", assistantPaused ? "Start Disha microphone" : "Pause Disha microphone and voice");
-    button.title = assistantPaused ? "Start voice" : "Pause voice";
-    button.innerHTML = `<i class="fa-solid ${assistantPaused ? "fa-microphone" : "fa-pause"}"></i>`;
-  }
-}
-
-function setDishaPaused(paused) {
-  assistantPaused = paused;
-  localStorage.setItem("dishaPaused", String(paused));
-  if (paused) {
-    assistantWakeEnabled = false;
-    assistantWakeArmed = false;
-    assistantSpeechId += 1;
-    clearTimeout(assistantSpeechGuardTimer);
-    assistantSpeaking = false;
-    setDishaSpeakingUI(false);
-    window.speechSynthesis?.cancel();
-    assistantAudioPlayer?.pause();
-    assistantAudioPlayer = null;
-    if (assistantAudioObjectUrl) URL.revokeObjectURL(assistantAudioObjectUrl);
-    assistantAudioObjectUrl = null;
-    stopDishaMic();
-  } else {
-    assistantWakeEnabled = true;
-    assistantWakeArmed = true;
-    assistantMicBlocked = false;
-    startDishaMic();
-  }
-  updateDishaListeningUI();
-}
-$("assistant-pause")?.addEventListener("click", () => setDishaPaused(!assistantPaused));
-
-async function startDishaMic() {
-  if (assistantPaused || assistantMicStarting || assistantMicStream || document.visibilityState === "hidden") return;
-  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
-    assistantMicBlocked = true;
-    assistantPaused = true;
-    assistantWakeEnabled = false;
-    assistantWakeArmed = false;
-    updateDishaListeningUI("Mic recording is not supported · type to chat");
-    addAssistantMessage("system", "Is browser mein continuous mic recording supported nahi hai. Chrome/Edge update karein ya type karke baat karein.");
-    return;
-  }
-  assistantMicStarting = true;
-  assistantWakeEnabled = true;
-  assistantWakeArmed = true;
-  updateDishaListeningUI("Connecting microphone…");
-  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-  let audioContext = null;
-  try {
-    // Create and resume the analyser context synchronously from the tap. Mobile
-    // Safari may refuse to start a context created after getUserMedia resolves.
-    if (!AudioContextClass) throw new Error("Audio analyser is unavailable");
-    audioContext = new AudioContextClass();
-    assistantMicContext = audioContext;
-    await audioContext.resume().catch(() => {});
-    if (assistantPaused || document.visibilityState === "hidden") {
-      await audioContext.close().catch(() => {});
-      if (assistantMicContext === audioContext) assistantMicContext = null;
-      return;
-    }
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
-    if (assistantPaused || document.visibilityState === "hidden") {
-      stream.getTracks().forEach((track) => track.stop());
-      await audioContext.close().catch(() => {});
-      if (assistantMicContext === audioContext) assistantMicContext = null;
-      return;
-    }
-    assistantMicStream = stream;
-    stream.getAudioTracks().forEach((track) => track.addEventListener("ended", () => {
-      if (assistantMicStream !== stream || assistantPaused) return;
-      stopDishaMic();
-      assistantPaused = true;
-      assistantWakeEnabled = false;
-      assistantWakeArmed = false;
-      updateDishaListeningUI("Microphone stopped · tap Disha to reconnect");
-    }, { once: true }));
-    if (audioContext.state === "suspended") await audioContext.resume().catch(() => {});
-    const source = audioContext.createMediaStreamSource(stream);
-    assistantMicAnalyser = audioContext.createAnalyser();
-    assistantMicAnalyser.fftSize = 1024;
-    source.connect(assistantMicAnalyser);
-    assistantMicBlocked = false;
-    assistantMicStarting = false;
-    updateDishaListeningUI("Mic on · say ‘Hi Disha’");
-    monitorDishaMic();
-  } catch (error) {
-    await audioContext?.close().catch(() => {});
-    if (assistantMicContext === audioContext) assistantMicContext = null;
-    assistantMicStarting = false;
-    assistantMicBlocked = true;
-    assistantPaused = true;
-    assistantWakeEnabled = false;
-    assistantWakeArmed = false;
-    const reason = error?.name === "NotAllowedError" || error?.name === "SecurityError" ? "माइक की अनुमति दें" : error?.name === "NotFoundError" ? "माइक नहीं मिला · इनपुट डिवाइस चुनें" : "माइक चालू नहीं हुआ · फिर से दबाएँ";
-    updateDishaListeningUI(reason);
-    if (!assistantPermissionNoticeShown) {
-      assistantPermissionNoticeShown = true;
-      addAssistantMessage("system", error?.name === "NotFoundError" ? "माइक्रोफ़ोन नहीं मिला। लैपटॉप/फोन या ईयरबड का माइक जोड़ें और सिस्टम की इनपुट सेटिंग में चुनें।" : "दिशा को माइक्रोफ़ोन की अनुमति चाहिए। ब्राउज़र के साइट नियंत्रण में Microphone को Allow करें, फिर दिशा को दोबारा दबाएँ।");
-    }
-  }
-}
-
-function monitorDishaMic() {
-  if (!assistantMicAnalyser || assistantPaused) return;
-  const samples = new Float32Array(assistantMicAnalyser.fftSize);
-  const step = (time) => {
-    if (!assistantMicAnalyser || assistantPaused) return;
-    assistantMicAnalyser.getFloatTimeDomainData(samples);
-    let sum = 0;
-    for (let i = 0; i < samples.length; i += 1) sum += samples[i] * samples[i];
-    const level = Math.sqrt(sum / samples.length);
-    const now = Date.now();
-    if (assistantSpeaking || assistantBusy || assistantVoiceProcessing || now < assistantIgnoreTranscriptUntil) {
-      assistantMicSpeakingSince = 0;
-      assistantMicLastVoiceAt = now;
-      if (assistantMicRecorder?.state === "recording") assistantMicRecorder.stop();
-    } else if (level > 0.012) {
-      assistantMicSpeakingSince ||= now;
-      assistantMicLastVoiceAt = now;
-      if (!assistantMicRecorder && now - assistantMicSpeakingSince >= 140) startDishaUtteranceRecording();
-    } else {
-      assistantMicSpeakingSince = 0;
-      if (assistantMicRecorder?.state === "recording" && now - assistantMicLastVoiceAt >= 1050) assistantMicRecorder.stop();
-    }
-    if (assistantMicRecorder?.state === "recording" && now - assistantMicRecordingStartedAt >= 15000) assistantMicRecorder.stop();
-    assistantMicFrame = requestAnimationFrame(step);
-  };
-  assistantMicFrame = requestAnimationFrame(step);
-}
-
-function startDishaUtteranceRecording() {
-  if (!assistantMicStream || assistantPaused || assistantMicRecorder) return;
-  try {
-    const mimeType = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find((type) => MediaRecorder.isTypeSupported(type));
-    assistantMicChunks = [];
-    assistantMicRecorder = mimeType ? new MediaRecorder(assistantMicStream, { mimeType }) : new MediaRecorder(assistantMicStream);
-    assistantMicRecordingStartedAt = Date.now();
-    assistantMicRecorder.ondataavailable = (event) => { if (event.data?.size) assistantMicChunks.push(event.data); };
-    assistantMicRecorder.onstop = () => {
-      const recorder = assistantMicRecorder;
-      assistantMicRecorder = null;
-      const chunks = assistantMicChunks;
-      assistantMicChunks = [];
-      if (!assistantPaused && chunks.length) {
-        const type = recorder?.mimeType || "audio/webm";
-        const extension = type.includes("mp4") ? "mp4" : type.includes("ogg") ? "ogg" : type.includes("wav") ? "wav" : "webm";
-        transcribeDishaUtterance(new Blob(chunks, { type }), `disha-utterance.${extension}`);
-      }
-    };
-    assistantMicRecorder.start(250);
-  } catch (_) {
-    updateDishaListeningUI("Could not record audio · type to chat");
-  }
-}
-
-async function transcribeDishaUtterance(blob, filename) {
-  if (!blob || blob.size < 900 || assistantPaused) return;
-  assistantVoiceProcessing = true;
-  updateDishaListeningUI("आपकी बात समझ रही हूँ…");
-  try {
-    const form = new FormData();
-    form.append("file", blob, filename);
-    const response = await fetch(`${API}/assistant/transcribe`, { method: "POST", body: form });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(result.detail || `Transcription failed (${response.status})`);
-    const message = String(result.text || "").trim();
-    if (message) handleDishaUtterance(message);
-  } catch (error) {
-    if (!assistantPaused && Date.now() - assistantLastVoiceErrorAt > 20000) {
-      assistantLastVoiceErrorAt = Date.now();
-      addAssistantMessage("system", `${error.message || "Voice transcription failed"} Aap type karke chat jaari rakh sakte hain.`);
-    }
-  } finally {
-    assistantVoiceProcessing = false;
-    if (!assistantPaused) updateDishaListeningUI(assistantWakeArmed ? "‘दिशा’ बोलें" : "सुन रही हूँ · हिंदी में बोलें");
-  }
-}
-
-function stopDishaMic() {
-  cancelAnimationFrame(assistantMicFrame);
-  assistantMicFrame = 0;
-  if (assistantMicRecorder?.state === "recording") {
-    assistantMicRecorder.onstop = null;
-    try { assistantMicRecorder.stop(); } catch (_) {}
-  }
-  assistantMicRecorder = null;
-  assistantMicChunks = [];
-  assistantMicAnalyser = null;
-  assistantMicContext?.close().catch(() => {});
-  assistantMicContext = null;
-  assistantMicStream?.getTracks().forEach((track) => track.stop());
-  assistantMicStream = null;
-  assistantMicStarting = false;
-  assistantVoiceProcessing = false;
-  assistantWakeArmed = false;
-  assistantMicSpeakingSince = 0;
-  assistantMicLastVoiceAt = 0;
-}
-
-function isAffirmative(text) { return /^(?:(?:haan|han|ha|yes|yeah|yep|ji|jee|bilkul|confirm)(?:\b|$)|(?:हाँ|हां|जी)(?:\s|$)|कर\s+दो)/iu.test(text.trim().replace(/[.!?,।]+$/g, "")); }
-function isNegative(text) { return /^(?:(?:nahi|nahin|no|nope|cancel)(?:\b|$)|(?:नहीं|ना|रद्द)(?:\s|$)|मत\s+करो)/iu.test(text.trim().replace(/[.!?,।]+$/g, "")); }
-
-function handlePendingAssistantConfirmation(message) {
-  const button = assistantConfirmationButton;
-  if (!button || button.disabled) return false;
-  if (isAffirmative(message)) {
-    assistantConfirmationButton = null;
-    assistantHistory.push({ role: "user", content: message });
-    saveAssistantHistory();
-    addAssistantMessage("user", message);
-    button.click();
-    return true;
-  }
-  if (isNegative(message)) {
-    assistantConfirmationButton = null;
-    button.disabled = true;
-    button.textContent = "Cancelled";
-    const response = "Theek hai, action cancel kar diya. Inventory change nahi hui.";
-    assistantHistory.push({ role: "user", content: message }, { role: "assistant", content: response });
-    saveAssistantHistory();
-    addAssistantMessage("user", message);
-    addAssistantMessage("assistant", response);
-    speakAssistantMessage(response);
-    return true;
-  }
-  return false;
-}
-
-function handleDishaUtterance(transcript) {
-  if (assistantPaused || assistantSpeaking || assistantBusy) return;
-  let message = String(transcript || "").trim();
-
-  if (assistantWakeArmed) {
-    const wakeMatch = message.match(/^(?:(?:hey|hi|hello|ok(?:ay)?|arey|अरे|हाय|हेलो)[,\s]+)*(?:disha\b|दिशा(?=\s|$|[,!.।-]))[\s,!.।-]*(.*)$/iu);
-    if (!wakeMatch) {
-      updateDishaListeningUI("Mic on · pehle ‘Hi Disha’ boliye");
-      return;
-    }
-    assistantWakeArmed = false;
-    message = String(wakeMatch[1] || "").trim();
-    if (!message) {
-      const greeting = "Haan ji, main sun rahi hoon. Bataiye, kya help karoon?";
-      assistantHistory.push({ role: "assistant", content: greeting });
-      saveAssistantHistory();
-      addAssistantMessage("assistant", greeting);
-      speakAssistantMessage(greeting);
-      updateDishaListeningUI("Listening · boliye");
-      return;
-    }
-  }
-
-  if (assistantConfirmationButton && (isAffirmative(message) || isNegative(message))) {
-    sendAssistantMessage(message, null, { fromVoice: true });
-    return;
-  }
-  if (message) sendAssistantMessage(message, null, { fromVoice: true });
-}
-
-function isDailySalesRequest(message) {
-  const text = String(message || "").toLocaleLowerCase("hi-IN");
-  const asksTime = /\b(aaj|today|daily|din bhar)\b|आज|दैनिक/u.test(text);
-  const asksSales = /\b(sale|sales|bik|bika|biki|bikri|sold|dispatch|dispatched|report|summary)\b|सेल|बिक|बिक्री/u.test(text);
-  return (asksTime && asksSales) || /\b(daily|aaj)\b.*\b(report|summary|short)\b|आज.*(?:report|summary|रिपोर्ट|सारांश)/u.test(text);
-}
-
-function formatDailySalesSummary(summary) {
-  if (!summary.dispatched_units) return `Aaj (${summary.date}) abhi tak koi dispatched sale record nahi hai. Pending orders ko sale count nahi kiya hai.`;
-  const top = (summary.top_products || []).slice(0, 3).map((item) => `${item.name} (${item.sku}) ${item.units} pcs`).join(", ");
-  return `Aaj (${summary.date}) ${summary.dispatched_units} pieces dispatch hue, ${summary.designs_sold} designs se. Top: ${top || "koi item detail nahi"}. Ye dispatched pieces hain; rupee revenue system mein record nahi hota.`;
-}
-
 $("assistant-sales-summary")?.addEventListener("click", () => sendAssistantMessage("Aaj ki dispatched sales ka short summary batao."));
 $("assistant-automation-help")?.addEventListener("click", () => sendAssistantMessage("आवाज़ के आदेश बताओ।"));
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden" && !assistantPaused) setDishaPaused(true);
+  if (document.visibilityState === "hidden") stopDograhVoiceCall();
 });
-updateDishaListeningUI();
 
 async function loadAlerts() {
   const list = $("alerts-list");

@@ -4,13 +4,11 @@ import os
 import shutil
 import uuid
 import re
-import time
 import logging
 from contextlib import asynccontextmanager
 from importlib.util import find_spec
 from difflib import SequenceMatcher
-from collections import defaultdict, deque
-from threading import Lock
+from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
 from pathlib import Path
@@ -28,10 +26,10 @@ import models
 import schemas
 from services import (
     inventory_service, alert_service, excel_service, reorder_service,
-    barcode_service, bulk_stock_service, bulk_product_service, assistant_service,
+    barcode_service, bulk_stock_service, bulk_product_service,
     visual_match_service, visual_search_service,
 )
-import disha_mcp
+import dograh_mcp
 from mcp.server.transport_security import TransportSecuritySettings
 
 Base.metadata.create_all(bind=engine)
@@ -92,12 +90,12 @@ def _mcp_transport_security():
     if public_domain:
         allowed_hosts.update({public_domain, f"{public_domain}:*"})
     allowed_hosts.update(
-        value.strip().lower() for value in os.getenv("DISHA_MCP_ALLOWED_HOSTS", "").split(",") if value.strip()
+        value.strip().lower() for value in os.getenv("DOGRAH_MCP_ALLOWED_HOSTS", "").split(",") if value.strip()
     )
     allowed_origins = {
         f"https://{public_domain}", f"http://{public_domain}"} if public_domain else set()
     allowed_origins.update(
-        value.strip() for value in os.getenv("DISHA_MCP_ALLOWED_ORIGINS", "").split(",") if value.strip()
+        value.strip() for value in os.getenv("DOGRAH_MCP_ALLOWED_ORIGINS", "").split(",") if value.strip()
     )
     return TransportSecuritySettings(allowed_hosts=sorted(allowed_hosts), allowed_origins=sorted(allowed_origins))
 
@@ -105,15 +103,15 @@ def _mcp_transport_security():
 # FastMCP 1.x takes transport configuration in its constructor/settings;
 # streamable_http_app() itself takes no keyword arguments in the deployed SDK.
 # Configure the mounted endpoint before the session manager is initialized.
-disha_mcp.mcp.settings.streamable_http_path = "/"
-disha_mcp.mcp.settings.json_response = True
-disha_mcp.mcp.settings.transport_security = _mcp_transport_security()
-_disha_mcp_http_app = disha_mcp.mcp.streamable_http_app()
+dograh_mcp.mcp.settings.streamable_http_path = "/"
+dograh_mcp.mcp.settings.json_response = True
+dograh_mcp.mcp.settings.transport_security = _mcp_transport_security()
+_dograh_mcp_http_app = dograh_mcp.mcp.streamable_http_app()
 
 
 @asynccontextmanager
 async def _app_lifespan(_app):
-    async with disha_mcp.mcp.session_manager.run():
+    async with dograh_mcp.mcp.session_manager.run():
         yield
 
 
@@ -129,10 +127,10 @@ app.add_middleware(
 
 
 @app.middleware("http")
-async def protect_disha_mcp(request: Request, call_next):
+async def protect_dograh_mcp(request: Request, call_next):
     """Require a private key for the entire MCP transport; never log credentials."""
     if (request.url.path == "/api/mcp" or request.url.path.startswith("/api/mcp/")) and request.method != "OPTIONS":
-        expected = os.getenv("DISHA_MCP_API_KEY", "").strip()
+        expected = os.getenv("DOGRAH_MCP_API_KEY", "").strip()
         if len(expected) < 32:
             return Response(status_code=404)
         supplied = request.headers.get("x-api-key", "").strip()
@@ -157,7 +155,7 @@ FRONTEND_DIR = BASE_DIR.parent / "frontend"
 if FRONTEND_DIR.exists():
     app.mount("/app", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
 
-app.mount("/api/mcp", _disha_mcp_http_app, name="disha-mcp")
+app.mount("/api/mcp", _dograh_mcp_http_app, name="dograh-mcp")
 
 
 @app.get("/", include_in_schema=False)
@@ -452,35 +450,6 @@ def list_products(q: str | None = None, limit: int | None = Query(None, ge=1, le
     return {"items": items, "total": total, "offset": offset, "limit": limit} if paged else items
 
 
-_assistant_request_times: dict[str, deque] = defaultdict(deque)
-_assistant_rate_lock = Lock()
-
-
-def _assistant_rate_limit(client_ip: str) -> bool:
-    now = time.monotonic()
-    with _assistant_rate_lock:
-        recent = _assistant_request_times[client_ip]
-        while recent and now - recent[0] > 60:
-            recent.popleft()
-        if len(recent) >= 12:
-            return False
-        recent.append(now)
-        return True
-
-
-def _assistant_size(value: str) -> str:
-    normalized = re.sub(r"\s+", " ", (value or "").strip().upper())
-    aliases = {
-        "SMALL": "S", "स्मॉल": "S", "छोटा": "S", "छोटी": "S",
-        "MEDIUM": "M", "मीडियम": "M", "मध्यम": "M",
-        "LARGE": "L", "लार्ज": "L", "बड़ा": "L", "बड़ी": "L", "बड़ी": "L",
-        "EXTRA LARGE": "XL", "एक्स्ट्रा लार्ज": "XL",
-        "2XL": "XXL", "2X-LARGE": "XXL", "DOUBLE XL": "XXL", "डबल एक्सएल": "XXL", "डबल एक्स्ट्रा लार्ज": "XXL",
-        "XXXL": "3XL", "FREE-SIZE": "FREE SIZE", "फ्री साइज": "FREE SIZE", "फ्री साइज़": "FREE SIZE", "ONE SIZE": "FREE SIZE", "एक साइज": "FREE SIZE",
-    }
-    return aliases.get(normalized, normalized)
-
-
 def _daily_sales_summary(db: Session) -> dict:
     """Summarize units actually dispatched today in India Standard Time."""
     ist = timezone(timedelta(hours=5, minutes=30))
@@ -542,418 +511,34 @@ def daily_sales_summary(db: Session = Depends(get_db)):
     return _daily_sales_summary(db)
 
 
-@app.get("/api/assistant/runtime-config")
-def assistant_runtime_config():
-    """Expose only Dograh's public embed URL; API keys always stay server-side."""
+@app.get("/api/dograh/runtime-config")
+def dograh_runtime_config():
+    """Expose only Dograh's public embed URLs; API keys always stay server-side."""
     widget_url = os.getenv("DOGRAH_WIDGET_SCRIPT_URL", "").strip()
     mode = os.getenv("DOGRAH_WIDGET_MODE", "headless-chat").strip().lower()
-    valid_url = False
-    if widget_url and mode == "headless-chat":
+    voice_url = os.getenv("DOGRAH_VOICE_WIDGET_SCRIPT_URL", "").strip()
+
+    def valid_embed_url(value: str) -> bool:
+        if not value:
+            return False
         try:
-            parsed = urlsplit(widget_url)
+            parsed = urlsplit(value)
             local_http = parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1"}
-            valid_url = bool(parsed.hostname and (parsed.scheme == "https" or local_http)
-                             and not parsed.username and not parsed.password and not parsed.fragment)
+            return bool(parsed.hostname and (parsed.scheme == "https" or local_http)
+                        and not parsed.username and not parsed.password and not parsed.fragment)
         except ValueError:
-            valid_url = False
+            return False
+
+    chat_enabled = mode == "headless-chat" and valid_embed_url(widget_url)
+    voice_enabled = valid_embed_url(voice_url)
     return {
-        "assistant_name": "Disha",
-        "dograh_chat_enabled": valid_url,
-        "dograh_widget_script_url": widget_url if valid_url else None,
-        "dograh_mode": "headless-chat" if valid_url else None,
+        "agent_name": "Dograh",
+        "dograh_chat_enabled": chat_enabled,
+        "dograh_widget_script_url": widget_url if chat_enabled else None,
+        "dograh_voice_enabled": voice_enabled,
+        "dograh_voice_widget_script_url": voice_url if voice_enabled else None,
+        "dograh_mode": "headless-chat" if chat_enabled else None,
     }
-
-
-@app.post("/api/assistant/chat")
-async def inventory_assistant_chat(payload: schemas.AssistantChatRequest, request: Request, db: Session = Depends(get_db)):
-    """Interpret a chat turn, ground it in catalog data, and prepare a safe action.
-
-    This route never changes stock. Inventory writes still require the existing
-    explicit stock-adjustment confirmation flow.
-    """
-    if not assistant_service.api_key_configured():
-        raise HTTPException(status_code=503, detail="Disha AI is disabled or not configured. Check its provider settings and external-inference permission.")
-    client_ip = request.client.host if request.client else "unknown"
-    if not _assistant_rate_limit(client_ip):
-        raise HTTPException(status_code=429, detail="Assistant request limit reached. Please wait a minute and try again.")
-    try:
-        intent = await assistant_service.parse_inventory_request(
-            payload.message,
-            [item.model_dump() for item in payload.history],
-        )
-    except assistant_service.AssistantProviderError as exc:
-        detail = exc.user_message or "Gemini assistant temporarily unavailable; try again later."
-        raise HTTPException(status_code=503, detail=detail) from exc
-
-    action = intent["intent"]
-    last_assistant_message = next(
-        (str(item.content) for item in reversed(payload.history) if item.role == "assistant"),
-        "",
-    )
-    all_sizes_phrase = bool(re.search(r"\b(?:sab(?:hi)?|saare?|sare|all|every|har(?:\s+ek)?)\b.{0,24}\b(?:size|sizes|stock)\b", payload.message, flags=re.IGNORECASE))
-    answered_size_question = bool(re.search(r"kaunsa\s+size|which\s+size|what\s+size", last_assistant_message, flags=re.IGNORECASE))
-    wants_all_sizes = all_sizes_phrase or (answered_size_question and bool(re.fullmatch(r"\s*(?:sab|sabhi|saare|sare|all)\s*[.!?]*\s*", payload.message, flags=re.IGNORECASE)))
-    if wants_all_sizes:
-        if not intent.get("product_query") and not payload.selected_sku:
-            prior_design = re.search(r"^\s*(.+?)\s+mil\s+gaya\b", last_assistant_message, flags=re.IGNORECASE)
-            if prior_design:
-                intent["product_query"] = prior_design.group(1).strip(" .:-")[:160]
-        # Treat this follow-up as a complete size summary, even if the intent
-        # model repeats its previous "which size?" clarification. Never turn
-        # an unqualified request into a search that could return random items.
-        if intent.get("product_query") or payload.selected_sku:
-            action = "product_search"
-    if action == "daily_sales":
-        sales_summary = _daily_sales_summary(db)
-        if not sales_summary["dispatched_units"]:
-            reply = f"Aaj ({sales_summary['date']}) abhi tak koi dispatched sale record nahi hai. Pending orders sale mein count nahi kiye jaate."
-        else:
-            top = ", ".join(f"{item['name']} ({item['sku']}): {item['units']}" for item in sales_summary["top_products"][:3])
-            reply = f"Aaj ({sales_summary['date']}) {sales_summary['dispatched_units']} units dispatch hue, {sales_summary['designs_sold']} designs mein. Top: {top}. Ye dispatched units hain; revenue/rupee sales app mein record nahi hote."
-        return {"status": "daily_sales", "reply": reply, "summary": sales_summary}
-    if action == "app_status":
-        dashboard = summary(db)
-        pending_line_count, pending_units = db.query(
-            func.count(models.OrderLine.id),
-            func.coalesce(func.sum(models.OrderLine.qty_ordered - models.OrderLine.qty_fulfilled), 0),
-        ).filter(models.OrderLine.status.in_(ACTIVE_ORDER_STATUSES)).one()
-        total_stock = db.query(func.coalesce(func.sum(models.Variant.current_stock), 0)).join(models.Product).filter(
-            models.Variant.is_deleted == False, models.Product.is_deleted == False  # noqa: E712
-        ).scalar()
-        sales = _daily_sales_summary(db)
-        reply = (
-            f"App ka live status: {dashboard['products']} designs aur {dashboard['variants']} sizes. "
-            f"Counted stock total {int(total_stock or 0)} pieces hai; {dashboard['ok']} sizes in stock, "
-            f"{dashboard['low']} low stock, {dashboard['out']} out of stock aur {dashboard['uncounted']} abhi count nahi hue. "
-            f"{dashboard['open_alerts']} open alerts hain. Pending orders {int(pending_line_count or 0)} lines / "
-            f"{int(pending_units or 0)} pieces; aaj {sales['dispatched_units']} pieces dispatch hue."
-        )
-        return {"status": "app_status", "reply": reply, "summary": {**dashboard, "total_stock": int(total_stock or 0), "pending_order_lines": int(pending_line_count or 0), "pending_order_units": int(pending_units or 0), "today_dispatched_units": sales["dispatched_units"]}}
-    if action == "product_search":
-        query = db.query(models.Product).options(selectinload(models.Product.variants)).filter(models.Product.is_deleted == False)  # noqa: E712
-        if payload.selected_sku:
-            query = query.filter(models.Product.sku == payload.selected_sku.strip().upper())
-        else:
-            query = _apply_smart_search(query, (models.Product.sku, models.Product.name, models.Product.category), intent.get("product_query"))
-        products = query.order_by(models.Product.name.asc()).limit(8).all()
-        if not products and intent.get("product_query"):
-            candidates = db.query(models.Product).options(selectinload(models.Product.variants)).filter(
-                models.Product.is_deleted == False  # noqa: E712
-            ).all()
-            ranked = [
-                (_fuzzy_product_score(intent["product_query"], product), product)
-                for product in candidates
-            ]
-            ranked = [(score, product) for score, product in ranked if score > 0]
-            ranked.sort(key=lambda item: (item[0], item[1].name.casefold(), item[1].sku), reverse=True)
-            products = [product for _, product in ranked[:8]]
-        if not products:
-            return {"status": "not_found", "reply": f"{intent.get('product_query') or 'Is search'} ke matching designs nahi mile. SKU, colour, ya naam ka koi aur hissa boliye."}
-        details = []
-        for product in products:
-            variants = [v for v in product.variants if not v.is_deleted]
-            size_rows = [{"size": v.size, "stock": v.current_stock, "counted": v.last_counted_at is not None} for v in variants]
-            details.append({"sku": product.sku, "name": product.name, "category": product.category, "image_path": product.image_path, "sizes": size_rows})
-        reply = ("Mujhe milte-julte designs mile. Agar rang alag hai, sahi colour wala design choose karein.\n" if len(details) > 1 else "") + "\n".join(
-            f"{product['name']}: " + ", ".join(
-                f"size {size['size']}, {size['stock'] if size['counted'] else 'stock not counted'} pieces" for size in product["sizes"]
-            ) for product in details
-        )
-        return {"status": "product_search", "reply": reply, "products": details}
-    if action == "alerts_summary":
-        alerts = _collect_alerts(db, intent.get("product_query") or None)
-        if not alerts:
-            return {"status": "alerts_summary", "reply": "Is search ke liye abhi koi open stock ya order-shortage alert nahi hai.", "total": 0}
-        lines = [f"{a['product_name']} ({a['sku']}), {a['size']}: {a['alert_type'].replace('_', ' ').lower()}, stock {a['stock_at_alert']}" + (f", orders {a['ordered_qty']}, restock {a['required_qty']}" if a['alert_type'] == "ORDER_SHORTAGE" else "") for a in alerts[:8]]
-        more = f" Aur {len(alerts) - 8} alerts hain." if len(alerts) > 8 else ""
-        return {"status": "alerts_summary", "reply": f"{len(alerts)} open size alerts hain. " + "; ".join(lines) + "." + more, "total": len(alerts)}
-    if action == "reorder_summary":
-        items = reorder_service.generate_reorder_list(db, save_batch=False, part=intent.get("product_query") or None)
-        needed = [item for item in items if item["required_qty"] > 0]
-        if not needed:
-            return {"status": "reorder_summary", "reply": "Abhi pending orders ke liye koi restock quantity required nahi hai.", "total": 0}
-        lines = [f"{i['name']} ({i['sku']}), {i['size']}: stock {i['current_stock']}, pending orders {i['ordered_qty']}, mangwana {i['required_qty']}" for i in needed[:8]]
-        more = f" Aur {len(needed) - 8} sizes hain." if len(needed) > 8 else ""
-        return {"status": "reorder_summary", "reply": f"{len(needed)} sizes mein restock chahiye. " + "; ".join(lines) + "." + more, "total": len(needed)}
-    if action == "pending_orders":
-        pending_lines, pending_units = db.query(func.count(models.OrderLine.id), func.coalesce(func.sum(models.OrderLine.qty_ordered - models.OrderLine.qty_fulfilled), 0)).filter(models.OrderLine.status.in_(ACTIVE_ORDER_STATUSES)).one()
-        batches = db.query(models.OrderUpload).join(models.OrderLine).filter(models.OrderLine.status.in_(ACTIVE_ORDER_STATUSES)).distinct().order_by(models.OrderUpload.uploaded_at.desc()).limit(5).all()
-        batch_text = ", ".join(f"batch {b.id} ({b.filename or 'orders'})" for b in batches) or "koi pending batch nahi"
-        return {"status": "pending_orders", "reply": f"{int(pending_lines or 0)} pending order lines hain, total {int(pending_units or 0)} pieces baaki hain. Recent batches: {batch_text}. Available counted stock dispatch hoga; baaki pieces pending rahenge."}
-    if action == "recent_activity":
-        T, V, P = models.InventoryTransaction, models.Variant, models.Product
-        query = db.query(T).join(V, T.variant_id == V.id).join(P, V.product_id == P.id)
-        if intent.get("product_query"):
-            query = _apply_smart_search(query, (P.sku, P.name, V.variant_code, V.size), intent["product_query"])
-        rows = query.options(contains_eager(T.variant).contains_eager(V.product)).order_by(T.created_at.desc(), T.id.desc()).limit(8).all()
-        if not rows:
-            return {"status": "recent_activity", "reply": "Is search ke liye inventory history nahi mili."}
-        lines = [f"{t.variant.product.name}, {t.variant.size}: {t.change_qty:+d} ({t.transaction_type.value}), balance {t.balance_after}" for t in rows]
-        return {"status": "recent_activity", "reply": "Recent stock changes: " + "; ".join(lines) + "."}
-    if action == "product_create":
-        sku = intent["sku"].strip().upper()
-        name = intent["product_name"].strip()
-        # Accept natural voice lists such as "S M L", comma-separated lists,
-        # and multi-word size labels without splitting FREE SIZE into two.
-        size_text = intent["sizes"].upper()
-        for hindi_size, latin_size in (("डबल एक्सएल", "XXL"), ("एक्स्ट्रा लार्ज", "XL"), ("फ्री साइज", "FREE SIZE"), ("फ्री साइज़", "FREE SIZE"), ("एक्सएल", "XL"), ("एस", "S"), ("एम", "M"), ("एल", "L")):
-            size_text = size_text.replace(hindi_size.upper(), latin_size)
-        raw_sizes = re.findall(r"FREE\s+SIZE|ONE\s+SIZE|[A-Za-z0-9-]+", size_text, flags=re.IGNORECASE)
-        sizes = [_assistant_size(value) for value in raw_sizes if value.strip()]
-        sizes = list(dict.fromkeys(size for size in sizes if size))
-        if not sku or not name or not sizes:
-            return {"status": "clarify", "reply": "नया प्रोडक्ट बनाने के लिए उसका SKU, नाम और साइज़ बताइए। उदाहरण: SKU DRESS-21, नाम नीली ड्रेस, साइज़ एस एम एल। सेव करने से पहले मैं आपसे पुष्टि करूँगी।"}
-        if len(sku) > 64 or len(name) > 300:
-            return {"status": "clarify", "reply": "SKU या प्रोडक्ट का नाम बहुत लंबा है। कृपया छोटा SKU और नाम बताइए।"}
-        existing = db.query(models.Product).filter(models.Product.sku == sku).first()
-        if existing:
-            return {"status": "clarify", "reply": f"SKU {sku} पहले से कैटलॉग या ट्रैश में मौजूद है। मौजूदा प्रोडक्ट को एडिट या रिस्टोर करें, या दूसरा SKU बताइए।"}
-        return {"status": "confirm_action", "reply": f"मैं {name} प्रोडक्ट, SKU {sku}, साइज़ {', '.join(sizes)} के साथ बनाऊँगी। हर साइज़ का शुरुआती स्टॉक शून्य रहेगा। क्या सेव कर दूँ?", "action": {"type": "product_create", "sku": sku, "name": name, "category": intent["category"] or None, "sizes": sizes}}
-    if action in {"product_update", "product_archive", "product_restore"}:
-        product_query = payload.selected_sku.strip().upper() if payload.selected_sku else intent.get("product_query", "").strip()
-        if not product_query:
-            return {"status": "clarify", "reply": "Kaunsa design? Product name ya SKU batayein."}
-        include_deleted = action == "product_restore"
-        query = db.query(models.Product).filter(models.Product.is_deleted == include_deleted)
-        if payload.selected_sku:
-            query = query.filter(models.Product.sku == product_query)
-        else:
-            query = _apply_smart_search(query, (models.Product.sku, models.Product.name, models.Product.category), product_query)
-        matches = query.order_by(models.Product.name.asc()).limit(9).all()
-        if not matches:
-            state = "Trash mein" if include_deleted else "active catalog mein"
-            return {"status": "not_found", "reply": f"{product_query} {state} nahi mila."}
-        if len(matches) > 1:
-            return {"status": "choose_product", "reply": "Kai designs match hue. Sahi design chunein:", "choices": [{"sku": p.sku, "name": p.name} for p in matches[:8]]}
-        product = matches[0]
-        if action == "product_update":
-            changes = {}
-            if intent["new_sku"]: changes["sku"] = intent["new_sku"]
-            if intent["new_name"]: changes["name"] = intent["new_name"]
-            if intent["new_category"]: changes["category"] = intent["new_category"]
-            if not changes:
-                return {"status": "clarify", "reply": "Kya badalna hai? Naya product name, SKU, ya category clearly batayein."}
-            if changes.get("sku"):
-                conflict = db.query(models.Product).filter(models.Product.sku == changes["sku"], models.Product.id != product.id).first()
-                if conflict:
-                    return {"status": "clarify", "reply": f"SKU {changes['sku']} doosre design mein already use ho raha hai."}
-            description = ", ".join(f"{key}: {getattr(product, key) or '—'} → {value}" for key, value in changes.items())
-            return {"status": "confirm_action", "reply": f"{product.name} ({product.sku}) mein ye change hoga: {description}. Confirm karun?", "action": {"type": "product_update", "sku": product.sku, "changes": changes}}
-        kind = "product_archive" if action == "product_archive" else "product_restore"
-        verb = "Trash mein move" if action == "product_archive" else "restore"
-        return {"status": "confirm_action", "reply": f"{product.name} ({product.sku}) aur uske sabhi sizes ko {verb} karungi. Stock history preserve rahegi. Confirm?", "action": {"type": kind, "sku": product.sku}}
-    if action == "order_dispatch":
-        order_id = intent.get("order_id")
-        if not order_id or order_id < 1:
-            return {"status": "clarify", "reply": "Dispatch se pehle batch ID chahiye. 'Pending orders batao' bolkar batch ID dekhein, phir 'batch 123 dispatch karo' kahe."}
-        batch = db.query(models.OrderUpload).filter(models.OrderUpload.id == order_id).first()
-        if not batch:
-            return {"status": "not_found", "reply": f"Order batch {order_id} nahi mila."}
-        lines = db.query(models.OrderLine).options(joinedload(models.OrderLine.variant)).filter(models.OrderLine.order_upload_id == order_id, models.OrderLine.status.in_(ACTIVE_ORDER_STATUSES)).all()
-        if not lines:
-            return {"status": "clarify", "reply": f"Batch {order_id} mein koi pending order line nahi hai."}
-        pending_units = sum(max(line.qty_ordered - line.qty_fulfilled, 0) for line in lines)
-        available_by_line = _order_line_dispatchability(db, lines)
-        available_units = sum(available_by_line.values())
-        if available_units <= 0:
-            return {"status": "clarify", "reply": f"Batch {order_id} mein {pending_units} pieces pending hain, lekin abhi counted stock dispatch ke liye available nahi hai. Inventory count/update ke baad try karein."}
-        available_lines = sum(1 for quantity in available_by_line.values() if quantity > 0)
-        return {"status": "confirm_action", "reply": f"Batch {order_id} ({batch.filename or 'orders'}) mein {pending_units} pieces baaki hain; abhi {available_units} available pieces dispatch honge. Bacha hua stock aane tak pending rahega. Confirm?", "action": {"type": "order_dispatch", "order_id": order_id, "filename": batch.filename, "lines": available_lines, "units": available_units, "pending_units": pending_units}}
-    if action == "whatsapp_message":
-        phone = str(intent.get("recipient_phone") or "").strip().translate(str.maketrans("०१२३४५६७८९", "0123456789"))
-        phone = re.sub(r"[\s().-]", "", phone)
-        # A plain 10-digit number is treated as an Indian mobile number.
-        if re.fullmatch(r"[0-9]{10}", phone):
-            phone = "+91" + phone
-        if not re.fullmatch(r"\+[1-9][0-9]{7,14}", phone):
-            return {"status": "clarify", "reply": "WhatsApp draft ke liye 10-digit Indian number ya country code ke saath number batayein, jaise 98765 43210 ya +91 98765 43210. Main aapke contacts ya WhatsApp notifications nahi padh sakti."}
-        message_text = str(intent.get("message_text") or "").strip()
-        if not message_text:
-            return {"status": "clarify", "reply": "Kya message bhejna hai? WhatsApp par bhejne wala exact text batayein."}
-        if len(message_text) > 1000:
-            return {"status": "clarify", "reply": "WhatsApp message 1000 characters se lamba hai. Chhota message batayein."}
-        recipient_name = str(intent.get("recipient_name") or "").strip()[:80]
-        return {
-            "status": "confirm_action",
-            "reply": "WhatsApp draft taiyaar hai. Neeche recipient aur message review karein; bhejne ke liye WhatsApp mein Send dabana hoga.",
-            "action": {"type": "whatsapp_compose", "recipient_name": recipient_name, "phone": phone, "message_text": message_text},
-        }
-    if action not in {"stock_add", "stock_set", "stock_check"}:
-        reply = intent.get("reply") or "Main Disha hoon. Aap mujhse normal baat kar sakte hain, ya inventory ke baare mein pooch sakte hain."
-        return {"status": "reply", "reply": reply}
-
-    product_query = payload.selected_sku.strip().upper() if payload.selected_sku else intent["product_query"]
-    if not product_query:
-        return {"status": "clarify", "reply": "Kaunsa design ya SKU? Product ka naam, rang, ya SKU batayein."}
-    products_query = db.query(models.Product).options(selectinload(models.Product.variants)).filter(models.Product.is_deleted == False)  # noqa: E712
-    if payload.selected_sku:
-        products_query = products_query.filter(models.Product.sku == payload.selected_sku.strip().upper())
-    else:
-        products_query = _apply_smart_search(products_query, (models.Product.sku, models.Product.name, models.Product.category), product_query)
-    products = products_query.order_by(models.Product.created_at.desc(), models.Product.id.desc()).limit(30).all()
-    if not products:
-        return {"status": "not_found", "reply": f"'{product_query}' naam ya SKU ka design catalog mein nahi mila. SKU, rang, ya product name dobara batayein."}
-
-    requested_size = _assistant_size(intent["size"])
-    operation = "set" if action == "stock_set" else "add"
-    quantity = intent["quantity"]
-    if action in {"stock_add", "stock_set"} and quantity is None:
-        return {"status": "clarify", "reply": "Kitne pieces? Quantity batayein—jaise '5 add karo' ya 'total stock 12 set karo'."}
-
-    live_products = []
-    for product in products:
-        live_variants = [variant for variant in product.variants if not variant.is_deleted]
-        if live_variants:
-            live_products.append((product, live_variants))
-    if not requested_size:
-        if len(live_products) == 1:
-            product, variants = live_products[0]
-            if wants_all_sizes:
-                size_rows = [{"size": variant.size, "stock": variant.current_stock, "counted": variant.last_counted_at is not None} for variant in variants]
-                size_summary = ", ".join(f"{row['size']} size mein {row['stock'] if row['counted'] else 'stock count nahi hua'} pieces" for row in size_rows)
-                return {
-                    "status": "product_search",
-                    "reply": f"{product.name} ke sabhi sizes ka stock: {size_summary}.",
-                    "products": [{"sku": product.sku, "name": product.name, "category": product.category, "image_path": product.image_path, "sizes": size_rows}],
-                }
-            sizes = ", ".join(variant.size for variant in variants)
-            return {"status": "clarify", "reply": f"{product.name} mein ye sizes available hain: {sizes}. Aap chahein to 'sabhi sizes ka stock' bol sakte hain, ya ek size batayein."}
-        choices = [{"sku": product.sku, "name": product.name} for product, _ in live_products[:8]]
-        return {"status": "choose_product", "reply": "Kaunsa size aur kaunsa design? Sahi product chunein:", "choices": choices}
-
-    matches = []
-    for product, variants in live_products:
-        variant = next((item for item in variants if _assistant_size(item.size) == requested_size), None)
-        if variant:
-            matches.append((product, variant))
-
-    if not matches:
-        if len(live_products) == 1:
-            product, variants = live_products[0]
-            sizes = ", ".join(variant.size for variant in variants) or "koi active size nahi"
-            return {"status": "missing_size", "reply": f"{product.name} / {product.sku} mil gaya, lekin {requested_size} size nahi hai. Available sizes: {sizes}.", "available_sizes": [variant.size for variant in variants]}
-        choices = [{"sku": product.sku, "name": product.name, "sizes": [variant.size for variant in variants]} for product, variants in live_products[:8]]
-        return {"status": "choose_product", "reply": f"In designs mein {requested_size} size nahi mila. Sahi design chunein:", "choices": choices}
-
-    if len(matches) > 1:
-        choices = [{"sku": product.sku, "name": product.name, "size": variant.size, "current_stock": variant.current_stock} for product, variant in matches[:8]]
-        return {"status": "choose_product", "reply": f"{requested_size} size ke kai matching designs mile. Sahi design chunein:", "choices": choices}
-
-    product, variant = matches[0]
-    counted = variant.last_counted_at is not None
-    if action == "stock_check":
-        if not counted:
-            reply = f"{product.name}, size {variant.size} ka stock abhi physical count nahi hua hai. Pehle count karke enter karna hoga."
-            return {"status": "reply", "reply": reply}
-        return {"status": "reply", "reply": f"{product.name}, size {variant.size} mein abhi {variant.current_stock} pieces hain.", "stock": {"sku": product.sku, "name": product.name, "size": variant.size, "current_stock": variant.current_stock}}
-    if operation == "add" and not counted:
-        return {"status": "clarify", "reply": f"{product.name}, size {variant.size} ka purana stock abhi count nahi hua. Galat total se bachne ke liye pehle is size ka kul physical count batayein."}
-
-    current_stock = int(variant.current_stock) if counted else 0
-    proposed_stock = current_stock + int(quantity) if operation == "add" else int(quantity)
-    return {
-        "status": "confirm_stock",
-        "reply": f"{product.name}, size {variant.size}: abhi {current_stock}, update ke baad {proposed_stock} pieces honge. Kya confirm karun?",
-        "action": {
-            "sku": product.sku, "name": product.name, "size": variant.size,
-            "variant_code": variant.variant_code, "current_stock": current_stock,
-            "proposed_stock": proposed_stock, "quantity": int(quantity),
-            "operation": operation, "counted": counted,
-        },
-    }
-
-
-@app.post("/api/assistant/diagnostics")
-async def assistant_diagnostics(request: Request, db: Session = Depends(get_db)):
-    """Admin-token-only, no-inventory-data inference probe for Disha setup."""
-    configured_token = os.getenv("DISHA_AI_DIAGNOSTICS_TOKEN", "").strip()
-    if not configured_token:
-        raise HTTPException(status_code=404, detail="Disha diagnostics are not enabled.")
-    client_ip = request.client.host if request.client else "unknown"
-    if not _assistant_rate_limit(client_ip):
-        raise HTTPException(status_code=429, detail="Assistant request limit reached. Please wait a minute and try again.")
-    supplied = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
-    if not hmac.compare_digest(supplied, configured_token):
-        raise HTTPException(status_code=404, detail="Disha diagnostics are not enabled.")
-
-    provider = assistant_service.active_provider()
-    result = {
-        "application": "running",
-        "enabled": provider is not None,
-        "provider": provider or "not-configured",
-        "base_url_configured": bool(os.getenv("DISHA_AI_BASE_URL", "").strip() or os.getenv("OPENAI_COMPATIBLE_BASE_URL", "").strip() or os.getenv("LOCAL_AI_URL", "").strip()),
-        "provider_endpoint_reachable": False if provider else None,
-        "model_responding": False if provider else None,
-        "voice_transcription": assistant_service.voice_transcription_mode(),
-        "inventory_tools_available": True,
-        "visual_search_ready": None,
-        "message": "",
-    }
-    try:
-        result["visual_search_ready"] = visual_search_status(db).get("status") == "ready"
-    except Exception:
-        result["visual_search_ready"] = False
-
-    if provider is None:
-        result["message"] = "Disha is disabled or missing valid provider configuration. Check DISHA_AI_ENABLED, provider, URL, model, and external-inference permission."
-        return result
-    try:
-        await assistant_service.parse_inventory_request("Reply with a valid empty inventory-intent JSON object for this health check.", [])
-    except assistant_service.AssistantProviderError as exc:
-        # An upstream HTTP response proves network reachability, but not that
-        # the configured model can successfully answer the expected request.
-        result["provider_endpoint_reachable"] = exc.upstream_status is not None
-        if exc.upstream_status in (401, 403):
-            result["message"] = "The provider rejected authentication. Check its API key and access permissions."
-        elif exc.upstream_status == 404:
-            result["message"] = "The provider answered, but the endpoint or model was not found. Check the base URL and exact model ID."
-        elif exc.upstream_status == 429:
-            result["message"] = "The provider is reachable but rate limited. Check its quota and retry later."
-        elif exc.upstream_status is not None:
-            result["message"] = f"The provider is reachable but returned HTTP {exc.upstream_status}. Check model availability and request compatibility."
-        else:
-            result["message"] = "Disha could not reach a responding model. Check provider availability, secure networking, and timeout settings."
-        return result
-    result["provider_endpoint_reachable"] = True
-    result["model_responding"] = True
-    result["message"] = "Disha's configured model returned a valid structured response. Inventory tools are available; visual-search readiness is reported separately."
-    return result
-
-
-@app.post("/api/assistant/transcribe")
-async def assistant_transcribe(request: Request, file: UploadFile = File(...)):
-    """Transcribe one short Hindi/English utterance without restarting the mic."""
-    client_ip = request.client.host if request.client else "unknown"
-    if not _assistant_rate_limit(client_ip):
-        raise HTTPException(status_code=429, detail="Voice request limit reached. Please wait a minute.")
-    audio = await file.read(8 * 1024 * 1024 + 1)
-    if len(audio) > 8 * 1024 * 1024:
-        raise HTTPException(413, "Audio clip is too large. Please speak in a shorter sentence.")
-    if not audio:
-        raise HTTPException(400, "No speech audio was captured.")
-    try:
-        transcript = await assistant_service.transcribe_audio(
-            audio, file.filename or "disha-utterance.webm", file.content_type or "audio/webm"
-        )
-    except assistant_service.AssistantProviderError as exc:
-        raise HTTPException(503, detail=exc.user_message) from exc
-    if not transcript:
-        raise HTTPException(422, "Speech was not clear. Please say it again.")
-    return {"text": transcript}
-
-
-@app.post("/api/assistant/speech")
-async def assistant_speech(payload: schemas.AssistantSpeechRequest, request: Request):
-    """Generate a warm built-in Disha voice; provider key never leaves the server."""
-    client_ip = request.client.host if request.client else "unknown"
-    if not _assistant_rate_limit(client_ip):
-        raise HTTPException(status_code=429, detail="Voice request limit reached. Please wait a minute.")
-    try:
-        audio = await assistant_service.synthesize_speech(payload.text)
-    except assistant_service.AssistantProviderError as exc:
-        raise HTTPException(503, detail=exc.user_message) from exc
-    media_type = "audio/wav" if audio.startswith(b"RIFF") else "audio/mpeg"
-    return Response(content=audio, media_type=media_type, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/products/bulk-template")
