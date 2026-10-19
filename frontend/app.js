@@ -2350,7 +2350,7 @@ function mountDograhVoiceWidget(rawUrl, chatUrl = "") {
   const iframe = document.createElement("iframe");
   iframe.className = "assistant-voice-frame";
   iframe.title = "Dograh voice call";
-  iframe.setAttribute("allow", "microphone; autoplay");
+  iframe.setAttribute("allow", "microphone; autoplay; speaker-selection");
   iframe.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms");
   iframe.setAttribute("referrerpolicy", "strict-origin");
   const safeScriptUrl = JSON.stringify(scriptUrl).replace(/</g, "\\u003c");
