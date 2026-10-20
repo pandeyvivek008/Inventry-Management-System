@@ -2363,10 +2363,10 @@ function mountDograhVoiceWidget(rawUrl, chatUrl = "") {
     @media(prefers-color-scheme:dark){body{color:#e9f2f8}.state{color:#bdcbd4}}
   </style><body><div class="row"><button id="call" type="button" disabled>Loading Disha voice…</button><span class="state" id="state">Voice is handled by your Disha agent.</span></div><script>
     const src=${safeScriptUrl};let callStatus='idle';const button=document.getElementById('call');const label=document.getElementById('state');
-    function report(status,text){callStatus=status;button.disabled=false;button.textContent=status==='connected'?'End voice call':status==='connecting'?'Cancel call':status==='failed'?'Retry voice call':'Start voice call';label.textContent=text||(status==='connected'?'Connected. Speak naturally; the Disha workflow supplies its configured voice.':status==='connecting'?'Connecting… tap Cancel call to stop.':status==='failed'?'Could not connect. Check microphone permission and try again.':'Hindi, English, Hinglish and other languages supported by your Disha workflow.');window.parent.postMessage({source:'inventory-dograh-voice',status,label:label.textContent},window.location.origin);}
+    function report(status,text){callStatus=status;button.disabled=false;button.textContent=status==='connected'?'End voice call':status==='connecting'?'Cancel call':status==='failed'?'Retry voice call':'Start voice call';label.textContent=text||(status==='connected'?'Connected. Speak naturally; the Disha workflow supplies its configured voice.':status==='connecting'?'Connecting… tap Cancel call to stop.':status==='failed'?'Could not connect. Check microphone permission and try again.':'Hindi, English, Hinglish and other languages supported by your Disha workflow.');window.parent.postMessage({source:'inventory-dograh-voice',status,label:label.textContent},'*');}
     function fail(text){const detail=String(text||'');const lower=detail.toLowerCase();const message=/media|microphone|permission|notallowed|devices|notfound/.test(lower)?'Microphone access is blocked or unavailable. Allow microphone access for this website in Chrome, connect a microphone, then retry.':detail||'Disha voice could not connect. Check the widget and provider settings.';report('failed',message);button.disabled=false;}
     button.addEventListener('click',async()=>{const widget=window.DograhWidget;if(!widget?.start){fail('Disha Voice widget is unavailable.');return;}if(callStatus==='connected'||callStatus==='connecting'){try{widget.end();}finally{report('idle','Call ended. Start again whenever you are ready.');}return;}report('connecting','Connecting securely to Disha… tap Cancel call if you want to stop.');try{const started=widget.start();if(started&&typeof started.then==='function')await started;}catch(error){fail(error?.message||'Could not start the voice call.');}});
-    window.addEventListener('message',event=>{if(event.origin!==window.location.origin||event.source!==window.parent||event.data?.source!=='inventory-dograh-app'||event.data?.action!=='end')return;try{window.DograhWidget?.end?.();}finally{report('idle','Call ended. Start again whenever you are ready.');}});
+    window.addEventListener('message',event=>{if(event.source!==window.parent||event.data?.source!=='inventory-dograh-app'||event.data?.action!=='end')return;try{window.DograhWidget?.end?.();}finally{report('idle','Call ended. Start again whenever you are ready.');}});
     const script=document.createElement('script');script.async=true;script.src=src;script.id='dograh-voice-widget';script.setAttribute('data-dograh-context',JSON.stringify({assistant_name:'Disha',application:'Inventory Management System',language_mode:'auto_detect',reply_language:'match_latest_user_turn_and_script',hindi_response_script:'devanagari',spoken_pace:'clear_unhurried',speech_guidance:'Speak complete words and full product or design names naturally. Do not spell ordinary words, names, colours, sizes, or quantities letter by letter. Spell a SKU or code only when the user asks.'}));
     script.onload=()=>{const widget=window.DograhWidget;if(!widget?.start||!widget?.end){fail('This Disha embed is not configured as a Headless Voice widget.');return;}widget.onStatusChange?.((status,text,subtext)=>report(status,[text,subtext].filter(Boolean).join(' · ')||undefined));widget.onCallEnd?.(()=>report('idle','Call ended. Start again whenever you are ready.'));widget.onError?.(error=>fail(error?.message));report('idle');button.disabled=false;};
     script.onerror=()=>fail('Disha voice script did not load.');document.head.appendChild(script);
@@ -2376,12 +2376,12 @@ function mountDograhVoiceWidget(rawUrl, chatUrl = "") {
 }
 
 function stopDograhVoiceCall() {
-  dograhVoiceFrame?.contentWindow?.postMessage({ source: "inventory-dograh-app", action: "end" }, window.location.origin);
+  dograhVoiceFrame?.contentWindow?.postMessage({ source: "inventory-dograh-app", action: "end" }, "*");
 }
 
 window.addEventListener("message", (event) => {
   if (!dograhVoiceFrame || event.source !== dograhVoiceFrame.contentWindow
-      || event.origin !== window.location.origin || event.data?.source !== "inventory-dograh-voice") return;
+      || event.data?.source !== "inventory-dograh-voice") return;
   dograhVoiceStatus = String(event.data.status || "idle");
   const state = $("assistant-state");
   if (state && ["connecting", "connected", "failed"].includes(dograhVoiceStatus)) {
