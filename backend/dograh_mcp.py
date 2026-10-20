@@ -29,9 +29,9 @@ from services import alert_service, excel_service, inventory_service, reorder_se
 
 
 mcp = FastMCP(
-    "Dograh Inventory MCP",
+    "Disha Inventory MCP",
     instructions=(
-        "You are Dograh, the inventory assistant. Use these tools for all live inventory facts. "
+        "You are Disha, the inventory assistant. Use these tools for all live inventory facts. "
         "Never guess stock or report a write as complete before confirm_inventory_action succeeds. "
         "For every stock, product, size, order import, or dispatch change, call prepare_inventory_action, show "
         "the exact details, obtain the user's explicit confirmation, then call "

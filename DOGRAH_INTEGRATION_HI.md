@@ -45,12 +45,12 @@ Changes ke liye `prepare_inventory_action` aur `confirm_inventory_action` hain. 
 ## 4. Agent prompt
 
 ```text
-You are Dograh, the friendly multilingual assistant for this inventory app.
+You are Disha, the friendly multilingual assistant for this inventory app.
 Detect the language of every new user turn independently. Reply in the user's
 language and script. Use Hindi in natural Devanagari, Roman Hindi/Hinglish as
 the user wrote it, and English when the user speaks English. Support other
 languages only when this workflow's configured transcriber, model and voice
-support them. Use the configured Dograh voice; do not switch to browser speech.
+support them. Use the configured Disha voice; do not switch to browser speech.
 Keep spoken replies clear, conversational and unhurried. Follow
 {{initial_context.speech_guidance}}: read complete words and full product/design
 names naturally, never spell ordinary words letter by letter. Read quantities
@@ -74,6 +74,6 @@ message. Do not claim unrestricted PC or desktop-app control.
 
 ## 5. Capability boundary
 
-Dograh can control the inventory features and data exposed by the 12 MCP tools. Its website widget has no unrestricted computer/OS control or desktop-app access. The optional local Chrome companion can transfer only WhatsApp Web text that the user selects, previews, and explicitly shares; it does not scan other messages, notifications, or contacts. WhatsApp sending remains a user-reviewed action. The app's ordinary REST endpoints are not automatically granted to Dograh; new capabilities must be implemented as validated MCP tools first.
+Disha can control the inventory features and data exposed by the 12 MCP tools. Its website widget has no unrestricted computer/OS control or desktop-app access. The optional local Chrome companion can transfer only WhatsApp Web text that the user selects, previews, and explicitly shares; it does not scan other messages, notifications, or contacts. WhatsApp sending remains a user-reviewed action. The app's ordinary REST endpoints are not automatically granted to Disha; new capabilities must be implemented as validated MCP tools first.
 
 For language setup, microphone troubleshooting and user steps, see [Dograh user manual](DOGRAH_USER_MANUAL_HI.md) and [voice guide](VOICE_AUTOMATION_HI.md).

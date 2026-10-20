@@ -214,7 +214,7 @@ to process that subset. Deleting a partially dispatched batch restores every alr
 
 ### Conversational stock assistant
 
-The floating assistant is named **Dograh** and uses Dograh for both text chat and
+The floating assistant is named **Disha** and uses Dograh for both text chat and
 live voice. The app keeps separate public embed
 URLs for Dograh's Chat/Headless and Voice/Headless widgets; a chat-only embed
 cannot start a microphone call. Supported recognition and spoken languages
@@ -232,10 +232,10 @@ voice-language setup, the MCP header, tools, and workflow instructions.
 
 The microphone starts only after the user clicks **Start voice call**; HTTPS and
 browser microphone permission are required. Closing the panel or hiding the tab
-ends the Dograh call. Daily dispatch summaries count dispatched units, not
+ends the Disha call. Daily dispatch summaries count dispatched units, not
 pending orders; the app does not currently store sales prices or revenue.
 
-For WhatsApp, Dograh can prepare a click-to-chat draft when you provide an
+For WhatsApp, Disha can prepare a click-to-chat draft when you provide an
 international-format phone number and the exact message. The app opens WhatsApp
 for you to review and send; it cannot read personal WhatsApp notifications or
 contacts. Automatic low-stock alert delivery still requires a business messaging
