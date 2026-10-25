@@ -2426,6 +2426,16 @@ function finishMyraaTurn() {
 }
 
 window.addEventListener("message", (event) => {
+  if (event.source === window && event.origin === window.location.origin
+      && event.data?.source === "inventory-browser-extension"
+      && event.data?.type === "browserCommandResult") {
+    postToMyraa({
+      type: "browserCommandResult",
+      requestId: String(event.data.requestId || ""),
+      result: event.data.result || { error: "The Chrome helper returned an empty result." },
+    });
+    return;
+  }
   if (!myraaFrame || event.source !== myraaFrame.contentWindow || event.origin !== MYRAA_LOCAL_ORIGIN
       || event.data?.source !== "myraa-assistant") return;
   const data = event.data;

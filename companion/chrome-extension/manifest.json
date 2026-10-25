@@ -1,19 +1,26 @@
 {
   "manifest_version": 3,
-  "name": "MYRAA Local WhatsApp Companion",
-  "version": "1.0.0",
-  "description": "Share only WhatsApp Web text you select with your MYRAA chat input.",
+  "name": "MYRAA Browser and WhatsApp Companion",
+  "version": "1.1.0",
+  "description": "Let MYRAA read and control browser tabs you authorize, and share selected WhatsApp text.",
   "minimum_chrome_version": "116",
   "permissions": [
     "activeTab",
-    "scripting"
+    "scripting",
+    "tabs"
   ],
   "host_permissions": [
     "https://inventry-management-system-production.up.railway.app/*"
   ],
+  "optional_host_permissions": [
+    "<all_urls>"
+  ],
   "action": {
-    "default_title": "Share selected WhatsApp text with MYRAA",
+    "default_title": "MYRAA browser and WhatsApp companion",
     "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
   },
   "content_scripts": [
     {

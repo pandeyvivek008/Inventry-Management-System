@@ -4,6 +4,11 @@ import { MyraaAudioSession, type LiveState } from "../lib/audio";
 
 const INVENTORY_MCP_DEFAULT = "https://inventry-management-system-production.up.railway.app/api/mcp/";
 const INVENTORY_PARENT_ORIGIN = "https://inventry-management-system-production.up.railway.app";
+const CHROME_BROWSER_TOOLS = new Set([
+  "browserOpen", "browserSearch", "browserReadPage", "browserClick",
+  "browserType", "browserFillForm", "browserScroll", "browserGoBack",
+  "browserMediaControl", "browserTabAction",
+]);
 
 type ChatMessage = { id?: string; role: "user" | "assistant"; text: string };
 type McpConfig = { endpoint: string; hasApiKey: boolean };
@@ -42,6 +47,7 @@ export function InventoryAssistantEmbed() {
   const [pendingPreview, setPendingPreview] = useState<any>(null);
   const sessionRef = useRef<MyraaAudioSession | null>(null);
   const approvalRef = useRef<((result: any) => void) | null>(null);
+  const browserCallbacksRef = useRef(new Map<string, { complete: (result: any) => void; timer: number }>());
   const endRef = useRef<HTMLDivElement>(null);
   const typedTurnsRef = useRef<string[]>([]);
   const pendingTypedTurnsRef = useRef<string[]>([]);
@@ -210,6 +216,18 @@ export function InventoryAssistantEmbed() {
           setPendingPreview(args?.preview || {});
           return;
         }
+        if (CHROME_BROWSER_TOOLS.has(name)) {
+          const requestId = `browser-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+          const timer = window.setTimeout(() => {
+            const pending = browserCallbacksRef.current.get(requestId);
+            if (!pending) return;
+            browserCallbacksRef.current.delete(requestId);
+            pending.complete({ error: "The MYRAA Chrome extension did not respond. Reload it at chrome://extensions, enable its browser access permission, then refresh the Inventory app." });
+          }, 25000);
+          browserCallbacksRef.current.set(requestId, { complete: callback, timer });
+          notifyParent({ type: "browserCommand", requestId, action: name, args: args || {} });
+          return;
+        }
         callback({ error: `MYRAA cannot run ${name} from the inventory panel.` });
       },
       onError: (message) => {
@@ -256,7 +274,14 @@ export function InventoryAssistantEmbed() {
     const onParentMessage = (event: MessageEvent) => {
       if (!embedded || event.source !== window.parent || event.origin !== INVENTORY_PARENT_ORIGIN
           || event.data?.source !== "inventory-myraa-parent") return;
-      if (event.data.type === "chat") {
+      if (event.data.type === "browserCommandResult") {
+        const requestId = String(event.data.requestId || "");
+        const pending = browserCallbacksRef.current.get(requestId);
+        if (!pending) return;
+        window.clearTimeout(pending.timer);
+        browserCallbacksRef.current.delete(requestId);
+        pending.complete(event.data.result || { error: "The Chrome helper returned an empty result." });
+      } else if (event.data.type === "chat") {
         const text = String(event.data.text || "").trim().slice(0, 2000);
         if (!text) return;
         if (!hasGeminiKeyRef.current) {
@@ -298,6 +323,11 @@ export function InventoryAssistantEmbed() {
       disposed = true;
       pendingTypedTurnsRef.current = [];
       window.removeEventListener("message", onParentMessage);
+      for (const pending of browserCallbacksRef.current.values()) {
+        window.clearTimeout(pending.timer);
+        pending.complete({ error: "The assistant session ended before the browser action completed." });
+      }
+      browserCallbacksRef.current.clear();
       session.disconnect();
       sessionRef.current = null;
     };

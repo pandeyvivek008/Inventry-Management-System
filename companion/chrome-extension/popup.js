@@ -5,6 +5,8 @@ const counter = document.getElementById("counter");
 const statusLine = document.getElementById("status");
 const readButton = document.getElementById("read-selection");
 const shareButton = document.getElementById("share-with-myraa");
+const browserAccessButton = document.getElementById("enable-browser-access");
+const browserAccessStatus = document.getElementById("browser-access-status");
 
 function setStatus(message, kind = "info") {
   statusLine.textContent = message;
@@ -16,6 +18,35 @@ function updateSelection(value) {
   counter.textContent = `${textarea.value.length}/${MAX_SELECTED_TEXT}`;
   shareButton.disabled = !textarea.value.trim();
 }
+
+async function refreshBrowserAccess() {
+  const granted = await chrome.permissions.contains({ origins: ["<all_urls>"] });
+  browserAccessButton.disabled = granted;
+  browserAccessButton.textContent = granted ? "Browser access enabled" : "Enable browser access";
+  browserAccessStatus.textContent = granted
+    ? "Enabled. MYRAA can now work in tabs in this Chrome window."
+    : "One-time Chrome permission required.";
+}
+
+browserAccessButton.addEventListener("click", async () => {
+  browserAccessButton.disabled = true;
+  browserAccessStatus.textContent = "Chrome will ask you to allow access to websites.";
+  try {
+    const granted = await chrome.permissions.request({ origins: ["<all_urls>"] });
+    browserAccessStatus.textContent = granted
+      ? "Enabled. MYRAA can now work in tabs in this Chrome window."
+      : "Permission not granted. Browser control will stay unavailable.";
+    browserAccessStatus.dataset.kind = granted ? "success" : "error";
+    browserAccessButton.textContent = granted ? "Browser access enabled" : "Enable browser access";
+    browserAccessButton.disabled = granted;
+  } catch (_error) {
+    browserAccessStatus.textContent = "Chrome could not grant access. Try again from the extension popup.";
+    browserAccessStatus.dataset.kind = "error";
+    browserAccessButton.disabled = false;
+  }
+});
+
+void refreshBrowserAccess();
 
 textarea.addEventListener("input", () => updateSelection(textarea.value));
 
