@@ -4,7 +4,7 @@ const textarea = document.getElementById("selected-text");
 const counter = document.getElementById("counter");
 const statusLine = document.getElementById("status");
 const readButton = document.getElementById("read-selection");
-const shareButton = document.getElementById("share-with-disha");
+const shareButton = document.getElementById("share-with-myraa");
 
 function setStatus(message, kind = "info") {
   statusLine.textContent = message;
@@ -58,7 +58,7 @@ shareButton.addEventListener("click", async () => {
   const text = textarea.value.trim();
   if (!text) return;
   shareButton.disabled = true;
-  setStatus("Sending the reviewed selection to the Disha input box…");
+  setStatus("Sending the reviewed selection to the MYRAA input box…");
   try {
     const appTabs = await chrome.tabs.query({ url: APP_TABS_URL });
     const appTab = appTabs.find(tab => tab.active) || appTabs[0];
@@ -69,16 +69,16 @@ shareButton.addEventListener("click", async () => {
     }
 
     const response = await chrome.tabs.sendMessage(appTab.id, {
-      type: "DISHA_SHARE_SELECTED_WHATSAPP_TEXT",
+      type: "MYRAA_SHARE_SELECTED_WHATSAPP_TEXT",
       text
     });
     if (!response?.ok) {
-      setStatus(response?.reason || "Disha could not receive this selection.", "error");
+      setStatus(response?.reason || "MYRAA could not receive this selection.", "error");
       shareButton.disabled = false;
       return;
     }
     await chrome.tabs.update(appTab.id, { active: true });
-    setStatus("Shared to Disha. Review the filled input and press Send there when ready.");
+    setStatus("Shared to MYRAA. Review the filled input and press Send there when ready.");
   } catch (_error) {
     setStatus("Keep the Inventory app open and reload it, then try again.", "error");
     shareButton.disabled = false;

@@ -12,7 +12,6 @@ from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Query, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,7 +28,7 @@ from services import (
     barcode_service, bulk_stock_service, bulk_product_service,
     visual_match_service, visual_search_service,
 )
-import dograh_mcp
+import inventory_mcp
 from mcp.server.transport_security import TransportSecuritySettings
 
 Base.metadata.create_all(bind=engine)
@@ -90,12 +89,12 @@ def _mcp_transport_security():
     if public_domain:
         allowed_hosts.update({public_domain, f"{public_domain}:*"})
     allowed_hosts.update(
-        value.strip().lower() for value in os.getenv("DOGRAH_MCP_ALLOWED_HOSTS", "").split(",") if value.strip()
+        value.strip().lower() for value in os.getenv("INVENTORY_MCP_ALLOWED_HOSTS", "").split(",") if value.strip()
     )
     allowed_origins = {
         f"https://{public_domain}", f"http://{public_domain}"} if public_domain else set()
     allowed_origins.update(
-        value.strip() for value in os.getenv("DOGRAH_MCP_ALLOWED_ORIGINS", "").split(",") if value.strip()
+        value.strip() for value in os.getenv("INVENTORY_MCP_ALLOWED_ORIGINS", "").split(",") if value.strip()
     )
     return TransportSecuritySettings(allowed_hosts=sorted(allowed_hosts), allowed_origins=sorted(allowed_origins))
 
@@ -103,15 +102,15 @@ def _mcp_transport_security():
 # FastMCP 1.x takes transport configuration in its constructor/settings;
 # streamable_http_app() itself takes no keyword arguments in the deployed SDK.
 # Configure the mounted endpoint before the session manager is initialized.
-dograh_mcp.mcp.settings.streamable_http_path = "/"
-dograh_mcp.mcp.settings.json_response = True
-dograh_mcp.mcp.settings.transport_security = _mcp_transport_security()
-_dograh_mcp_http_app = dograh_mcp.mcp.streamable_http_app()
+inventory_mcp.mcp.settings.streamable_http_path = "/"
+inventory_mcp.mcp.settings.json_response = True
+inventory_mcp.mcp.settings.transport_security = _mcp_transport_security()
+_inventory_mcp_http_app = inventory_mcp.mcp.streamable_http_app()
 
 
 @asynccontextmanager
 async def _app_lifespan(_app):
-    async with dograh_mcp.mcp.session_manager.run():
+    async with inventory_mcp.mcp.session_manager.run():
         yield
 
 
@@ -127,10 +126,10 @@ app.add_middleware(
 
 
 @app.middleware("http")
-async def protect_dograh_mcp(request: Request, call_next):
+async def protect_inventory_mcp(request: Request, call_next):
     """Require a private key for the entire MCP transport; never log credentials."""
     if (request.url.path == "/api/mcp" or request.url.path.startswith("/api/mcp/")) and request.method != "OPTIONS":
-        expected = os.getenv("DOGRAH_MCP_API_KEY", "").strip()
+        expected = os.getenv("INVENTORY_MCP_API_KEY", "").strip()
         if len(expected) < 32:
             return Response(status_code=404)
         supplied = request.headers.get("x-api-key", "").strip()
@@ -155,7 +154,7 @@ FRONTEND_DIR = BASE_DIR.parent / "frontend"
 if FRONTEND_DIR.exists():
     app.mount("/app", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
 
-app.mount("/api/mcp", _dograh_mcp_http_app, name="dograh-mcp")
+app.mount("/api/mcp", _inventory_mcp_http_app, name="inventory-mcp")
 
 
 @app.get("/", include_in_schema=False)
@@ -509,36 +508,6 @@ def _daily_sales_summary(db: Session) -> dict:
 @app.get("/api/analytics/daily-sales")
 def daily_sales_summary(db: Session = Depends(get_db)):
     return _daily_sales_summary(db)
-
-
-@app.get("/api/dograh/runtime-config")
-def dograh_runtime_config():
-    """Expose only Dograh's public embed URLs; API keys always stay server-side."""
-    widget_url = os.getenv("DOGRAH_WIDGET_SCRIPT_URL", "").strip()
-    mode = os.getenv("DOGRAH_WIDGET_MODE", "headless-chat").strip().lower()
-    voice_url = os.getenv("DOGRAH_VOICE_WIDGET_SCRIPT_URL", "").strip()
-
-    def valid_embed_url(value: str) -> bool:
-        if not value:
-            return False
-        try:
-            parsed = urlsplit(value)
-            local_http = parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1"}
-            return bool(parsed.hostname and (parsed.scheme == "https" or local_http)
-                        and not parsed.username and not parsed.password and not parsed.fragment)
-        except ValueError:
-            return False
-
-    chat_enabled = mode == "headless-chat" and valid_embed_url(widget_url)
-    voice_enabled = valid_embed_url(voice_url)
-    return {
-        "agent_name": "Dograh",
-        "dograh_chat_enabled": chat_enabled,
-        "dograh_widget_script_url": widget_url if chat_enabled else None,
-        "dograh_voice_enabled": voice_enabled,
-        "dograh_voice_widget_script_url": voice_url if voice_enabled else None,
-        "dograh_mode": "headless-chat" if chat_enabled else None,
-    }
 
 
 @app.get("/api/products/bulk-template")

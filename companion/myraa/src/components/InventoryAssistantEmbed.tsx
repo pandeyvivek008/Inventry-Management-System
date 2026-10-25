@@ -1,0 +1,337 @@
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { Check, CircleAlert, Loader2, Mic, MicOff, Send, Settings, X } from "lucide-react";
+import { MyraaAudioSession, type LiveState } from "../lib/audio";
+
+const INVENTORY_MCP_DEFAULT = "https://inventry-management-system-production.up.railway.app/api/mcp/";
+const INVENTORY_PARENT_ORIGIN = "https://inventry-management-system-production.up.railway.app";
+
+type ChatMessage = { role: "user" | "assistant"; text: string };
+type McpConfig = { endpoint: string; hasApiKey: boolean };
+
+function localTimeLabel(state: LiveState): string {
+  if (state === "connecting") return "Connecting…";
+  if (state === "chatting") return "Chat connected · microphone off";
+  if (state === "listening") return "Listening · Hindi, English and Hinglish";
+  if (state === "speaking") return "MYRAA is speaking";
+  return "Voice is off";
+}
+
+export function InventoryAssistantEmbed() {
+  const [state, setState] = useState<LiveState>("disconnected");
+  const [messages, setMessages] = useState<ChatMessage[]>([
+    { role: "assistant", text: "Namaste! Main MYRAA hoon. Inventory, orders, ya roz ke kisi bhi sawaal mein madad karungi." },
+  ]);
+  const [input, setInput] = useState("");
+  const [error, setError] = useState("");
+  const [mcpStatus, setMcpStatus] = useState("Checking inventory connection…");
+  const [mcpConfig, setMcpConfig] = useState<McpConfig>({ endpoint: INVENTORY_MCP_DEFAULT, hasApiKey: false });
+  const [apiKey, setApiKey] = useState("");
+  const [geminiApiKey, setGeminiApiKey] = useState("");
+  const [hasGeminiKey, setHasGeminiKey] = useState(false);
+  const hasGeminiKeyRef = useRef(false);
+  const [toolCount, setToolCount] = useState(0);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [pendingPreview, setPendingPreview] = useState<any>(null);
+  const sessionRef = useRef<MyraaAudioSession | null>(null);
+  const approvalRef = useRef<((result: any) => void) | null>(null);
+  const endRef = useRef<HTMLDivElement>(null);
+  const typedTurnsRef = useRef<string[]>([]);
+  const pendingTypedTurnsRef = useRef<string[]>([]);
+
+  useEffect(() => { hasGeminiKeyRef.current = hasGeminiKey; }, [hasGeminiKey]);
+
+  const embedded = new URLSearchParams(window.location.search).get("embed") === "inventory";
+
+  const notifyParent = useCallback((data: Record<string, unknown>) => {
+    if (embedded && window.parent !== window) {
+      window.parent.postMessage({ source: "myraa-assistant", ...data }, INVENTORY_PARENT_ORIGIN);
+    }
+  }, [embedded]);
+
+  useEffect(() => {
+    let disposed = false;
+    const session = new MyraaAudioSession({
+      onStateChange: (next) => {
+        setState(next);
+        notifyParent({ type: "status", text: localTimeLabel(next) });
+        if (next === "chatting" || next === "listening") {
+          const active = sessionRef.current;
+          while (active && pendingTypedTurnsRef.current.length) {
+            if (!active.sendTextInput(pendingTypedTurnsRef.current[0])) break;
+            pendingTypedTurnsRef.current.shift();
+          }
+        }
+      },
+      onTranscription: (role, text) => {
+        const clean = String(text || "").trim();
+        if (!clean) return;
+        if (role === "user") {
+          const typedIndex = typedTurnsRef.current.indexOf(clean);
+          if (typedIndex >= 0) typedTurnsRef.current.splice(typedIndex, 1);
+          else setMessages((current) => [...current, { role: "user", text: clean }].slice(-80));
+        } else {
+          setMessages((current) => {
+            const last = current[current.length - 1];
+            if (last?.role === "assistant") {
+              return [...current.slice(0, -1), { role: "assistant", text: `${last.text}${clean}` }].slice(-80);
+            }
+            return [...current, { role: "assistant", text: clean }].slice(-80);
+          });
+        }
+        notifyParent({ type: "transcription", role, text: clean });
+      },
+      onToolCall: (name, args, callback) => {
+        if (name === "__inventory_action_approval__") {
+          approvalRef.current = callback;
+          setPendingPreview(args?.preview || {});
+          return;
+        }
+        callback({ error: `MYRAA cannot run ${name} from the inventory panel.` });
+      },
+      onError: (message) => {
+        pendingTypedTurnsRef.current = [];
+        setError(message);
+        notifyParent({ type: "error", message });
+      },
+      onInventoryStatus: (result) => {
+        if (result.status === "connected") {
+          setToolCount(Number(result.toolCount) || 0);
+          setMcpStatus(`Inventory connected · ${Number(result.toolCount) || 0} tools`);
+          notifyParent({ type: "status", text: `Inventory connected · ${Number(result.toolCount) || 0} tools` });
+        } else if (result.status === "not_configured") {
+          setMcpStatus("Add the inventory MCP key in settings");
+        } else {
+          setMcpStatus(result.message || "Inventory MCP connection failed");
+        }
+      },
+    });
+    sessionRef.current = session;
+
+    const loadConfig = async () => {
+      try {
+        const [response, geminiResponse] = await Promise.all([
+          fetch("/api/inventory-mcp/config", { cache: "no-store" }),
+          fetch("/api/config", { cache: "no-store" }),
+        ]);
+        const data = await response.json();
+        const gemini = await geminiResponse.json();
+        if (!disposed && response.ok) {
+          setMcpConfig({ endpoint: data.endpoint || INVENTORY_MCP_DEFAULT, hasApiKey: Boolean(data.hasApiKey) });
+          setHasGeminiKey(Boolean(gemini.hasApiKey));
+          setMcpStatus(data.hasApiKey ? "Inventory key saved · connect voice to load tools" : "Add the inventory MCP key in settings");
+        }
+      } catch {
+        if (!disposed) setMcpStatus("Local MYRAA server is not reachable");
+      }
+    };
+    void loadConfig();
+
+    const onParentMessage = (event: MessageEvent) => {
+      if (!embedded || event.source !== window.parent || event.origin !== INVENTORY_PARENT_ORIGIN
+          || event.data?.source !== "inventory-myraa-parent") return;
+      if (event.data.type === "chat") {
+        const text = String(event.data.text || "").trim().slice(0, 2000);
+        if (!text) return;
+        if (!hasGeminiKeyRef.current) {
+          setSettingsOpen(true);
+          notifyParent({ type: "resize", height: 460 });
+          notifyParent({ type: "chatError", requestId: event.data.requestId, message: "Gemini key MYRAA settings mein add karein." });
+          return;
+        }
+        const active = sessionRef.current;
+        if (!active) return;
+        if (!active.sendTextInput(text)) {
+          const current = active.getState();
+          if (current === "disconnected" || current === "connecting") {
+            pendingTypedTurnsRef.current.push(text);
+            if (current === "disconnected") void active.connect({ microphone: false });
+          } else {
+            notifyParent({ type: "chatError", requestId: event.data.requestId, message: "MYRAA text session is reconnecting. Please try Send again." });
+            return;
+          }
+        }
+        typedTurnsRef.current.push(text);
+        setMessages((current) => [...current, { role: "user", text }].slice(-80));
+      } else if (event.data.type === "stop") {
+        pendingTypedTurnsRef.current = [];
+        sessionRef.current?.disconnect();
+      } else if (event.data.type === "newConversation") {
+        pendingTypedTurnsRef.current = [];
+        sessionRef.current?.disconnect();
+        typedTurnsRef.current = [];
+        setMessages([{ role: "assistant", text: "New conversation started. Main MYRAA hoon—kaise madad karun?" }]);
+      }
+    };
+    window.addEventListener("message", onParentMessage);
+    if (embedded) notifyParent({ type: "ready" });
+
+    return () => {
+      disposed = true;
+      pendingTypedTurnsRef.current = [];
+      window.removeEventListener("message", onParentMessage);
+      session.disconnect();
+      sessionRef.current = null;
+    };
+  }, [embedded, notifyParent]);
+
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [messages]);
+
+  const toggleVoice = async () => {
+    setError("");
+    if (!hasGeminiKey) {
+      setSettingsOpen(true);
+      notifyParent({ type: "resize", height: 460 });
+      setError("Gemini API key add karne ke liye settings kholen.");
+      return;
+    }
+    if (state === "disconnected") await sessionRef.current?.connect({ microphone: true });
+    else if (state === "chatting") await sessionRef.current?.enableMicrophone();
+    else {
+      pendingTypedTurnsRef.current = [];
+      sessionRef.current?.disconnect();
+    }
+  };
+
+  const sendText = (event: FormEvent) => {
+    event.preventDefault();
+    const text = input.trim().slice(0, 2000);
+    if (!text) return;
+    if (!hasGeminiKeyRef.current) {
+      setSettingsOpen(true);
+      setError("Gemini API key add karne ke liye settings kholen.");
+      return;
+    }
+    const active = sessionRef.current;
+    if (!active) return;
+    if (!active.sendTextInput(text)) {
+      const current = active.getState();
+      if (current === "disconnected" || current === "connecting") {
+        pendingTypedTurnsRef.current.push(text);
+        if (current === "disconnected") void active.connect({ microphone: false });
+      } else {
+        setError("MYRAA text session reconnect ho raha hai. Dobara Send dabayein.");
+        return;
+      }
+    }
+    typedTurnsRef.current.push(text);
+    setMessages((current) => [...current, { role: "user", text }].slice(-80));
+    setInput("");
+  };
+
+  const saveInventoryConfig = async (event: FormEvent) => {
+    event.preventDefault();
+    if (saving) return;
+    setSaving(true);
+    setError("");
+    try {
+      if (geminiApiKey.trim()) {
+        const geminiResponse = await fetch("/api/config/apikey", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ apiKey: geminiApiKey.trim() }),
+        });
+        const geminiResult = await geminiResponse.json();
+        if (!geminiResponse.ok) throw new Error(geminiResult.error || "Gemini API key was rejected.");
+        setHasGeminiKey(true);
+        setGeminiApiKey("");
+      }
+      const response = await fetch("/api/inventory-mcp/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ endpoint: mcpConfig.endpoint.trim(), apiKey: apiKey.trim() }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Could not save inventory connection.");
+      setMcpConfig({ endpoint: result.endpoint, hasApiKey: Boolean(result.hasApiKey) });
+      setApiKey("");
+      setMcpStatus("Saved · reconnect MYRAA to load inventory tools");
+      if (state !== "disconnected") sessionRef.current?.disconnect();
+      if (result.hasApiKey) {
+        const test = await fetch("/api/inventory-mcp/test", { method: "POST" });
+        const testResult = await test.json();
+        if (!test.ok) throw new Error(testResult.error || "Inventory MCP test failed.");
+        setToolCount(Number(testResult.toolCount) || 0);
+        setMcpStatus(`Connection verified · ${Number(testResult.toolCount) || 0} inventory tools`);
+      } else if (!hasGeminiKey && !geminiApiKey.trim()) {
+        setMcpStatus("Saved. Add a Gemini key to start voice.");
+      }
+      setSettingsOpen(false);
+      notifyParent({ type: "resize", height: 150 });
+    } catch (cause: any) {
+      const message = cause?.message || "Inventory MCP setup failed.";
+      setError(message);
+      notifyParent({ type: "error", message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const answerApproval = (approved: boolean) => {
+    approvalRef.current?.({ approved });
+    approvalRef.current = null;
+    setPendingPreview(null);
+  };
+
+  const displayDetails = (value: unknown) => {
+    try { return JSON.stringify(value ?? {}, null, 2); } catch { return String(value ?? ""); }
+  };
+
+  return (
+    <main className="min-h-screen bg-[#0a0b13] text-slate-100 flex flex-col font-sans">
+      <header className="px-4 py-3 flex items-center justify-between border-b border-white/10 bg-[#10121d]">
+        <div className="min-w-0">
+          <div className="font-semibold tracking-wide">MYRAA <span className="text-cyan-300">· Inventory Assistant</span></div>
+          <div className="text-[11px] text-slate-400 truncate">{localTimeLabel(state)} · {mcpStatus}</div>
+        </div>
+        <button type="button" onClick={() => { setSettingsOpen(true); notifyParent({ type: "resize", height: 460 }); }} title="Connection settings" className="p-2 rounded-lg hover:bg-white/10 text-slate-300"><Settings size={18}/></button>
+      </header>
+
+      {!embedded && <section className="flex-1 overflow-auto px-3 py-3 space-y-3" aria-live="polite">
+        {!mcpConfig.hasApiKey && <div className="rounded-xl border border-amber-400/25 bg-amber-400/10 p-3 text-xs text-amber-100">Connect the inventory MCP key in settings to use live stock, orders, dispatch, CRUD, and analytics.</div>}
+        {messages.map((message, index) => (
+          <div key={`${index}-${message.role}`} className={`max-w-[92%] rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap break-words ${message.role === "user" ? "ml-auto bg-cyan-500/20 border border-cyan-300/20" : "mr-auto bg-white/8 border border-white/10"}`}>
+            {message.text}
+          </div>
+        ))}
+        <div ref={endRef}/>
+      </section>}
+
+      {error && !embedded && <div className="mx-3 mb-2 rounded-xl border border-rose-400/30 bg-rose-950/40 p-3 text-xs text-rose-100 flex gap-2"><CircleAlert size={16} className="shrink-0"/><span>{error}</span><button onClick={() => setError("")} aria-label="Dismiss" className="ml-auto"><X size={14}/></button></div>}
+
+      <div className="px-3 py-2 border-t border-white/10 flex items-center gap-2">
+        <button type="button" onClick={toggleVoice} disabled={state === "connecting"} className={`h-10 px-3 rounded-xl flex items-center gap-2 text-sm font-medium ${state === "disconnected" ? "bg-cyan-500 hover:bg-cyan-400 text-slate-950" : "bg-rose-500/15 border border-rose-400/30 text-rose-200"}`}>
+          {state === "connecting" ? <Loader2 size={16} className="animate-spin"/> : state === "disconnected" ? <Mic size={16}/> : <MicOff size={16}/>}
+          {state === "disconnected" ? "Start voice" : state === "connecting" ? "Connecting" : state === "chatting" ? "Enable voice" : "End voice"}
+        </button>
+        {!embedded && <form onSubmit={sendText} className="flex flex-1 gap-2 min-w-0">
+          <input value={input} onChange={(event) => setInput(event.target.value)} maxLength={2000} placeholder="Hindi, English, Hinglish mein likhein…" className="min-w-0 flex-1 rounded-xl bg-white/5 border border-white/10 px-3 text-sm outline-none focus:border-cyan-300/50" aria-label="Message MYRAA"/>
+          <button type="submit" title="Send message" className="w-10 rounded-xl bg-white/10 hover:bg-white/15 grid place-items-center"><Send size={16}/></button>
+        </form>}
+      </div>
+
+      {pendingPreview && (
+        <div className="fixed inset-0 z-50 bg-black/75 p-4 flex items-center justify-center">
+          <section role="dialog" aria-modal="true" aria-labelledby="inventory-approval-title" className="w-full max-w-lg max-h-[90vh] flex flex-col rounded-2xl border border-amber-300/25 bg-[#131622] shadow-2xl">
+            <header className="p-4 border-b border-white/10 flex justify-between items-center"><div><h2 id="inventory-approval-title" className="font-semibold">Confirm inventory change</h2><p className="text-xs text-amber-200 mt-1">Nothing changes until you confirm here.</p></div><button onClick={() => answerApproval(false)} aria-label="Cancel" className="p-2 rounded-lg hover:bg-white/10"><X size={18}/></button></header>
+            <div className="p-4 overflow-auto"><div className="text-sm font-medium text-cyan-200 mb-2">{String(pendingPreview.action || "Inventory action")}</div><pre className="text-xs leading-relaxed whitespace-pre-wrap break-words rounded-xl bg-black/25 p-3">{displayDetails(pendingPreview.details)}</pre></div>
+            <footer className="p-4 pt-0 flex justify-end gap-2"><button onClick={() => answerApproval(false)} className="px-4 py-2 rounded-xl border border-white/15 hover:bg-white/5">Cancel</button><button onClick={() => answerApproval(true)} className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold flex items-center gap-2"><Check size={16}/> Confirm change</button></footer>
+          </section>
+        </div>
+      )}
+
+      {settingsOpen && (
+        <div className="fixed inset-0 z-40 bg-black/75 p-4 flex items-center justify-center">
+          <form onSubmit={saveInventoryConfig} className="w-full max-w-md rounded-2xl border border-white/10 bg-[#131622] p-5 shadow-2xl space-y-4">
+            <header className="flex items-start justify-between"><div><h2 className="font-semibold">MYRAA connections</h2><p className="text-xs text-slate-400 mt-1">Keys stay in this PC’s private MYRAA data folder.</p></div><button type="button" onClick={() => { setSettingsOpen(false); notifyParent({ type: "resize", height: 150 }); }} aria-label="Close settings" className="p-2 rounded-lg hover:bg-white/10"><X size={17}/></button></header>
+            <label className="block text-xs text-slate-300 space-y-1"><span>Gemini API key {hasGeminiKey && <em className="text-emerald-300 not-italic">· saved</em>}</span><input value={geminiApiKey} onChange={(event) => setGeminiApiKey(event.target.value)} className="w-full rounded-lg bg-black/25 border border-white/10 p-2.5 text-sm" type="password" autoComplete="new-password" placeholder={hasGeminiKey ? "Leave blank to keep the saved key" : "Paste your Gemini API key"}/></label>
+            <label className="block text-xs text-slate-300 space-y-1"><span>MCP endpoint</span><input value={mcpConfig.endpoint} onChange={(event) => setMcpConfig((current) => ({ ...current, endpoint: event.target.value }))} className="w-full rounded-lg bg-black/25 border border-white/10 p-2.5 text-sm" required type="url"/></label>
+            <label className="block text-xs text-slate-300 space-y-1"><span>Inventory MCP API key {mcpConfig.hasApiKey && <em className="text-emerald-300 not-italic">· saved</em>}</span><input value={apiKey} onChange={(event) => setApiKey(event.target.value)} className="w-full rounded-lg bg-black/25 border border-white/10 p-2.5 text-sm" type="password" autoComplete="new-password" placeholder={mcpConfig.hasApiKey ? "Leave blank to keep the saved key" : "Paste the Railway MCP key"}/></label>
+            <p className="text-[11px] text-slate-400">This PC’s MYRAA companion works in the desktop app and in the inventory site opened in this browser. The endpoint should point to the inventory app’s `/api/mcp/`. Save &amp; test, then reconnect voice to load tools.</p>
+            <footer className="flex justify-end gap-2"><button type="button" onClick={() => { setSettingsOpen(false); notifyParent({ type: "resize", height: 150 }); }} className="px-3 py-2 rounded-lg border border-white/10 text-sm">Close</button><button type="submit" disabled={saving} className="px-3 py-2 rounded-lg bg-cyan-400 text-slate-950 font-semibold text-sm flex items-center gap-2">{saving && <Loader2 size={14} className="animate-spin"/>}Save &amp; test</button></footer>
+          </form>
+        </div>
+      )}
+    </main>
+  );
+}

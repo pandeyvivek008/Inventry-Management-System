@@ -700,7 +700,7 @@ img { max-width: 100%; display: block; }
 .assistant-launcher { position:relative; width:48px; height:48px; display:grid; place-items:center; border:0; border-radius:16px; color:#fff; background:linear-gradient(145deg,#1bb47a,#137a61); box-shadow:0 8px 22px rgba(18,111,83,.28); font-size:19px; cursor:pointer; pointer-events:auto; transition:transform .16s ease,box-shadow .16s ease; }
 .assistant-launcher:hover { transform:translateY(-2px); box-shadow:0 11px 25px rgba(18,111,83,.33); }
 .assistant-launcher-dot { position:absolute; right:5px; top:5px; width:8px; height:8px; border:2px solid white; border-radius:50%; background:#82f1a9; }
-.assistant-panel { width:min(410px,calc(100vw - 24px)); height:min(680px,calc(100dvh - 92px)); display:flex; flex-direction:column; overflow:hidden; border:1px solid #dce7e4; border-radius:22px; background:#f7faf9; box-shadow:0 20px 60px rgba(16,34,54,.28); pointer-events:auto; animation:assistant-panel-in .18s ease-out both; }
+.assistant-panel { width:min(500px,calc(100vw - 24px)); height:min(820px,calc(100dvh - 92px)); display:flex; flex-direction:column; overflow:hidden; border:1px solid #dce7e4; border-radius:22px; background:#f7faf9; box-shadow:0 20px 60px rgba(16,34,54,.28); pointer-events:auto; animation:assistant-panel-in .18s ease-out both; }
 .assistant-panel[hidden] { display:none; }
 @keyframes assistant-panel-in { from { opacity:0; transform:translateY(-7px) scale(.985); } to { opacity:1; transform:translateY(0) scale(1); } }
 .assistant-panel-head { display:flex; align-items:center; gap:10px; min-height:72px; padding:11px 13px; color:#fff; background:linear-gradient(110deg,#172b46,#245744); }
@@ -713,10 +713,11 @@ img { max-width: 100%; display: block; }
 .assistant-head-btn { display:grid; place-items:center; width:38px; height:38px; flex:0 0 38px; border:1px solid rgba(255,255,255,.24); border-radius:11px; color:#fff; background:rgba(255,255,255,.1); cursor:pointer; transition:background .15s ease,transform .15s ease; }
 .assistant-head-btn:hover { background:rgba(255,255,255,.18); }
 .assistant-head-btn:focus-visible { outline:3px solid #8af0c3; outline-offset:2px; }
-.assistant-voice-container { padding:8px 11px; border-bottom:1px solid #dce9e3; background:linear-gradient(110deg,#f0faf5,#f5faf9); }
+.assistant-voice-container { flex:0 0 auto; padding:0; border-bottom:1px solid #dce9e3; background:#0a0b13; }
 .assistant-voice-container[hidden] { display:none; }
-.assistant-voice-frame { display:block; width:100%; height:68px; border:0; background:transparent; }
-.assistant-voice-note { margin:2px 5px; color:var(--ink-soft); font-size:11px; line-height:1.4; }
+.assistant-voice-frame { display:block; width:100%; height:150px; border:0; background:#0a0b13; transition:height .16s ease; }
+.assistant-voice-note { margin:8px 12px; color:#d6e3e8; font-size:11px; line-height:1.4; }
+.assistant-mcp-retry { margin:0 12px 10px; padding:7px 10px; border:1px solid #75c9a2; border-radius:9px; color:#d9fff0; background:#12583f; cursor:pointer; font:600 11px system-ui,sans-serif; }
 .assistant-history-list { max-height:180px; overflow:auto; padding:8px; border-bottom:1px solid #e2e9e6; background:#fff; }
 .assistant-history-list[hidden] { display:none; }
 .assistant-history-empty { margin:5px 8px; color:var(--ink-soft); font-size:11px; }
@@ -812,7 +813,7 @@ img { max-width: 100%; display: block; }
   .assistant-panel { width:calc(100vw - 16px); height:min(680px,calc(100dvh - var(--topbar-h) - 76px - env(safe-area-inset-top) - env(safe-area-inset-bottom))); border-radius:18px; }
   .assistant-panel-head { min-height:66px; gap:7px; padding:9px; }
   .assistant-head-btn { width:36px; height:36px; flex-basis:36px; }
-  .assistant-voice-frame { height:72px; }
+  .assistant-voice-frame { height:150px; }
 }
 @media (min-width:640px) {
   #product-cards .pcard-photo-wrap { height:clamp(168px, 15vw, 218px); }
@@ -871,7 +872,7 @@ img { max-width: 100%; display: block; }
   #trash-list .tcard-actions { grid-template-columns:1fr; }
 }
 
-/* Dograh uses the available phone viewport, including safe areas and the
+/* MYRAA uses the available phone viewport, including safe areas and the
    resized viewport when the software keyboard is open. */
 @media (max-width:760px) {
   .assistant-widget {
@@ -993,7 +994,7 @@ img { max-width: 100%; display: block; }
 :root[data-theme="dark"] .stock-step { background:var(--surface-muted); color:var(--ink); border-color:var(--line); }
 :root[data-theme="dark"] .stock-step:hover { background:var(--hover-surface); }
 
-/* Product entry, size creation and Dograh mascot polish. */
+/* Product entry, size creation and MYRAA mascot polish. */
 .modal-card.add-product-card { width:min(920px,calc(100vw - 32px)); max-width:920px; max-height:min(92dvh,940px); padding:22px; }
 .add-product-card .modal-head { position:sticky; top:-22px; z-index:3; margin:-22px -22px 16px; padding:16px 22px 12px; background:var(--panel); border-bottom:1px solid var(--line); }
 .add-product-card #add-product-form { min-width:0; }
@@ -1047,9 +1048,9 @@ img { max-width: 100%; display: block; }
 .assistant-launcher { width:auto; min-width:144px; height:52px; display:flex; align-items:center; justify-content:center; gap:10px; overflow:visible; border-radius:999px; padding:0 19px; font-size:14px; }
 .assistant-launcher > i { align-self:center; margin:0; font-size:19px; }
 .assistant-launcher-label { position:static; color:#fff; font-size:13px; font-weight:800; line-height:1; }
-.assistant-widget.is-speaking .assistant-avatar { box-shadow:0 0 0 3px rgba(110,246,174,.72),0 0 18px rgba(110,246,174,.48); animation:dograh-speaking-pulse .85s ease-in-out infinite alternate; }
+.assistant-widget.is-speaking .assistant-avatar { box-shadow:0 0 0 3px rgba(110,246,174,.72),0 0 18px rgba(110,246,174,.48); animation:myraa-speaking-pulse .85s ease-in-out infinite alternate; }
 .assistant-widget.is-speaking .assistant-launcher { box-shadow:0 0 0 4px rgba(110,246,174,.45),0 8px 22px rgba(18,111,83,.28); }
-@keyframes dograh-speaking-pulse { from { transform:scale(1); } to { transform:scale(1.07); } }
+@keyframes myraa-speaking-pulse { from { transform:scale(1); } to { transform:scale(1.07); } }
 @media (max-width:760px) {
   .assistant-widget { top:calc(var(--topbar-h) + env(safe-area-inset-top) + 8px); right:8px; bottom:calc(env(safe-area-inset-bottom) + 8px); }
   .assistant-launcher { width:auto; min-width:138px; height:50px; flex-basis:auto; padding:0 17px; }

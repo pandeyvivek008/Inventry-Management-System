@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Disha Local WhatsApp Companion",
+  "name": "MYRAA Local WhatsApp Companion",
   "version": "1.0.0",
-  "description": "Share only WhatsApp Web text you select with your Disha chat input.",
+  "description": "Share only WhatsApp Web text you select with your MYRAA chat input.",
   "minimum_chrome_version": "116",
   "permissions": [
     "activeTab",
@@ -12,7 +12,7 @@
     "https://inventry-management-system-production.up.railway.app/*"
   ],
   "action": {
-    "default_title": "Share selected WhatsApp text with Disha",
+    "default_title": "Share selected WhatsApp text with MYRAA",
     "default_popup": "popup.html"
   },
   "content_scripts": [

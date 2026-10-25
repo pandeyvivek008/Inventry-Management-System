@@ -6,7 +6,7 @@ importer for your marketplace seller-listings export, Excel/CSV order deduction 
 matches on your actual marketplace SKU codes, QR-code scan-to-recount, bulk physical
 stock counting, Excel bulk product/size import, automatic low-stock alerts, a daily reorder list, a searchable
 **Products** view with photo upload and delete, a modern Tailwind CSS interface, and a
-Hindi conversational Dograh assistant, safe voice stock/product operations, and
+MYRAA desktop voice assistant, confirmation-gated stock/product operations, and
 photo-to-catalog visual search with size-wise live stock.
 
 ## 1. Architecture
@@ -36,8 +36,8 @@ SERVICE LAYER  backend/services/
   reorder_service       pending marketplace orders -> a shortage picklist / vendor-ready reorder list
   barcode_service        one Code128 barcode per design; scan it to open all
                        sizes together
-  Dograh assistant         Dograh Chat + Voice widgets; live inventory tools use
-                         the key-protected Streamable HTTP MCP endpoint
+  MYRAA assistant          Local voice/chat companion and desktop agent; live
+                         inventory tools use the key-protected MCP endpoint
   visual_search_service  SigLIP 2 embeddings for product-linked reference images + versioned pgvector index
         |  SQLAlchemy ORM
 DATA LAYER  backend/models.py
@@ -210,52 +210,46 @@ to process that subset. Deleting a partially dispatched batch restores every alr
   appending the style id), and one design with two rows both claiming the same size
   (kept the first, flagged the rest for you to check in your seller panel).
 
-## 7. Dograh AI and visual product search
+## 7. MYRAA assistant and visual product search
 
 ### Conversational stock assistant
 
-The floating assistant is named **Disha** and uses Dograh for both text chat and
-live voice. The app keeps separate public embed
-URLs for Dograh's Chat/Headless and Voice/Headless widgets; a chat-only embed
-cannot start a microphone call. Supported recognition and spoken languages
-depend on the transcriber and TTS voice selected in Dograh. Configure auto-detect
-and test Hindi, Romanized Hindi/Hinglish, English, and mid-conversation language
-switches before relying on them.
+The inventory page embeds **MYRAA** from the local Windows companion at
+`http://127.0.0.1:3000`. Start MYRAA on the same PC to use voice, chat, and the
+desktop-agent features. Voice starts only after the user presses **Start voice**
+and grants microphone permission. Gemini Live supplies multilingual speech and
+text; the assistant is prompted to respond in the user's language and script.
+The companion also connects to the inventory app's protected Streamable HTTP MCP
+endpoint for live data. Product, stock, order, and dispatch changes are prepared
+first and require approval in the MYRAA confirmation dialog before commit.
 
-Dograh reads live inventory through the app's authenticated Streamable HTTP MCP
-endpoint. It exposes 12 tools: ten read tools and `prepare_inventory_action` /
-`confirm_inventory_action` for confirmation-gated changes. Product/stock/size
-updates and partial/full dispatch require a prepared action and explicit user
-confirmation. Never put the MCP key in frontend code, Git, or a widget URL. See
-[DOGRAH_INTEGRATION_HI.md](DOGRAH_INTEGRATION_HI.md) for Railway variables,
-voice-language setup, the MCP header, tools, and workflow instructions.
+The Gemini API key and MCP API key are entered in MYRAA's local settings and
+stored in the per-user data directory, not in browser code or Git. The MCP key
+must match `INVENTORY_MCP_API_KEY` on the inventory server. See
+[MYRAA_INTEGRATION_HI.md](MYRAA_INTEGRATION_HI.md) for setup, supported access,
+and troubleshooting. Inventory MCP exposes read tools plus the
+`prepare_inventory_action` / `confirm_inventory_action` write flow.
 
-The microphone starts only after the user clicks **Start voice call**; HTTPS and
-browser microphone permission are required. Closing the panel or hiding the tab
-ends the Disha call. Daily dispatch summaries count dispatched units, not
-pending orders; the app does not currently store sales prices or revenue.
-
-For WhatsApp, Disha can prepare a click-to-chat draft when you provide an
-international-format phone number and the exact message. The app opens WhatsApp
-for you to review and send; it cannot read personal WhatsApp notifications or
-contacts. Automatic low-stock alert delivery still requires a business messaging
-service.
+WhatsApp support is limited to a user-reviewed draft/selected text workflow; the
+app does not read personal notifications or contacts and does not send messages
+automatically. Automatic low-stock alert delivery still requires a business
+messaging service.
 
 ### Optional local WhatsApp Web companion
 
 The unpacked Chrome extension in `companion/chrome-extension` can copy only text
-that you select in an already-open WhatsApp Web conversation into the Disha chat
-input. You review the selected text in the extension, then review and submit it
-to Disha yourself. Disha's reply remains a WhatsApp click-to-chat draft; you
-review and press Send in WhatsApp. The extension does not scrape notifications,
-read other messages, or send messages automatically.
+that you select in an already-open WhatsApp Web conversation into the MYRAA chat
+input. You review the selected text in the extension and submit it yourself.
+MYRAA's reply remains a WhatsApp click-to-chat draft; you review and press Send
+in WhatsApp. The extension does not scrape notifications, read other messages,
+or send messages automatically.
 
 To enable it, open `chrome://extensions`, turn on **Developer mode**, choose
 **Load unpacked**, and select `E:\Inventry-Management-System\companion\chrome-extension`.
 Keep the signed-in inventory app open in one tab and WhatsApp Web open in another.
 In WhatsApp Web, select the text you want help with, click the companion icon,
-review the selection, then choose **Share with Disha**. The text appears in the
-Disha input box; edit it if needed and press Send yourself.
+review the selection, then choose **Share with MYRAA**. The text appears in the
+MYRAA input box; edit it if needed and press Send yourself.
 
 Hindi examples, confirmation steps, microphone/earbud setup, and language
 troubleshooting are in [VOICE_AUTOMATION_HI.md](VOICE_AUTOMATION_HI.md).
@@ -289,12 +283,11 @@ pip install -r requirements.txt
 python tests/test_core_flow.py
 ```
 
-The removed `test_assistant_*` and `test_self_hosted_ai.py` scripts covered the
-retired provider adapter; they did not exercise Dograh. Verify the active assistant by
-checking `/api/dograh/runtime-config`, confirming the 12 MCP tools appear in
-the Dograh agent, and testing read-only inventory questions in the published
-workflow. Keep any write/dispatch check uncommitted unless an authorized user
-explicitly confirms the operation.
+The removed `test_assistant_*` and `test_self_hosted_ai.py` scripts covered a
+retired provider adapter. MYRAA runs locally on the user's PC; configure its
+Gemini and inventory MCP keys in its settings, then verify a read-only inventory
+query. Do not test a production write/dispatch without the user's explicit
+confirmation.
 
 ## 9. Natural next steps (not built, in priority order)
 
@@ -310,7 +303,7 @@ explicitly confirms the operation.
    a direct pull; the service layer underneath doesn't need to change, only how order
    rows arrive.
 5. **WhatsApp/SMS alert delivery** - automatic low-stock alerts still need a
-   configured business messaging service; Dograh's current WhatsApp feature opens
+   configured business messaging service; MYRAA's WhatsApp feature opens
    a user-reviewed draft.
 
 ## 10. Putting it online (GitHub + Railway or Render, not Vercel)
@@ -365,8 +358,6 @@ folder resets on redeploy unless you attach a persistent volume or move image st
 to something like S3/Cloudinary - a reasonable next step once real product photos are
 in the system.
 
-## Dograh and inventory MCP
+## MYRAA and inventory MCP
 
-Dograh can use a Dograh headless chat widget while keeping the existing Dograh UI. The app also provides a key-protected Streamable HTTP MCP server for live inventory, order batches, analytics, and confirmation-gated changes.
-
-See [DOGRAH_INTEGRATION_HI.md](DOGRAH_INTEGRATION_HI.md) for setup steps, Railway variables, the Dograh widget, the MCP URL/header, the available tools, and the Hindi confirmation rules. Dograh runs as a separate service; its workspace MCP endpoint and this app's inventory MCP endpoint are different integrations.
+See [MYRAA_INTEGRATION_HI.md](MYRAA_INTEGRATION_HI.md) for local companion setup, the inventory MCP URL/header, available tools, and confirmation rules. The assistant and desktop-control agent run on the user's PC; the inventory API and MCP endpoint remain on the configured inventory server.

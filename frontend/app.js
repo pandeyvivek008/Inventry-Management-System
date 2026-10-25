@@ -1910,13 +1910,6 @@ let assistantHistory = [];
 let assistantSessions = [];
 let assistantSessionId = localStorage.getItem(assistantSessionIdKey) || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 let assistantBusy = false;
-let dograhEnabled = false;
-let dograhReady = false;
-let dograhStarted = false;
-let dograhSeenTurns = new Set();
-let dograhLoadPromise = null;
-let dograhVoiceFrame = null;
-let dograhVoiceStatus = "idle";
 let assistantRequestSequence = 0;
 let assistantConfirmationButton = null;
 try {
@@ -1988,13 +1981,6 @@ function openAssistantSession(sessionId) {
 }
 
 function startNewAssistantConversation() {
-  if (dograhEnabled) {
-    // Disha's headless widget creates a new chat after a page reload.
-    localStorage.setItem(assistantHistoryKey, "[]");
-    localStorage.setItem(assistantSessionIdKey, "");
-    window.location.reload();
-    return;
-  }
   if (assistantHistory.length) saveAssistantHistory();
   assistantRequestSequence += 1;
   assistantBusy = false;
@@ -2007,6 +1993,7 @@ function startNewAssistantConversation() {
   localStorage.setItem(assistantSessionIdKey, assistantSessionId);
   $("assistant-messages")?.replaceChildren();
   $("assistant-history-list").hidden = true;
+  postToMyraa({ type: "newConversation" });
   openAssistant();
 }
 
@@ -2083,7 +2070,7 @@ function setAssistantPhotoPreview(product) {
   preview.querySelector("[data-photo-change]").addEventListener("click", () => $("assistant-photo-input").click());
   preview.querySelector("[data-photo-details]").addEventListener("click", () => {
     preview.hidden = true;
-    stopDograhVoiceCall();
+    postToMyraa({ type: "stop" });
     $("assistant-panel").hidden = true;
     $("assistant-launcher").setAttribute("aria-expanded", "false");
     openProductDetail(product.sku);
@@ -2285,193 +2272,136 @@ function restoreAssistantMessages() {
   assistantHistory.forEach((item) => addAssistantMessage(item.role, item.content));
 }
 
-function dograhTranscriptTurns(transcript = null) {
-  const turns = Array.isArray(transcript) ? transcript : (window.DograhWidget?.getMessages?.() || []);
-  return Array.isArray(turns) ? turns : [];
+const MYRAA_LOCAL_ORIGIN = "http://127.0.0.1:3000";
+let myraaFrame = null;
+let myraaLoadPromise = null;
+let myraaReady = false;
+let myraaReadyResolver = null;
+let myraaRecentTypedTurns = [];
+let myraaLiveAssistantBubble = null;
+let myraaLiveAssistantTimer = null;
+
+function postToMyraa(message) {
+  if (!myraaFrame?.contentWindow || !myraaReady) return false;
+  myraaFrame.contentWindow.postMessage({ source: "inventory-myraa-parent", ...message }, MYRAA_LOCAL_ORIGIN);
+  return true;
 }
 
-function syncDograhTranscript(transcript = null) {
-  const turns = dograhTranscriptTurns(transcript);
-  let latest = "";
-  let latestNew = "";
-  turns.forEach((turn, index) => {
-    const text = String(turn?.assistant_message?.text || "").trim();
-    if (!text) return;
-    latest = text;
-    const key = `${turn?.id != null ? `id:${turn.id}` : `index:${index}`}|${text}`;
-    if (dograhSeenTurns.has(key)) return;
-    dograhSeenTurns.add(key);
-    latestNew = text;
-    assistantHistory.push({ role: "assistant", content: text });
-    addAssistantMessage("assistant", text);
-  });
-  if (latestNew) {
-    saveAssistantHistory();
-  }
-  return latest;
-}
-
-async function startDograhChat() {
-  if (!dograhEnabled || !dograhReady || dograhStarted) return;
-  try {
-    const transcript = await window.DograhWidget.startChat();
-    dograhStarted = true;
-    syncDograhTranscript(transcript);
-    $("assistant-state").textContent = "Disha ready";
-  } catch (error) {
-    $("assistant-state").textContent = "Disha connection problem";
-    addAssistantMessage("system", "Disha se connection nahi ho paaya: " + (error.message || error) + ". Dobara kholkar try karein.");
-  }
-}
-
-function dograhEmbedUrl(raw, siblingRaw = "") {
-  try {
-    const url = new URL(String(raw || ""), window.location.href);
-    const localHttp = url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname);
-    if ((url.protocol !== "https:" && !localHttp) || url.username || url.password || url.hash) return null;
-    if (siblingRaw) {
-      const sibling = new URL(siblingRaw, window.location.href);
-      if (url.origin !== sibling.origin) return null;
-    } else if (url.hostname !== "app.dograh.com" && !localHttp) return null;
-    return url.href;
-  } catch (_) { return null; }
-}
-
-function mountDograhVoiceWidget(rawUrl, chatUrl = "") {
+async function initializeMyraaWidget() {
   const container = $("assistant-voice-container");
-  if (!container) return;
-  const scriptUrl = dograhEmbedUrl(rawUrl, chatUrl);
+  if (!container) return false;
   container.hidden = false;
-  if (!scriptUrl) {
-    container.innerHTML = '<p class="assistant-voice-note">Disha voice setup pending. Text chat Disha se available hai.</p>';
+  if (myraaReady) return true;
+  if (myraaLoadPromise) return myraaLoadPromise;
+
+  const frame = document.createElement("iframe");
+  frame.className = "assistant-voice-frame";
+  frame.title = "MYRAA inventory assistant";
+  frame.setAttribute("allow", "microphone; autoplay; display-capture; clipboard-read; clipboard-write");
+  frame.setAttribute("referrerpolicy", "strict-origin-when-cross-origin");
+  frame.src = MYRAA_LOCAL_ORIGIN + "/?embed=inventory";
+  myraaFrame = frame;
+  container.replaceChildren(frame);
+
+  myraaLoadPromise = new Promise((resolve) => {
+    let settled = false;
+    myraaReadyResolver = (ready) => {
+      if (settled) return;
+      settled = true;
+      myraaReadyResolver = null;
+      resolve(ready);
+    };
+    setTimeout(() => {
+      if (settled) return;
+      myraaReady = false;
+      const note = document.createElement("p");
+      note.className = "assistant-voice-note";
+      note.textContent = "MYRAA could not connect. Start its desktop app on this PC. If Chrome or Edge asks whether the inventory site may find and connect to devices on your local network, choose Allow. If that permission was blocked earlier, enable Local network access in this site’s settings, then retry.";
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "assistant-mcp-retry";
+      retry.textContent = "Retry connection";
+      retry.addEventListener("click", () => {
+        myraaFrame = null;
+        myraaLoadPromise = null;
+        initializeMyraaWidget();
+      });
+      container.append(note, retry);
+      myraaReadyResolver?.(false);
+      myraaReadyResolver = null;
+      myraaLoadPromise = null;
+      const powered = document.querySelector(".assistant-powered");
+      if (powered) powered.textContent = "MYRAA desktop companion offline";
+      const status = $("assistant-state");
+      if (status) status.textContent = "MYRAA not connected";
+    }, 7000);
+  });
+  return myraaLoadPromise;
+}
+
+function appendMyraaTranscript(role, text) {
+  const clean = String(text || "").trim();
+  if (!clean) return;
+  if (role === "user") {
+    const typedIndex = myraaRecentTypedTurns.indexOf(clean);
+    if (typedIndex >= 0) myraaRecentTypedTurns.splice(typedIndex, 1);
+    else {
+      addAssistantMessage("user", clean);
+      assistantHistory.push({ role: "user", content: clean });
+      saveAssistantHistory();
+    }
     return;
   }
-  if (dograhVoiceFrame) return;
-  const iframe = document.createElement("iframe");
-  iframe.className = "assistant-voice-frame";
-  iframe.title = "Disha voice call";
-  iframe.setAttribute("allow", "microphone; autoplay; speaker-selection");
-  iframe.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms");
-  iframe.setAttribute("referrerpolicy", "strict-origin");
-  const safeScriptUrl = JSON.stringify(scriptUrl).replace(/</g, "\\u003c");
-  iframe.srcdoc = `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
-    *{box-sizing:border-box}body{margin:0;padding:5px;background:transparent;color:#18344a;font:13px system-ui,-apple-system,"Segoe UI",sans-serif}
-    .row{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:11px;min-height:54px}
-    button{min-height:44px;padding:0 15px;border:0;border-radius:13px;background:linear-gradient(110deg,#159a68,#0e7d60);color:#fff;font:700 13px system-ui;cursor:pointer;box-shadow:0 5px 14px rgba(18,111,83,.18);white-space:nowrap}
-    button:hover{filter:brightness(1.05)}button:focus-visible{outline:3px solid #7ce5ba;outline-offset:2px}
-    button:disabled{opacity:.62;cursor:wait}.state{color:#496173;font-size:12px;line-height:1.4;overflow-wrap:anywhere}
-    @media(prefers-color-scheme:dark){body{color:#e9f2f8}.state{color:#bdcbd4}}
-  </style><body><div class="row"><button id="call" type="button" disabled>Loading Disha voice…</button><span class="state" id="state">Voice is handled by your Disha agent.</span></div><script>
-    const src=${safeScriptUrl};let callStatus='idle';const button=document.getElementById('call');const label=document.getElementById('state');
-    function report(status,text){callStatus=status;button.disabled=false;button.textContent=status==='connected'?'End voice call':status==='connecting'?'Cancel call':status==='failed'?'Retry voice call':'Start voice call';label.textContent=text||(status==='connected'?'Connected. Speak naturally; the Disha workflow supplies its configured voice.':status==='connecting'?'Connecting… tap Cancel call to stop.':status==='failed'?'Could not connect. Check microphone permission and try again.':'Hindi, English, Hinglish and other languages supported by your Disha workflow.');window.parent.postMessage({source:'inventory-dograh-voice',status,label:label.textContent},'*');}
-    function fail(text){const detail=String(text||'');const lower=detail.toLowerCase();const message=/media|microphone|permission|notallowed|devices|notfound/.test(lower)?'Microphone access is blocked or unavailable. Allow microphone access for this website in Chrome, connect a microphone, then retry.':detail||'Disha voice could not connect. Check the widget and provider settings.';report('failed',message);button.disabled=false;}
-    button.addEventListener('click',async()=>{const widget=window.DograhWidget;if(!widget?.start){fail('Disha Voice widget is unavailable.');return;}if(callStatus==='connected'||callStatus==='connecting'){try{widget.end();}finally{report('idle','Call ended. Start again whenever you are ready.');}return;}report('connecting','Connecting securely to Disha… tap Cancel call if you want to stop.');try{const started=widget.start();if(started&&typeof started.then==='function')await started;}catch(error){fail(error?.message||'Could not start the voice call.');}});
-    window.addEventListener('message',event=>{if(event.source!==window.parent||event.data?.source!=='inventory-dograh-app'||event.data?.action!=='end')return;try{window.DograhWidget?.end?.();}finally{report('idle','Call ended. Start again whenever you are ready.');}});
-    const script=document.createElement('script');script.async=true;script.src=src;script.id='dograh-voice-widget';script.setAttribute('data-dograh-context',JSON.stringify({assistant_name:'Disha',application:'Inventory Management System',language_mode:'auto_detect',reply_language:'match_latest_user_turn_and_script',hindi_response_script:'devanagari',spoken_pace:'clear_unhurried',speech_guidance:'Speak complete words and full product or design names naturally. Do not spell ordinary words, names, colours, sizes, or quantities letter by letter. Spell a SKU or code only when the user asks.'}));
-    script.onload=()=>{const widget=window.DograhWidget;if(!widget?.start||!widget?.end){fail('This Disha embed is not configured as a Headless Voice widget.');return;}widget.onStatusChange?.((status,text,subtext)=>report(status,[text,subtext].filter(Boolean).join(' · ')||undefined));widget.onCallEnd?.(()=>report('idle','Call ended. Start again whenever you are ready.'));widget.onError?.(error=>fail(error?.message));report('idle');button.disabled=false;};
-    script.onerror=()=>fail('Disha voice script did not load.');document.head.appendChild(script);
-  </script></body></html>`;
-  dograhVoiceFrame = iframe;
-  container.replaceChildren(iframe);
-}
-
-function stopDograhVoiceCall() {
-  dograhVoiceFrame?.contentWindow?.postMessage({ source: "inventory-dograh-app", action: "end" }, "*");
+  if (!$("assistant-messages")) return;
+  if (!myraaLiveAssistantBubble) {
+    myraaLiveAssistantBubble = addAssistantMessage("assistant", clean);
+    assistantHistory.push({ role: "assistant", content: clean });
+  } else {
+    myraaLiveAssistantBubble.textContent += clean;
+    if (assistantHistory.at(-1)?.role === "assistant") assistantHistory.at(-1).content += clean;
+  }
+  saveAssistantHistory();
+  $("assistant-messages").scrollTop = $("assistant-messages").scrollHeight;
+  clearTimeout(myraaLiveAssistantTimer);
+  myraaLiveAssistantTimer = setTimeout(() => { myraaLiveAssistantBubble = null; }, 900);
 }
 
 window.addEventListener("message", (event) => {
-  if (!dograhVoiceFrame || event.source !== dograhVoiceFrame.contentWindow
-      || event.data?.source !== "inventory-dograh-voice") return;
-  dograhVoiceStatus = String(event.data.status || "idle");
-  const state = $("assistant-state");
-  if (state && ["connecting", "connected", "failed"].includes(dograhVoiceStatus)) {
-    state.textContent = dograhVoiceStatus === "connected" ? "Disha voice · listening" : dograhVoiceStatus === "connecting" ? "Disha voice · connecting" : "Disha voice · retry needed";
+  if (!myraaFrame || event.source !== myraaFrame.contentWindow || event.origin !== MYRAA_LOCAL_ORIGIN
+      || event.data?.source !== "myraa-assistant") return;
+  const data = event.data;
+  if (data.type === "ready") {
+    myraaReady = true;
+    myraaReadyResolver?.(true);
+    const status = $("assistant-state");
+    if (status) status.textContent = "MYRAA ready · start voice in the panel";
+    const powered = document.querySelector(".assistant-powered");
+    if (powered) powered.textContent = "MYRAA local companion · inventory MCP";
+  } else if (data.type === "status") {
+    const status = $("assistant-state");
+    if (status) status.textContent = String(data.text || "MYRAA ready");
+  } else if (data.type === "resize") {
+    myraaFrame.style.height = `${Math.max(150, Math.min(600, Number(data.height) || 150))}px`;
+  } else if (data.type === "transcription") {
+    appendMyraaTranscript(data.role, data.text);
+    if (data.role === "model" && assistantBusy) {
+      document.querySelector(".assistant-typing")?.remove();
+      assistantBusy = false;
+      const send = $("assistant-send");
+      if (send) send.disabled = false;
+    }
+  } else if (data.type === "chatError" || data.type === "error") {
+    const message = String(data.message || "MYRAA could not complete that request.");
+    addAssistantMessage("assistant", message);
+    assistantHistory.push({ role: "assistant", content: message });
+    saveAssistantHistory();
+    const status = $("assistant-state");
+    if (status) status.textContent = "MYRAA needs attention";
+    assistantBusy = false;
+    const send = $("assistant-send");
+    if (send) send.disabled = false;
   }
 });
-
-async function initializeDograhWidget() {
-  if (dograhLoadPromise) return dograhLoadPromise;
-  dograhLoadPromise = (async () => {
-    try {
-      const config = await getJSON(API + "/dograh/runtime-config");
-      const scriptUrl = String(config.dograh_widget_script_url || "");
-      mountDograhVoiceWidget(config.dograh_voice_widget_script_url, scriptUrl);
-      const safeChatUrl = dograhEmbedUrl(scriptUrl);
-      if (!config.dograh_chat_enabled || !safeChatUrl) {
-        document.documentElement.dataset.dograhAgent = "unavailable";
-        const powered = document.querySelector(".assistant-powered");
-        if (powered) powered.textContent = "Disha chat not configured";
-        return;
-      }
-      const script = document.createElement("script");
-      script.async = true;
-      script.src = safeChatUrl;
-      script.id = "dograh-chat-widget";
-      script.setAttribute("data-dograh-context", JSON.stringify({
-        assistant_name: "Disha",
-        application: "Inventory Management System",
-        language_mode: "auto_detect",
-        reply_language: "match_latest_user_turn_and_script",
-        hindi_response_script: "devanagari",
-        spoken_pace: "clear_unhurried",
-        speech_guidance: "Speak complete words and full product or design names naturally. Do not spell ordinary words, names, colours, sizes, or quantities letter by letter. Spell a SKU or code only when the user asks.",
-      }));
-      await new Promise((resolve, reject) => {
-        script.onload = resolve;
-        script.onerror = () => reject(new Error("Disha widget did not load"));
-        document.head.appendChild(script);
-      });
-      if (!window.DograhWidget?.startChat || !window.DograhWidget?.sendMessage || !window.DograhWidget?.getMessages) {
-        throw new Error("Disha widget is not configured for Headless Chat");
-      }
-      const pendingUserMessage = assistantBusy && assistantHistory.at(-1)?.role === "user"
-        ? assistantHistory.at(-1) : null;
-      if (assistantHistory.length) saveAssistantHistory();
-      dograhEnabled = true;
-      dograhReady = true;
-      document.documentElement.dataset.dograhAgent = "dograh";
-      assistantHistory = pendingUserMessage ? [pendingUserMessage] : [];
-      localStorage.setItem(assistantHistoryKey, JSON.stringify(assistantHistory));
-      if ($("assistant-history-button")) $("assistant-history-button").hidden = true;
-      if ($("assistant-history-list")) $("assistant-history-list").hidden = true;
-      $("assistant-messages")?.replaceChildren();
-      if (pendingUserMessage) addAssistantMessage("user", pendingUserMessage.content);
-      const powered = document.querySelector(".assistant-powered");
-      if (powered) powered.textContent = "Disha agent";
-      window.DograhWidget.onMessage?.((text, turn) => {
-        const transcript = [...dograhTranscriptTurns()];
-        const message = String(text || turn?.assistant_message?.text || "").trim();
-        if (message && !transcript.some((item) => item?.id === turn?.id && item?.assistant_message?.text === message)) {
-          transcript.push({ ...turn, assistant_message: { ...(turn?.assistant_message || {}), text: message } });
-        }
-        syncDograhTranscript(transcript);
-      });
-      window.DograhWidget.onChatStateChange?.((state) => {
-        const status = $("assistant-state");
-        if (state === "ready") {
-          dograhStarted = true;
-          if (status) status.textContent = "Disha ready";
-        } else if (state === "expired" || state === "ended" || state === "error") {
-          dograhStarted = false;
-          if (state === "expired" && status) status.textContent = "Start a new Disha chat after this session expires";
-        }
-      });
-      window.DograhWidget.onError?.((error) => {
-        const state = $("assistant-state");
-        if (state) state.textContent = error?.message || "Disha connection problem";
-      });
-      if (!$("assistant-panel")?.hidden) await startDograhChat();
-    } catch (error) {
-      dograhEnabled = false;
-      dograhReady = false;
-      document.documentElement.dataset.dograhAgent = "unavailable";
-      const powered = document.querySelector(".assistant-powered");
-      if (powered) powered.textContent = "Disha connection problem";
-      console.warn("Disha chat could not be initialized.", error);
-    }
-  })();
-  return dograhLoadPromise;
-}
 
 function openAssistant({ focusInput = true } = {}) {
   const panel = $("assistant-panel"), launcher = $("assistant-launcher");
@@ -2479,14 +2409,14 @@ function openAssistant({ focusInput = true } = {}) {
   panel.hidden = false;
   launcher.setAttribute("aria-expanded", "true");
   restoreAssistantMessages();
-  if (dograhEnabled) startDograhChat();
+  initializeMyraaWidget();
   if (focusInput) $("assistant-chat-input")?.focus({ preventScroll: true });
 }
 
 function closeAssistantPanel({ returnFocus = true } = {}) {
   const panel = $("assistant-panel"), launcher = $("assistant-launcher");
   if (!panel || !launcher) return;
-  stopDograhVoiceCall();
+  postToMyraa({ type: "stop" });
   panel.hidden = true;
   $("assistant-photo-preview").hidden = true;
   $("assistant-history-list").hidden = true;
@@ -2496,11 +2426,11 @@ function closeAssistantPanel({ returnFocus = true } = {}) {
 
 window.addEventListener("message", (event) => {
   if (event.source !== window || event.origin !== window.location.origin
-      || event.data?.source !== "disha-whatsapp-companion"
+      || event.data?.source !== "inventory-whatsapp-companion"
       || event.data?.type !== "selected-text") return;
   const input = $("assistant-chat-input");
   if (!input || input.value.trim()) {
-    showToast("Pehle current Disha draft bhejein ya clear karein.", "info", 3000);
+    showToast("Pehle current MYRAA draft bhejein ya clear karein.", "info", 3000);
     return;
   }
   const sharedText = String(event.data.text || "").trim();
@@ -2509,7 +2439,7 @@ window.addEventListener("message", (event) => {
   input.value = `${prompt}${sharedText}`.slice(0, 500);
   openAssistant({ focusInput: false });
   input.focus({ preventScroll: true });
-  showToast("WhatsApp text input mein aaya. Review karke Disha ko bhejein.", "success", 3200);
+  showToast("WhatsApp text input mein aaya. Review karke MYRAA ko bhejein.", "success", 3200);
 });
 
 async function sendAssistantMessage(message, selectedSku = null) {
@@ -2527,27 +2457,23 @@ async function sendAssistantMessage(message, selectedSku = null) {
   saveAssistantHistory();
   const typing = document.createElement("div");
   typing.className = "assistant-message assistant-typing";
-  typing.textContent = "Disha is replying…";
+  typing.textContent = "MYRAA is replying…";
   $("assistant-messages")?.appendChild(typing);
   try {
-    await initializeDograhWidget();
-    if (!dograhEnabled || !dograhReady || !window.DograhWidget?.sendMessage) {
-      throw new Error("Disha chat widget is not configured or could not connect.");
+    const ready = await initializeMyraaWidget();
+    if (!ready || !postToMyraa({ type: "chat", requestId: requestSequence, text: clean })) {
+      throw new Error("MYRAA desktop companion is not running. Start it on this PC and retry.");
     }
-    await startDograhChat();
-    const transcript = await window.DograhWidget.sendMessage(clean);
+    myraaRecentTypedTurns.push(clean);
     if (requestSequence !== assistantRequestSequence || requestSessionId !== assistantSessionId) return;
-    if (!Array.isArray(transcript)) throw new Error("Disha did not accept this message. Please retry.");
-    const reply = syncDograhTranscript(transcript);
-    if (!reply) throw new Error("Disha did not return a reply. Please retry.");
   } catch (error) {
     if (requestSequence !== assistantRequestSequence || requestSessionId !== assistantSessionId) return;
-    const reply = `Disha se connect nahi ho paayi: ${error.message || error}. AI fallback is disabled; thodi der baad dobara bhejein.`;
+    const reply = `MYRAA se connect nahi ho paayi: ${error.message || error}. Desktop app start karke dobara try karein.`;
     assistantHistory.push({ role: "assistant", content: reply });
     saveAssistantHistory();
     addAssistantMessage("assistant", reply);
     const state = $("assistant-state");
-    if (state) state.textContent = "Disha connection problem";
+    if (state) state.textContent = "MYRAA connection problem";
   } finally {
     typing.remove();
     if (requestSequence === assistantRequestSequence && requestSessionId === assistantSessionId) {
@@ -2589,7 +2515,7 @@ $("assistant-chat-form")?.addEventListener("submit", (event) => {
 $("assistant-sales-summary")?.addEventListener("click", () => sendAssistantMessage("Aaj ki dispatched sales ka short summary batao."));
 $("assistant-automation-help")?.addEventListener("click", () => sendAssistantMessage("आवाज़ के आदेश बताओ।"));
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") stopDograhVoiceCall();
+  if (document.visibilityState === "hidden") postToMyraa({ type: "stop" });
 });
 
 async function loadAlerts() {
@@ -2791,5 +2717,4 @@ if (!window.location.hash || !APP_VIEW_NAMES.has(decodeURIComponent(window.locat
   window.history.replaceState({ view: initialView }, "", `#${encodeURIComponent(initialView)}`);
 }
 switchView(initialView, { updateUrl: false });
-initializeDograhWidget();
 if (initialView !== "dashboard") loadSummary();
