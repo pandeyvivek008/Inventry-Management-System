@@ -14,6 +14,7 @@
     "lint": "tsc --noEmit",
     "electron": "electron .",
     "app": "npm run build && electron .",
+    "test:display-capture": "node --test electron/display-capture.test.cjs",
     "dist": "npm run build && electron-builder --win nsis portable"
   },
   "dependencies": {

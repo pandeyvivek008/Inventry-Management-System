@@ -12,9 +12,11 @@ grace period so apps can save work.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import time
+import webbrowser
 from typing import Any, Dict
 
 from .registry import ToolError, register
@@ -41,6 +43,8 @@ APP_COMMANDS: Dict[str, Dict[str, str]] = {
     "wordpad": {"shell": "write", "image": "wordpad.exe", "label": "WordPad"},
     "paint": {"shell": "mspaint", "image": "mspaint.exe", "label": "Paint"},
     "snipping tool": {"uwp": "ms-screenclip:", "image": "ScreenClippingHost.exe", "label": "Snipping Tool"},
+    "whatsapp": {"app_id": "5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App", "image": "WhatsApp.exe", "label": "WhatsApp"},
+    "whatsapp web": {"url": "https://web.whatsapp.com", "image": "chrome.exe", "label": "WhatsApp Web"},
 }
 
 
@@ -59,6 +63,9 @@ def _resolve_app(key: str) -> Dict[str, str]:
         "settings app": "settings",
         "file explorer": "file explorer",
         "windows explorer": "file explorer",
+        "whats app": "whatsapp",
+        "whatsapp desktop": "whatsapp",
+        "whatsapp app": "whatsapp",
     }
     if norm in aliases and aliases[norm] in APP_COMMANDS:
         return APP_COMMANDS[aliases[norm]]
@@ -70,20 +77,39 @@ def _resolve_app(key: str) -> Dict[str, str]:
 
 def _launch(spec: Dict[str, str]) -> None:
     try:
-        if "exe" in spec:
+        if "app_id" in spec:
+            if os.name != "nt":
+                raise ToolError(f"{spec['label']} app launch is only configured for Windows.")
+            subprocess.Popen(
+                ["explorer.exe", f"shell:AppsFolder\\{spec['app_id']}"],
+                shell=False,
+                close_fds=True,
+                creationflags=getattr(subprocess, "DETACHED_PROCESS", 0)
+                | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+            )
+        elif "url" in spec:
+            if not webbrowser.open(spec["url"], new=2):
+                raise ToolError(f"Could not open {spec['label']} in the default browser.")
+        elif "exe" in spec:
             exe = spec["exe"]
-            if shutil.which(exe) or exe.lower().endswith(".exe"):
+            resolved = shutil.which(exe)
+            if resolved and os.name == "nt" and resolved.lower().endswith((".cmd", ".bat")):
+                os.startfile(resolved)
+            elif resolved:
                 # Detached so we don't block the agent.
                 subprocess.Popen(
-                    [exe],
+                    [resolved],
                     shell=False,
                     close_fds=True,
                     creationflags=getattr(subprocess, "DETACHED_PROCESS", 0)
                     | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
                 )
-            else:
-                # e.g. `code.cmd` lives in PATH; rely on shell resolution.
+            elif os.name == "nt":
+                # `start` consults Windows App Paths and registered app aliases,
+                # which covers Chrome/Edge installations that are not on PATH.
                 subprocess.Popen(f'start "" "{exe}"', shell=True, close_fds=True)
+            else:
+                raise ToolError(f"Could not find executable '{exe}'.")
         elif "shell" in spec:
             subprocess.Popen(
                 f'start "" {spec["shell"]}', shell=True, close_fds=True
@@ -95,7 +121,34 @@ def _launch(spec: Dict[str, str]) -> None:
         else:
             raise ToolError(f"App spec for {spec.get('label')} is incomplete.")
     except Exception as e:  # noqa: BLE001
+        if isinstance(e, ToolError):
+            raise
         raise ToolError(f"Could not launch {spec.get('label')}: {e}") from e
+
+
+def _normalize_app_name(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", name.casefold())
+
+
+def _find_start_menu_shortcut(name: str) -> str | None:
+    """Find an exact Start Menu shortcut for apps outside the built-in aliases."""
+    if os.name != "nt":
+        return None
+    wanted = _normalize_app_name(name)
+    if not wanted:
+        return None
+    roots = (
+        os.path.join(os.environ.get("APPDATA", ""), "Microsoft", "Windows", "Start Menu", "Programs"),
+        os.path.join(os.environ.get("PROGRAMDATA", ""), "Microsoft", "Windows", "Start Menu", "Programs"),
+    )
+    for root in roots:
+        if not root or not os.path.isdir(root):
+            continue
+        for current, _dirs, files in os.walk(root):
+            for filename in files:
+                if filename.lower().endswith(".lnk") and _normalize_app_name(filename[:-4]) == wanted:
+                    return os.path.join(current, filename)
+    return None
 
 
 @register("openApplication")
@@ -103,7 +156,14 @@ def open_application(args: Dict[str, Any]) -> Dict[str, Any]:
     name = args.get("name") or args.get("application")
     if not name:
         raise ToolError("Parameter 'name' (application name) is required.")
-    spec = _resolve_app(str(name))
+    try:
+        spec = _resolve_app(str(name))
+    except ToolError as error:
+        shortcut = _find_start_menu_shortcut(str(name))
+        if not shortcut:
+            raise error
+        os.startfile(shortcut)
+        return {"result": f"{os.path.splitext(os.path.basename(shortcut))[0]} opened."}
     _launch(spec)
     return {"result": f"{spec['label']} opened."}
 

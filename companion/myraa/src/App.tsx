@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useCallback, useState, useEffect, useRef } from "react";
 import { MyraaAudioSession, LiveState } from "./lib/audio";
 import { MyraaCoreVisualizer, MyraaEmotion } from "./components/MyraaCoreVisualizer";
 import { BrowserAgent } from "./components/BrowserAgent";
@@ -61,12 +61,44 @@ export default function App() {
     stateRef.current = state;
   }, [state]);
 
-  // Clean up streaming intervals on unmount
+  const stopScreenSharing = useCallback(() => {
+    if (screenIntervalRef.current) {
+      clearInterval(screenIntervalRef.current);
+      screenIntervalRef.current = null;
+    }
+
+    screenStreamRef.current?.getTracks().forEach((track) => {
+      track.onended = null;
+      track.stop();
+    });
+    screenStreamRef.current = null;
+
+    if (screenVideoRef.current) {
+      screenVideoRef.current.pause();
+      screenVideoRef.current.srcObject = null;
+      screenVideoRef.current = null;
+    }
+
+    setIsScreenSharing(false);
+    setIsScreenSharingPaused(false);
+  }, []);
+
+  useEffect(() => {
+    if (state === "disconnected" && isScreenSharing) stopScreenSharing();
+  }, [state, isScreenSharing, stopScreenSharing]);
+
+  // Release the display capture if the app window is unmounted.
   useEffect(() => {
     return () => {
       if (screenIntervalRef.current) {
         clearInterval(screenIntervalRef.current);
       }
+      screenStreamRef.current?.getTracks().forEach((track) => {
+        track.onended = null;
+        track.stop();
+      });
+      screenVideoRef.current?.pause();
+      if (screenVideoRef.current) screenVideoRef.current.srcObject = null;
     };
   }, []);
 
@@ -124,8 +156,18 @@ export default function App() {
 
   const startScreenSharing = async () => {
     setErrorText(null);
+    if (!["chatting", "listening", "speaking"].includes(stateRef.current)) {
+      setErrorText("Start MYRAA voice first, then choose Share Screen and select a display.");
+      return;
+    }
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      setErrorText("Screen sharing is unavailable here. Use the MYRAA desktop app or an updated Chrome or Edge browser.");
+      return;
+    }
+
+    let stream: MediaStream | null = null;
     try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({
+      stream = await navigator.mediaDevices.getDisplayMedia({
         video: {
           width: { ideal: 1280 },
           height: { ideal: 720 },
@@ -134,20 +176,23 @@ export default function App() {
         audio: false
       });
 
+      const track = stream.getVideoTracks()[0];
+      if (!track) throw new Error("The selected source did not provide a video track.");
+
       screenStreamRef.current = stream;
 
       const video = document.createElement("video");
       video.srcObject = stream;
       video.muted = true;
       video.playsInline = true;
-      video.play().catch(e => console.error("Video play warning:", e));
+      await video.play();
       screenVideoRef.current = video;
 
       setIsScreenSharing(true);
       setIsScreenSharingPaused(false);
 
       // Stop handling when native stop sharing bar button ends
-      stream.getVideoTracks()[0].onended = () => {
+      track.onended = () => {
         stopScreenSharing();
       };
 
@@ -166,34 +211,18 @@ export default function App() {
 
     } catch (e: any) {
       console.error("Screen sharing permission declined or missing API:", e);
-      if (e.name !== "NotAllowedError") {
-        setErrorText(`Could not capture screen: ${e.message || e}`);
-      }
-    }
-  };
-
-  const stopScreenSharing = () => {
-    if (screenIntervalRef.current) {
-      clearInterval(screenIntervalRef.current);
-      screenIntervalRef.current = null;
-    }
-
-    if (screenStreamRef.current) {
-      screenStreamRef.current.getTracks().forEach((track) => {
-        try {
-          track.stop();
-        } catch (e) {}
+      stream?.getTracks().forEach((track) => {
+        track.onended = null;
+        track.stop();
       });
       screenStreamRef.current = null;
-    }
-
-    if (screenVideoRef.current) {
-      screenVideoRef.current.pause();
+      screenVideoRef.current?.pause();
       screenVideoRef.current = null;
+      setIsScreenSharing(false);
+      setErrorText(e?.name === "NotAllowedError"
+        ? "Screen share was cancelled. Choose a display in the share prompt to continue."
+        : `Could not capture screen: ${e?.message || e}`);
     }
-
-    setIsScreenSharing(false);
-    setIsScreenSharingPaused(false);
   };
 
   const pauseScreenSharing = () => {
@@ -209,13 +238,7 @@ export default function App() {
   };
 
   const switchScreenShare = async () => {
-    if (screenStreamRef.current) {
-      screenStreamRef.current.getTracks().forEach((track) => {
-        try {
-          track.stop();
-        } catch (e) {}
-      });
-    }
+    stopScreenSharing();
     await startScreenSharing();
   };
 

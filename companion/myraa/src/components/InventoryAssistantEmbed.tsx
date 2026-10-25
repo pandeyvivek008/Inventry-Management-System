@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { Check, CircleAlert, Loader2, Mic, MicOff, Send, Settings, X } from "lucide-react";
+import { Check, CircleAlert, Loader2, Mic, MicOff, Monitor, Send, Settings, Square, X } from "lucide-react";
 import { MyraaAudioSession, type LiveState } from "../lib/audio";
 
 const INVENTORY_MCP_DEFAULT = "https://inventry-management-system-production.up.railway.app/api/mcp/";
@@ -18,6 +18,8 @@ function localTimeLabel(state: LiveState): string {
 
 export function InventoryAssistantEmbed() {
   const [state, setState] = useState<LiveState>("disconnected");
+  const [sharingScreen, setSharingScreen] = useState(false);
+  const [screenShareError, setScreenShareError] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([
     { role: "assistant", text: "Namaste! Main MYRAA hoon. Inventory, orders, ya roz ke kisi bhi sawaal mein madad karungi." },
   ]);
@@ -38,6 +40,81 @@ export function InventoryAssistantEmbed() {
   const endRef = useRef<HTMLDivElement>(null);
   const typedTurnsRef = useRef<string[]>([]);
   const pendingTypedTurnsRef = useRef<string[]>([]);
+  const screenStreamRef = useRef<MediaStream | null>(null);
+  const screenVideoRef = useRef<HTMLVideoElement | null>(null);
+  const screenCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const screenIntervalRef = useRef<number | null>(null);
+
+  const stopScreenShare = useCallback(() => {
+    if (screenIntervalRef.current !== null) {
+      window.clearInterval(screenIntervalRef.current);
+      screenIntervalRef.current = null;
+    }
+    screenStreamRef.current?.getTracks().forEach((track) => track.stop());
+    screenStreamRef.current = null;
+    screenVideoRef.current?.pause();
+    screenVideoRef.current = null;
+    setSharingScreen(false);
+  }, []);
+
+  const captureScreenFrame = useCallback(() => {
+    const video = screenVideoRef.current;
+    if (!video || video.videoWidth < 1 || video.videoHeight < 1) return;
+    const canvas = screenCanvasRef.current || document.createElement("canvas");
+    screenCanvasRef.current = canvas;
+    const scale = Math.min(1, 960 / Math.max(video.videoWidth, video.videoHeight));
+    canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+    canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const base64 = canvas.toDataURL("image/jpeg", 0.55).split(",")[1];
+    if (base64) sessionRef.current?.sendVideoFrame(base64);
+  }, []);
+
+  const startScreenShare = useCallback(async () => {
+    setScreenShareError("");
+    const liveState = sessionRef.current?.getState();
+    if (liveState !== "chatting" && liveState !== "listening" && liveState !== "speaking") {
+      setScreenShareError("Pehle MYRAA text chat ya voice connect karein, phir screen share shuru karein.");
+      return;
+    }
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      setScreenShareError("Is browser mein screen sharing available nahi hai. Updated Chrome ya Edge use karein.");
+      return;
+    }
+    let stream: MediaStream | null = null;
+    try {
+      // Keep this call directly inside the button flow so the browser can show
+      // its native screen/window chooser and permission prompt.
+      stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 5 } },
+        audio: false,
+      });
+      const video = document.createElement("video");
+      video.srcObject = stream;
+      video.muted = true;
+      video.playsInline = true;
+      await video.play();
+      screenStreamRef.current = stream;
+      screenVideoRef.current = video;
+      const track = stream.getVideoTracks()[0];
+      if (track) track.onended = stopScreenShare;
+      screenIntervalRef.current = window.setInterval(captureScreenFrame, 2000);
+      setSharingScreen(true);
+      window.setTimeout(captureScreenFrame, 500);
+    } catch (cause: any) {
+      stream?.getTracks().forEach((track) => track.stop());
+      setScreenShareError(cause?.name === "NotAllowedError"
+        ? "Screen share cancel hua. Share screen dabakar display chunein aur browser prompt allow karein."
+        : `Screen share start nahi hua: ${cause?.message || "browser capture unavailable"}`);
+    }
+  }, [captureScreenFrame, stopScreenShare]);
+
+  useEffect(() => () => stopScreenShare(), [stopScreenShare]);
+  useEffect(() => {
+    if (state === "disconnected" && sharingScreen) stopScreenShare();
+  }, [state, sharingScreen, stopScreenShare]);
 
   useEffect(() => { hasGeminiKeyRef.current = hasGeminiKey; }, [hasGeminiKey]);
 
@@ -304,11 +381,17 @@ export function InventoryAssistantEmbed() {
           {state === "connecting" ? <Loader2 size={16} className="animate-spin"/> : state === "disconnected" ? <Mic size={16}/> : <MicOff size={16}/>}
           {state === "disconnected" ? "Start voice" : state === "connecting" ? "Connecting" : state === "chatting" ? "Enable voice" : "End voice"}
         </button>
+        <button type="button" onClick={() => { if (sharingScreen) stopScreenShare(); else void startScreenShare(); }} aria-label={sharingScreen ? "Stop screen sharing" : "Share screen with MYRAA"} title={sharingScreen ? "Stop screen sharing" : "Share screen with MYRAA"} className={`h-10 px-2.5 rounded-xl flex items-center gap-1.5 text-xs font-medium whitespace-nowrap ${sharingScreen ? "bg-rose-500/15 border border-rose-400/30 text-rose-200" : "bg-white/10 hover:bg-white/15 text-slate-100"}`}>
+          {sharingScreen ? <Square size={14}/> : <Monitor size={15}/>}
+          {sharingScreen ? "Stop screen" : "Share screen"}
+        </button>
         {!embedded && <form onSubmit={sendText} className="flex flex-1 gap-2 min-w-0">
           <input value={input} onChange={(event) => setInput(event.target.value)} maxLength={2000} placeholder="Hindi, English, Hinglish mein likhein…" className="min-w-0 flex-1 rounded-xl bg-white/5 border border-white/10 px-3 text-sm outline-none focus:border-cyan-300/50" aria-label="Message MYRAA"/>
           <button type="submit" title="Send message" className="w-10 rounded-xl bg-white/10 hover:bg-white/15 grid place-items-center"><Send size={16}/></button>
         </form>}
       </div>
+      {screenShareError && <div role="alert" className="mx-3 mb-2 rounded-lg border border-rose-400/25 bg-rose-950/30 px-3 py-2 text-[11px] text-rose-100">{screenShareError}</div>}
+      {sharingScreen && <div role="status" className="px-3 pb-2 text-[11px] text-emerald-200">Screen is shared with the active MYRAA session. Stop it any time.</div>}
 
       {pendingPreview && (
         <div className="fixed inset-0 z-50 bg-black/75 p-4 flex items-center justify-center">

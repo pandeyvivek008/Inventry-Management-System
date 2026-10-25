@@ -1177,7 +1177,7 @@ async function startServer() {
                 // ======== DESKTOP CONTROL TOOLS (routed to Python agent) ========
                 {
                   name: "openApplication",
-                  description: "Open a desktop application (e.g. Notepad, Chrome, VS Code, Calculator, File Explorer, Task Manager, Settings, CMD, PowerShell).",
+                  description: "Open a desktop application such as WhatsApp, WhatsApp Web, Chrome, Edge, VS Code, Notepad, Calculator, File Explorer, Task Manager, Settings, or another app available in the Windows Start Menu.",
                   parameters: { type: Type.OBJECT, properties: { name: { type: Type.STRING, description: "Application name, e.g. 'notepad', 'chrome', 'vscode'." } }, required: ["name"] }
                 },
                 {

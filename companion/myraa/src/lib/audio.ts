@@ -170,7 +170,7 @@ export class MyraaAudioSession {
    * Pushes a compressed JPEG base64 screenshot frame directly to the live WebSocket server.
    */
   public sendVideoFrame(base64Data: string) {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.currentState !== "disconnected") {
+    if (this.serverReady && this.ws && this.ws.readyState === WebSocket.OPEN && this.currentState !== "disconnected") {
       this.ws.send(JSON.stringify({ type: "video", video: base64Data }));
     }
   }

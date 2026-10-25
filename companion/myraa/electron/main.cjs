@@ -16,11 +16,12 @@
 
 'use strict';
 
-const { app, BrowserWindow, Menu, shell, dialog } = require('electron');
+const { app, BrowserWindow, Menu, shell, dialog, session, desktopCapturer } = require('electron');
 const path = require('path');
 const http = require('http');
 const { spawn } = require('child_process');
 const fs = require('fs');
+const { installDisplayCaptureHandler } = require('./display-capture.cjs');
 
 // --- Constants -------------------------------------------------------------
 const SERVER_PORT = 3000;
@@ -221,6 +222,12 @@ function createMainWindow() {
 // ---------------------------------------------------------------------------
 async function bootstrap() {
   app.setAppUserModelId('com.myraa.desktop');
+  installDisplayCaptureHandler({
+    session,
+    desktopCapturer,
+    dialog,
+    getMainWindow: () => mainWindow,
+  });
   createSplashWindow();
 
   try {
