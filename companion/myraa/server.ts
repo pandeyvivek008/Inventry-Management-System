@@ -1,6 +1,7 @@
 import express from "express";
 import http from "http";
 import path from "path";
+import { spawn, execSync } from "child_process";
 import { WebSocketServer } from "ws";
 import { GoogleGenAI, Modality, Type, LiveServerMessage } from "@google/genai";
 import dotenv from "dotenv";
@@ -166,7 +167,6 @@ let desktopAgentVerified = false;
  * even if MYRAA's node process is killed.
  */
 function spawnDesktopAgent(): void {
-  const { spawn } = require("child_process");
   const agentEnv = {
     ...process.env,
     MYRAA_AGENT_HOST: "127.0.0.1",
@@ -207,7 +207,7 @@ function spawnDesktopAgent(): void {
   ].filter(Boolean) as string[];
   const py = candidates.find((p) => {
     try {
-      require("child_process").execSync(`"${p}" --version`, { stdio: "ignore" });
+      execSync(`"${p}" --version`, { stdio: "ignore" });
       return true;
     } catch {
       return false;
