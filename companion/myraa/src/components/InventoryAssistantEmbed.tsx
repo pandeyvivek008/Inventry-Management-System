@@ -223,7 +223,7 @@ export function InventoryAssistantEmbed() {
             if (!pending) return;
             browserCallbacksRef.current.delete(requestId);
             pending.complete({ error: "The MYRAA Chrome extension did not respond. Reload it at chrome://extensions, enable its browser access permission, then refresh the Inventory app." });
-          }, 25000);
+          }, 35000);
           browserCallbacksRef.current.set(requestId, { complete: callback, timer });
           notifyParent({ type: "browserCommand", requestId, action: name, args: args || {} });
           return;

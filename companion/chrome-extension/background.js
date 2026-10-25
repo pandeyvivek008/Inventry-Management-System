@@ -55,7 +55,7 @@ async function pageInfo(tab, maxChars = PAGE_TEXT_LIMIT) {
   return { ...injection.result, tabId: tab.id };
 }
 
-function waitForPage(tabId, timeoutMs = 14000) {
+function waitForPage(tabId, timeoutMs = 20000) {
   return new Promise((resolve) => {
     let finished = false;
     const finish = (tab) => {
