@@ -120,7 +120,7 @@ export function InventoryAssistantEmbed() {
       setSharingScreen(true);
       if (liveState === "disconnected") {
         setMcpStatus("Screen selected · connecting text session");
-        await sessionRef.current?.connect({ microphone: false });
+        await sessionRef.current?.connect({ microphone: false, surface: "inventory" });
       }
       window.setTimeout(captureScreenFrame, 500);
     } catch (cause: any) {
@@ -271,7 +271,7 @@ export function InventoryAssistantEmbed() {
           const current = active.getState();
           if (current === "disconnected" || current === "connecting") {
             pendingTypedTurnsRef.current.push(text);
-            if (current === "disconnected") void active.connect({ microphone: false });
+            if (current === "disconnected") void active.connect({ microphone: false, surface: "inventory" });
           } else {
             notifyParent({ type: "chatError", requestId: event.data.requestId, message: "MYRAA text session is reconnecting. Please try Send again." });
             return;
@@ -313,7 +313,7 @@ export function InventoryAssistantEmbed() {
       setError("Gemini API key add karne ke liye settings kholen.");
       return;
     }
-    if (state === "disconnected") await sessionRef.current?.connect({ microphone: true });
+    if (state === "disconnected") await sessionRef.current?.connect({ microphone: true, surface: "inventory" });
     else if (state === "chatting") await sessionRef.current?.enableMicrophone();
     else {
       pendingTypedTurnsRef.current = [];
@@ -336,7 +336,7 @@ export function InventoryAssistantEmbed() {
       const current = active.getState();
       if (current === "disconnected" || current === "connecting") {
         pendingTypedTurnsRef.current.push(text);
-        if (current === "disconnected") void active.connect({ microphone: false });
+        if (current === "disconnected") void active.connect({ microphone: false, surface: "inventory" });
       } else {
         setError("MYRAA text session reconnect ho raha hai. Dobara Send dabayein.");
         return;

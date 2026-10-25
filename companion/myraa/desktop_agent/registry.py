@@ -120,6 +120,7 @@ DESKTOP_TOOL_NAMES = [
     "desktopBrowserCloseTab",
     "desktopBrowserSearch",
     "desktopBrowserClick",
+    "desktopBrowserReadPage",
     "desktopBrowserType",
     "desktopBrowserFillForm",
     "desktopBrowserGoBack",

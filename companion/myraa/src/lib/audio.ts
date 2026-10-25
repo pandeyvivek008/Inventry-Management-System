@@ -187,7 +187,7 @@ export class MyraaAudioSession {
   }
 
   // Start a voice session with microphone access, or a text-only live session.
-  public async connect(options: { microphone?: boolean } = {}) {
+  public async connect(options: { microphone?: boolean; surface?: "inventory" } = {}) {
     if (this.isActivated) return;
     this.microphoneEnabled = options.microphone !== false;
     this.serverReady = false;
@@ -197,7 +197,8 @@ export class MyraaAudioSession {
     try {
       // 1. Establish custom WebSocket server bridge
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      this.ws = new WebSocket(`${protocol}//${window.location.host}/live`);
+      const surface = options.surface === "inventory" ? "?surface=inventory" : "";
+      this.ws = new WebSocket(`${protocol}//${window.location.host}/live${surface}`);
       this.ws.binaryType = "blob";
 
       this.ws.onopen = async () => {

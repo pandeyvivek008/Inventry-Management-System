@@ -12,9 +12,10 @@ back/forward, scroll. Lazy-initialized; robust to closed pages.
 from __future__ import annotations
 
 import asyncio
+import re
 import threading
 from typing import Any, Dict, Optional
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlsplit
 
 from .registry import STATE, ToolError, register
 
@@ -95,12 +96,40 @@ async def _page() -> Any:
     return await _ensure_browser_async()
 
 
+async def _page_snapshot(page: Any, max_chars: int = 6000) -> Dict[str, str]:
+    """Return concise visible page text so MYRAA can report what it opened."""
+    try:
+        title = await page.title()
+    except Exception:
+        title = ""
+    try:
+        text = await page.locator("body").inner_text(timeout=5000)
+    except Exception as exc:  # noqa: BLE001
+        text = f"Page text is unavailable: {exc}"
+    limit = max(500, min(10000, int(max_chars)))
+    return {"title": title[:300], "url": page.url, "page_text": text[:limit]}
+
+
 def _normalize_url(raw: str) -> str:
     url = raw.strip()
     if not url:
         raise ToolError("Empty URL.")
-    if "://" not in url:
+    if url == "about:blank":
+        return url
+    scheme_match = re.match(r"^([a-z][a-z0-9+.-]*):", url, flags=re.IGNORECASE)
+    if scheme_match and scheme_match.group(1).lower() not in {"http", "https"}:
+        if not re.match(r"^[a-z0-9.-]+:\d+(?:/|$)", url, flags=re.IGNORECASE):
+            raise ToolError("Only regular HTTP(S) websites can be opened in MYRAA's browser.")
         url = "https://" + url
+    elif not scheme_match:
+        url = "https://" + url
+    elif not url.lower().startswith(("http://", "https://")):
+        raise ToolError("Specify a complete HTTP(S) URL.")
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ToolError("Only regular HTTP(S) websites can be opened in MYRAA's browser.")
+    if parsed.username or parsed.password:
+        raise ToolError("URLs containing embedded credentials are not allowed.")
     return url
 
 
@@ -115,7 +144,7 @@ async def browser_open(args: Dict[str, Any]) -> Dict[str, Any]:
         await page.goto(url, wait_until="domcontentloaded", timeout=20000)
     except Exception as e:  # noqa: BLE001
         raise ToolError(f"Could not open {url}: {e}")
-    return {"result": f"Opened {url} in the automation browser.", "url": page.url}
+    return {"result": f"Opened {url} in the automation browser.", **(await _page_snapshot(page))}
 
 
 @register("desktopBrowserNavigate")
@@ -136,7 +165,7 @@ async def browser_open_tab(args: Dict[str, Any]) -> Dict[str, Any]:
             await page.goto(url, wait_until="domcontentloaded", timeout=20000)
         except Exception as e:  # noqa: BLE001
             raise ToolError(f"Opened tab but navigation failed: {e}")
-    return {"result": f"New tab opened at {url}.", "url": url}
+    return {"result": f"New tab opened at {url}.", **(await _page_snapshot(page))}
 
 
 @register("desktopBrowserCloseTab")
@@ -174,7 +203,7 @@ async def browser_search(args: Dict[str, Any]) -> Dict[str, Any]:
         await page.goto(url, wait_until="domcontentloaded", timeout=20000)
     except Exception as e:  # noqa: BLE001
         raise ToolError(f"Search navigation failed: {e}")
-    return {"result": f"Searched {engine} for '{query}'.", "url": page.url}
+    return {"result": f"Searched {engine} for '{query}'.", **(await _page_snapshot(page))}
 
 
 @register("desktopBrowserClick")
@@ -182,16 +211,44 @@ async def browser_click(args: Dict[str, Any]) -> Dict[str, Any]:
     selector = args.get("selector")
     text = args.get("text")
     page = await _page()
+    original_page_count = len(STATE.context.pages) if STATE.context else 0
     try:
         if selector:
-            await page.click(selector, timeout=5000)
+            try:
+                await page.click(selector, timeout=5000)
+            except Exception:
+                await page.get_by_text(str(selector), exact=False).first.click(timeout=5000)
         elif text:
-            await page.get_by_text(str(text), exact=False).first.click(timeout=5000)
+            label = str(text)
+            link = page.get_by_role("link", name=label, exact=False)
+            button = page.get_by_role("button", name=label, exact=False)
+            if await link.count():
+                await link.first.click(timeout=5000)
+            elif await button.count():
+                await button.first.click(timeout=5000)
+            else:
+                await page.get_by_text(label, exact=False).first.click(timeout=5000)
         else:
             raise ToolError("Provide 'selector' or 'text' to click.")
+        await page.wait_for_timeout(700)
+        pages = STATE.context.pages if STATE.context else []
+        if len(pages) > original_page_count:
+            page = pages[-1]
+            STATE.page = page
     except Exception as e:  # noqa: BLE001
         raise ToolError(f"Click failed: {e}")
-    return {"result": f"Clicked {selector or text}."}
+    return {"result": f"Clicked {selector or text}.", **(await _page_snapshot(page))}
+
+
+@register("desktopBrowserReadPage")
+async def browser_read_page(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Read the current assistant-browser page title and visible text."""
+    page = await _page()
+    max_chars = args.get("max_chars", 6000)
+    try:
+        return {"result": "Read the currently open browser page.", **(await _page_snapshot(page, max_chars))}
+    except Exception as e:  # noqa: BLE001
+        raise ToolError(f"Could not read the current page: {e}")
 
 
 @register("desktopBrowserType")
@@ -291,6 +348,7 @@ for _name in [
     "desktopBrowserCloseTab",
     "desktopBrowserSearch",
     "desktopBrowserClick",
+    "desktopBrowserReadPage",
     "desktopBrowserType",
     "desktopBrowserFillForm",
     "desktopBrowserGoBack",

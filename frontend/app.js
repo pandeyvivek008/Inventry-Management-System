@@ -2577,9 +2577,9 @@ $("assistant-chat-form")?.addEventListener("submit", (event) => {
 });
 $("assistant-sales-summary")?.addEventListener("click", () => sendAssistantMessage("Aaj ki dispatched sales ka short summary batao."));
 $("assistant-automation-help")?.addEventListener("click", () => sendAssistantMessage("आवाज़ के आदेश बताओ।"));
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") postToMyraa({ type: "stop" });
-});
+// Keep the voice session alive while the user switches to the browser tab or
+// window opened by MYRAA. It is stopped only when the user closes the panel,
+// ends the voice session, or closes the page.
 
 async function loadAlerts() {
   const list = $("alerts-list");
