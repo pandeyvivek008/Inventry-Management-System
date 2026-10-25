@@ -27,6 +27,17 @@ window.addEventListener("message", async (event) => {
       result = { error: "Browser helper is not responding. Reload MYRAA in chrome://extensions and refresh the Inventory app." };
     }
   }
+  const iframeReply = {
+    source: "inventory-myraa-parent",
+    type: "browserCommandResult",
+    requestId,
+    result,
+  };
+  try {
+    iframe?.contentWindow?.postMessage(iframeReply, "http://127.0.0.1:3000");
+  } catch {
+    // Keep the parent-page bridge below as a fallback for the deployed app bundle.
+  }
   window.postMessage({
     source: "inventory-browser-extension",
     type: "browserCommandResult",
