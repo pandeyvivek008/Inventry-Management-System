@@ -158,8 +158,13 @@ def _order_import_csv(lines: list[dict[str, Any]]) -> bytes:
     return buffer.getvalue().encode("utf-8-sig")
 
 
+def _mcp_api_secret() -> bytes:
+    value = os.getenv("INVENTORY_MCP_API_KEY") or os.getenv("DISHA_MCP_API_KEY") or ""
+    return value.strip().encode("utf-8")
+
+
 def _confirmation_token(action: str, payload: dict[str, Any]) -> str:
-    secret = os.getenv("INVENTORY_MCP_API_KEY", "").strip().encode("utf-8")
+    secret = _mcp_api_secret()
     if len(secret) < 32:
         raise ValueError("The MCP API key is not configured or is too short.")
     body = json.dumps({"v": 1, "action": action, "payload": payload,
@@ -173,7 +178,7 @@ def _confirmation_token(action: str, payload: dict[str, Any]) -> str:
 def _decode_confirmation_token(token: str) -> tuple[str, dict[str, Any]]:
     try:
         encoded, supplied_signature = str(token or "").split(".", 1)
-        secret = os.getenv("INVENTORY_MCP_API_KEY", "").strip().encode("utf-8")
+        secret = _mcp_api_secret()
         expected = hmac.new(secret, encoded.encode("ascii"), hashlib.sha256).hexdigest()
         if len(secret) < 32 or not hmac.compare_digest(supplied_signature, expected):
             raise ValueError("Invalid confirmation token.")

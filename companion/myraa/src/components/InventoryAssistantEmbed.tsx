@@ -5,8 +5,13 @@ import { MyraaAudioSession, type LiveState } from "../lib/audio";
 const INVENTORY_MCP_DEFAULT = "https://inventry-management-system-production.up.railway.app/api/mcp/";
 const INVENTORY_PARENT_ORIGIN = "https://inventry-management-system-production.up.railway.app";
 
-type ChatMessage = { role: "user" | "assistant"; text: string };
+type ChatMessage = { id?: string; role: "user" | "assistant"; text: string };
 type McpConfig = { endpoint: string; hasApiKey: boolean };
+type LiveTranscriptDraft = { id: string; text: string };
+
+function normalizeTranscript(text: string): string {
+  return text.toLocaleLowerCase().replace(/[\s.,!?;:'"`~()[\]{}_-]+/g, "");
+}
 
 function localTimeLabel(state: LiveState): string {
   if (state === "connecting") return "Connecting…";
@@ -40,10 +45,19 @@ export function InventoryAssistantEmbed() {
   const endRef = useRef<HTMLDivElement>(null);
   const typedTurnsRef = useRef<string[]>([]);
   const pendingTypedTurnsRef = useRef<string[]>([]);
+  const liveUserTranscriptRef = useRef<LiveTranscriptDraft | null>(null);
+  const liveAssistantTranscriptRef = useRef<LiveTranscriptDraft | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
   const screenVideoRef = useRef<HTMLVideoElement | null>(null);
   const screenCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const screenIntervalRef = useRef<number | null>(null);
+
+  const embedded = new URLSearchParams(window.location.search).get("embed") === "inventory";
+  const notifyParent = useCallback((data: Record<string, unknown>) => {
+    if (embedded && window.parent !== window) {
+      window.parent.postMessage({ source: "myraa-assistant", ...data }, INVENTORY_PARENT_ORIGIN);
+    }
+  }, [embedded]);
 
   const stopScreenShare = useCallback(() => {
     if (screenIntervalRef.current !== null) {
@@ -75,8 +89,10 @@ export function InventoryAssistantEmbed() {
   const startScreenShare = useCallback(async () => {
     setScreenShareError("");
     const liveState = sessionRef.current?.getState();
-    if (liveState !== "chatting" && liveState !== "listening" && liveState !== "speaking") {
-      setScreenShareError("Pehle MYRAA text chat ya voice connect karein, phir screen share shuru karein.");
+    if (!hasGeminiKeyRef.current) {
+      setScreenShareError("Screen samajhne ke liye pehle Gemini key save karein.");
+      setSettingsOpen(true);
+      notifyParent({ type: "resize", height: 460 });
       return;
     }
     if (!navigator.mediaDevices?.getDisplayMedia) {
@@ -102,6 +118,10 @@ export function InventoryAssistantEmbed() {
       if (track) track.onended = stopScreenShare;
       screenIntervalRef.current = window.setInterval(captureScreenFrame, 2000);
       setSharingScreen(true);
+      if (liveState === "disconnected") {
+        setMcpStatus("Screen selected · connecting text session");
+        await sessionRef.current?.connect({ microphone: false });
+      }
       window.setTimeout(captureScreenFrame, 500);
     } catch (cause: any) {
       stream?.getTracks().forEach((track) => track.stop());
@@ -109,7 +129,7 @@ export function InventoryAssistantEmbed() {
         ? "Screen share cancel hua. Share screen dabakar display chunein aur browser prompt allow karein."
         : `Screen share start nahi hua: ${cause?.message || "browser capture unavailable"}`);
     }
-  }, [captureScreenFrame, stopScreenShare]);
+  }, [captureScreenFrame, notifyParent, stopScreenShare]);
 
   useEffect(() => () => stopScreenShare(), [stopScreenShare]);
   useEffect(() => {
@@ -117,14 +137,6 @@ export function InventoryAssistantEmbed() {
   }, [state, sharingScreen, stopScreenShare]);
 
   useEffect(() => { hasGeminiKeyRef.current = hasGeminiKey; }, [hasGeminiKey]);
-
-  const embedded = new URLSearchParams(window.location.search).get("embed") === "inventory";
-
-  const notifyParent = useCallback((data: Record<string, unknown>) => {
-    if (embedded && window.parent !== window) {
-      window.parent.postMessage({ source: "myraa-assistant", ...data }, INVENTORY_PARENT_ORIGIN);
-    }
-  }, [embedded]);
 
   useEffect(() => {
     let disposed = false;
@@ -140,23 +152,57 @@ export function InventoryAssistantEmbed() {
           }
         }
       },
-      onTranscription: (role, text) => {
-        const clean = String(text || "").trim();
-        if (!clean) return;
-        if (role === "user") {
-          const typedIndex = typedTurnsRef.current.indexOf(clean);
-          if (typedIndex >= 0) typedTurnsRef.current.splice(typedIndex, 1);
-          else setMessages((current) => [...current, { role: "user", text: clean }].slice(-80));
-        } else {
-          setMessages((current) => {
-            const last = current[current.length - 1];
-            if (last?.role === "assistant") {
-              return [...current.slice(0, -1), { role: "assistant", text: `${last.text}${clean}` }].slice(-80);
+      onTranscription: (role, text, finished = false) => {
+        const chunk = String(text || "");
+        if (chunk.length > 0) {
+          if (role === "user") {
+            const previous = liveUserTranscriptRef.current;
+            const fullText = `${previous?.text || ""}${chunk}`;
+            const normalized = normalizeTranscript(fullText);
+            const typedIndex = typedTurnsRef.current.findIndex((turn) => {
+              const typed = normalizeTranscript(turn);
+              return Boolean(normalized && typed.startsWith(normalized));
+            });
+            if (typedIndex >= 0) {
+              if (finished) typedTurnsRef.current.splice(typedIndex, 1);
+              liveUserTranscriptRef.current = finished ? null : { id: previous?.id || "", text: fullText };
+            } else if (fullText.trim()) {
+              const id = previous?.id || `user-${Date.now()}-${Math.random()}`;
+              liveUserTranscriptRef.current = finished ? null : { id, text: fullText };
+              setMessages((current) => {
+                const index = current.findIndex((message) => message.id === id);
+                const next = [...current];
+                const message = { id, role: "user" as const, text: fullText };
+                if (index >= 0) next[index] = message;
+                else next.push(message);
+                return next.slice(-80);
+              });
             }
-            return [...current, { role: "assistant", text: clean }].slice(-80);
-          });
+          } else {
+            const previous = liveAssistantTranscriptRef.current;
+            const id = previous?.id || `assistant-${Date.now()}-${Math.random()}`;
+            const fullText = `${previous?.text || ""}${chunk}`;
+            liveAssistantTranscriptRef.current = finished ? null : { id, text: fullText };
+            if (fullText.trim()) setMessages((current) => {
+              const index = current.findIndex((message) => message.id === id);
+              const next = [...current];
+              const message = { id, role: "assistant" as const, text: fullText };
+              if (index >= 0) next[index] = message;
+              else next.push(message);
+              return next.slice(-80);
+            });
+          }
+          notifyParent({ type: "transcription", role, text: chunk, finished });
+        } else if (finished && role === "user") {
+          liveUserTranscriptRef.current = null;
+        } else if (finished) {
+          liveAssistantTranscriptRef.current = null;
         }
-        notifyParent({ type: "transcription", role, text: clean });
+      },
+      onTurnComplete: () => {
+        liveUserTranscriptRef.current = null;
+        liveAssistantTranscriptRef.current = null;
+        notifyParent({ type: "turnComplete" });
       },
       onToolCall: (name, args, callback) => {
         if (name === "__inventory_action_approval__") {
@@ -177,7 +223,8 @@ export function InventoryAssistantEmbed() {
           setMcpStatus(`Inventory connected · ${Number(result.toolCount) || 0} tools`);
           notifyParent({ type: "status", text: `Inventory connected · ${Number(result.toolCount) || 0} tools` });
         } else if (result.status === "not_configured") {
-          setMcpStatus("Add the inventory MCP key in settings");
+          setMcpStatus("Inventory access not connected · add Railway MCP key in settings");
+          notifyParent({ type: "status", text: "Inventory access not connected · add the Railway MCP key in MYRAA settings" });
         } else {
           setMcpStatus(result.message || "Inventory MCP connection failed");
         }
@@ -196,7 +243,9 @@ export function InventoryAssistantEmbed() {
         if (!disposed && response.ok) {
           setMcpConfig({ endpoint: data.endpoint || INVENTORY_MCP_DEFAULT, hasApiKey: Boolean(data.hasApiKey) });
           setHasGeminiKey(Boolean(gemini.hasApiKey));
-          setMcpStatus(data.hasApiKey ? "Inventory key saved · connect voice to load tools" : "Add the inventory MCP key in settings");
+          const status = data.hasApiKey ? "Inventory key saved · connect voice to load tools" : "Inventory access not connected · add Railway MCP key in settings";
+          setMcpStatus(status);
+          if (!data.hasApiKey) notifyParent({ type: "status", text: "Inventory access not connected · add the Railway MCP key in MYRAA settings" });
         }
       } catch {
         if (!disposed) setMcpStatus("Local MYRAA server is not reachable");
@@ -237,6 +286,8 @@ export function InventoryAssistantEmbed() {
         pendingTypedTurnsRef.current = [];
         sessionRef.current?.disconnect();
         typedTurnsRef.current = [];
+        liveUserTranscriptRef.current = null;
+        liveAssistantTranscriptRef.current = null;
         setMessages([{ role: "assistant", text: "New conversation started. Main MYRAA hoon—kaise madad karun?" }]);
       }
     };
@@ -322,7 +373,7 @@ export function InventoryAssistantEmbed() {
       if (!response.ok) throw new Error(result.error || "Could not save inventory connection.");
       setMcpConfig({ endpoint: result.endpoint, hasApiKey: Boolean(result.hasApiKey) });
       setApiKey("");
-      setMcpStatus("Saved · reconnect MYRAA to load inventory tools");
+      setMcpStatus(result.hasApiKey ? "Saved · reconnect MYRAA to load inventory tools" : "Gemini chat is available · inventory key is still required for app access");
       if (state !== "disconnected") sessionRef.current?.disconnect();
       if (result.hasApiKey) {
         const test = await fetch("/api/inventory-mcp/test", { method: "POST" });
@@ -330,8 +381,10 @@ export function InventoryAssistantEmbed() {
         if (!test.ok) throw new Error(testResult.error || "Inventory MCP test failed.");
         setToolCount(Number(testResult.toolCount) || 0);
         setMcpStatus(`Connection verified · ${Number(testResult.toolCount) || 0} inventory tools`);
-      } else if (!hasGeminiKey && !geminiApiKey.trim()) {
-        setMcpStatus("Saved. Add a Gemini key to start voice.");
+        notifyParent({ type: "status", text: `Inventory connected · ${Number(testResult.toolCount) || 0} tools · reconnect MYRAA` });
+      } else {
+        setMcpStatus("Gemini chat works · add the Railway MCP key for inventory access");
+        notifyParent({ type: "status", text: "Gemini chat is ready · inventory access needs the Railway MCP API key in MYRAA settings" });
       }
       setSettingsOpen(false);
       notifyParent({ type: "resize", height: 150 });
@@ -409,8 +462,8 @@ export function InventoryAssistantEmbed() {
             <header className="flex items-start justify-between"><div><h2 className="font-semibold">MYRAA connections</h2><p className="text-xs text-slate-400 mt-1">Keys stay in this PC’s private MYRAA data folder.</p></div><button type="button" onClick={() => { setSettingsOpen(false); notifyParent({ type: "resize", height: 150 }); }} aria-label="Close settings" className="p-2 rounded-lg hover:bg-white/10"><X size={17}/></button></header>
             <label className="block text-xs text-slate-300 space-y-1"><span>Gemini API key {hasGeminiKey && <em className="text-emerald-300 not-italic">· saved</em>}</span><input value={geminiApiKey} onChange={(event) => setGeminiApiKey(event.target.value)} className="w-full rounded-lg bg-black/25 border border-white/10 p-2.5 text-sm" type="password" autoComplete="new-password" placeholder={hasGeminiKey ? "Leave blank to keep the saved key" : "Paste your Gemini API key"}/></label>
             <label className="block text-xs text-slate-300 space-y-1"><span>MCP endpoint</span><input value={mcpConfig.endpoint} onChange={(event) => setMcpConfig((current) => ({ ...current, endpoint: event.target.value }))} className="w-full rounded-lg bg-black/25 border border-white/10 p-2.5 text-sm" required type="url"/></label>
-            <label className="block text-xs text-slate-300 space-y-1"><span>Inventory MCP API key {mcpConfig.hasApiKey && <em className="text-emerald-300 not-italic">· saved</em>}</span><input value={apiKey} onChange={(event) => setApiKey(event.target.value)} className="w-full rounded-lg bg-black/25 border border-white/10 p-2.5 text-sm" type="password" autoComplete="new-password" placeholder={mcpConfig.hasApiKey ? "Leave blank to keep the saved key" : "Paste the Railway MCP key"}/></label>
-            <p className="text-[11px] text-slate-400">This PC’s MYRAA companion works in the desktop app and in the inventory site opened in this browser. The endpoint should point to the inventory app’s `/api/mcp/`. Save &amp; test, then reconnect voice to load tools.</p>
+            <label className="block text-xs text-slate-300 space-y-1"><span>Inventory MCP API key {mcpConfig.hasApiKey && <em className="text-emerald-300 not-italic">· saved</em>}</span><input value={apiKey} onChange={(event) => setApiKey(event.target.value)} className="w-full rounded-lg bg-black/25 border border-white/10 p-2.5 text-sm" type="password" autoComplete="new-password" placeholder={mcpConfig.hasApiKey ? "Leave blank to keep the saved key" : "Paste Railway INVENTORY_MCP_API_KEY / DISHA_MCP_API_KEY"}/></label>
+            <p className="text-[11px] text-slate-400">Gemini key powers conversation; it does not grant inventory access. Paste the same private key configured on Railway as `INVENTORY_MCP_API_KEY` or `DISHA_MCP_API_KEY`. MYRAA stores it only in this PC’s private data folder. Save &amp; test should report the available tools; then reconnect voice. Share screen can start a text session without turning on your microphone.</p>
             <footer className="flex justify-end gap-2"><button type="button" onClick={() => { setSettingsOpen(false); notifyParent({ type: "resize", height: 150 }); }} className="px-3 py-2 rounded-lg border border-white/10 text-sm">Close</button><button type="submit" disabled={saving} className="px-3 py-2 rounded-lg bg-cyan-400 text-slate-950 font-semibold text-sm flex items-center gap-2">{saving && <Loader2 size={14} className="animate-spin"/>}Save &amp; test</button></footer>
           </form>
         </div>

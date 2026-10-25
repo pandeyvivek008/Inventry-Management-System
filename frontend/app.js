@@ -1967,8 +1967,7 @@ function openAssistantSession(sessionId) {
   const session = assistantSessions.find((item) => item.id === sessionId);
   if (!session) return;
   assistantRequestSequence += 1;
-  assistantBusy = false;
-  $("assistant-send").disabled = false;
+  finishMyraaTurn();
   assistantSessionId = session.id;
   assistantHistory = session.messages.slice(-assistantHistoryLimit);
   assistantConfirmationButton = null;
@@ -1983,9 +1982,7 @@ function openAssistantSession(sessionId) {
 function startNewAssistantConversation() {
   if (assistantHistory.length) saveAssistantHistory();
   assistantRequestSequence += 1;
-  assistantBusy = false;
-  const send = $("assistant-send");
-  if (send) send.disabled = false;
+  finishMyraaTurn();
   assistantHistory = [];
   assistantConfirmationButton = null;
   assistantSessionId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -2280,6 +2277,12 @@ let myraaReadyResolver = null;
 let myraaRecentTypedTurns = [];
 let myraaLiveAssistantBubble = null;
 let myraaLiveAssistantTimer = null;
+let myraaLiveAssistantText = "";
+let myraaLiveAssistantHistoryEntry = null;
+let myraaLiveUserBubble = null;
+let myraaLiveUserText = "";
+let myraaLiveUserHistoryEntry = null;
+let myraaTurnTimeout = null;
 
 function postToMyraa(message) {
   if (!myraaFrame?.contentWindow || !myraaReady) return false;
@@ -2339,31 +2342,87 @@ async function initializeMyraaWidget() {
   return myraaLoadPromise;
 }
 
-function appendMyraaTranscript(role, text) {
-  const clean = String(text || "").trim();
-  if (!clean) return;
+function normalizeMyraaTranscript(text) {
+  return String(text || "").toLocaleLowerCase().replace(/[\s.,!?;:'"`~()[\]{}_-]+/g, "");
+}
+
+function appendMyraaTranscript(role, text, finished = false) {
+  const chunk = String(text || "");
+  if (!chunk.length) return;
   if (role === "user") {
-    const typedIndex = myraaRecentTypedTurns.indexOf(clean);
-    if (typedIndex >= 0) myraaRecentTypedTurns.splice(typedIndex, 1);
-    else {
-      addAssistantMessage("user", clean);
-      assistantHistory.push({ role: "user", content: clean });
-      saveAssistantHistory();
+    const fullText = `${myraaLiveUserText}${chunk}`;
+    const normalized = normalizeMyraaTranscript(fullText);
+    if (!fullText.trim()) {
+      myraaLiveUserText = fullText;
+      return;
+    }
+    const typedIndex = myraaRecentTypedTurns.findIndex((turn) => {
+      const typed = normalizeMyraaTranscript(turn);
+      return Boolean(normalized && typed.startsWith(normalized));
+    });
+    if (typedIndex >= 0) {
+      myraaLiveUserText = finished ? "" : fullText;
+      if (finished) myraaRecentTypedTurns.splice(typedIndex, 1);
+      myraaLiveUserBubble = null;
+      myraaLiveUserHistoryEntry = null;
+      return;
+    }
+    myraaLiveUserText = fullText;
+    if (!myraaLiveUserBubble) myraaLiveUserBubble = addAssistantMessage("user", fullText);
+    else myraaLiveUserBubble.textContent = fullText;
+    if (!myraaLiveUserHistoryEntry) {
+      myraaLiveUserHistoryEntry = { role: "user", content: fullText };
+      assistantHistory.push(myraaLiveUserHistoryEntry);
+    } else myraaLiveUserHistoryEntry.content = fullText;
+    saveAssistantHistory();
+    const messages = $("assistant-messages");
+    if (messages) messages.scrollTop = messages.scrollHeight;
+    if (finished) {
+      myraaLiveUserBubble = null;
+      myraaLiveUserText = "";
+      myraaLiveUserHistoryEntry = null;
     }
     return;
   }
   if (!$("assistant-messages")) return;
+  myraaLiveAssistantText += chunk;
+  if (!myraaLiveAssistantText.trim()) return;
   if (!myraaLiveAssistantBubble) {
-    myraaLiveAssistantBubble = addAssistantMessage("assistant", clean);
-    assistantHistory.push({ role: "assistant", content: clean });
+    myraaLiveAssistantBubble = addAssistantMessage("assistant", myraaLiveAssistantText);
+    myraaLiveAssistantHistoryEntry = { role: "assistant", content: myraaLiveAssistantText };
+    assistantHistory.push(myraaLiveAssistantHistoryEntry);
   } else {
-    myraaLiveAssistantBubble.textContent += clean;
-    if (assistantHistory.at(-1)?.role === "assistant") assistantHistory.at(-1).content += clean;
+    myraaLiveAssistantBubble.textContent = myraaLiveAssistantText;
+    if (myraaLiveAssistantHistoryEntry) myraaLiveAssistantHistoryEntry.content = myraaLiveAssistantText;
   }
   saveAssistantHistory();
-  $("assistant-messages").scrollTop = $("assistant-messages").scrollHeight;
+  const messages = $("assistant-messages");
+  if (messages) messages.scrollTop = messages.scrollHeight;
   clearTimeout(myraaLiveAssistantTimer);
-  myraaLiveAssistantTimer = setTimeout(() => { myraaLiveAssistantBubble = null; }, 900);
+  if (finished) {
+    myraaLiveAssistantBubble = null;
+    myraaLiveAssistantText = "";
+    myraaLiveAssistantHistoryEntry = null;
+  } else {
+    myraaLiveAssistantTimer = setTimeout(() => {
+      myraaLiveAssistantBubble = null;
+      myraaLiveAssistantText = "";
+      myraaLiveAssistantHistoryEntry = null;
+    }, 3000);
+  }
+}
+
+function finishMyraaTurn() {
+  clearTimeout(myraaTurnTimeout);
+  myraaTurnTimeout = null;
+  document.querySelector(".assistant-typing")?.remove();
+  assistantBusy = false;
+  const send = $("assistant-send");
+  if (send) send.disabled = false;
+  myraaRecentTypedTurns = [];
+  myraaLiveUserBubble = null;
+  myraaLiveUserText = "";
+  myraaLiveUserHistoryEntry = null;
 }
 
 window.addEventListener("message", (event) => {
@@ -2383,13 +2442,10 @@ window.addEventListener("message", (event) => {
   } else if (data.type === "resize") {
     myraaFrame.style.height = `${Math.max(150, Math.min(600, Number(data.height) || 150))}px`;
   } else if (data.type === "transcription") {
-    appendMyraaTranscript(data.role, data.text);
-    if (data.role === "model" && assistantBusy) {
-      document.querySelector(".assistant-typing")?.remove();
-      assistantBusy = false;
-      const send = $("assistant-send");
-      if (send) send.disabled = false;
-    }
+    appendMyraaTranscript(data.role, data.text, data.finished === true);
+    if (data.role === "model" && data.text) document.querySelector(".assistant-typing")?.remove();
+  } else if (data.type === "turnComplete") {
+    finishMyraaTurn();
   } else if (data.type === "chatError" || data.type === "error") {
     const message = String(data.message || "MYRAA could not complete that request.");
     addAssistantMessage("assistant", message);
@@ -2397,9 +2453,7 @@ window.addEventListener("message", (event) => {
     saveAssistantHistory();
     const status = $("assistant-state");
     if (status) status.textContent = "MYRAA needs attention";
-    assistantBusy = false;
-    const send = $("assistant-send");
-    if (send) send.disabled = false;
+    finishMyraaTurn();
   }
 });
 
@@ -2417,6 +2471,7 @@ function closeAssistantPanel({ returnFocus = true } = {}) {
   const panel = $("assistant-panel"), launcher = $("assistant-launcher");
   if (!panel || !launcher) return;
   postToMyraa({ type: "stop" });
+  finishMyraaTurn();
   panel.hidden = true;
   $("assistant-photo-preview").hidden = true;
   $("assistant-history-list").hidden = true;
@@ -2451,6 +2506,7 @@ async function sendAssistantMessage(message, selectedSku = null) {
   const requestSequence = ++assistantRequestSequence;
   const requestSessionId = assistantSessionId;
   const send = $("assistant-send"), input = $("assistant-chat-input");
+  let dispatched = false;
   if (send) send.disabled = true;
   addAssistantMessage("user", clean);
   assistantHistory.push({ role: "user", content: clean });
@@ -2465,6 +2521,14 @@ async function sendAssistantMessage(message, selectedSku = null) {
       throw new Error("MYRAA desktop companion is not running. Start it on this PC and retry.");
     }
     myraaRecentTypedTurns.push(clean);
+    dispatched = true;
+    clearTimeout(myraaTurnTimeout);
+    myraaTurnTimeout = setTimeout(() => {
+      if (!assistantBusy) return;
+      const status = $("assistant-state");
+      if (status) status.textContent = "MYRAA reply is taking longer · you can send another message";
+      finishMyraaTurn();
+    }, 60000);
     if (requestSequence !== assistantRequestSequence || requestSessionId !== assistantSessionId) return;
   } catch (error) {
     if (requestSequence !== assistantRequestSequence || requestSessionId !== assistantSessionId) return;
@@ -2475,10 +2539,9 @@ async function sendAssistantMessage(message, selectedSku = null) {
     const state = $("assistant-state");
     if (state) state.textContent = "MYRAA connection problem";
   } finally {
-    typing.remove();
-    if (requestSequence === assistantRequestSequence && requestSessionId === assistantSessionId) {
-      assistantBusy = false;
-      if (send) send.disabled = false;
+    if (!dispatched && requestSequence === assistantRequestSequence && requestSessionId === assistantSessionId) {
+      typing.remove();
+      finishMyraaTurn();
       if (input) input.focus({ preventScroll: true });
     }
   }

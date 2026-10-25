@@ -96,7 +96,7 @@ export function setGeminiApiKey(key: string): void {
 export function getInventoryMcpApiKey(): string | undefined {
   const stored = readSecrets().inventoryMcpApiKey?.trim();
   if (stored) return stored;
-  const env = process.env.INVENTORY_MCP_API_KEY?.trim();
+  const env = process.env.INVENTORY_MCP_API_KEY?.trim() || process.env.DISHA_MCP_API_KEY?.trim();
   return env || undefined;
 }
 

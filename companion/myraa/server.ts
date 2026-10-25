@@ -1005,6 +1005,8 @@ async function startServer() {
         model: "gemini-3.1-flash-live-preview",
         config: {
           responseModalities: [Modality.AUDIO],
+          inputAudioTranscription: {},
+          outputAudioTranscription: {},
           speechConfig: {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } },
           },
@@ -1485,23 +1487,51 @@ async function startServer() {
             if (audio) {
               clientWs.send(JSON.stringify({ type: "audio", audio }));
             }
-            
+
             // Interruption flag
             if (message.serverContent?.interrupted) {
               console.log("[Myraa Interrupted!]");
               clientWs.send(JSON.stringify({ type: "interrupted" }));
             }
             
-            // Turn Complete
-            if (message.serverContent?.turnComplete) {
+            const serverContent = message.serverContent as any;
+
+            // Gemini Live returns audio chunks separately from their text
+            // transcript. Forward the transcript so typed browser chats also
+            // receive a visible assistant reply.
+            const outputTranscription = serverContent?.outputTranscription;
+            const modelText = outputTranscription?.text
+              ?? serverContent?.modelTurn?.parts?.map((part: any) => part?.text || "").join("");
+            if (modelText) {
+              clientWs.send(JSON.stringify({
+                type: "transcription",
+                role: "model",
+                text: modelText,
+                finished: outputTranscription?.finished === true || serverContent?.turnComplete === true,
+              }));
+              currentModelResponseText += modelText;
+            }
+
+            // Keep spoken user turns visible in the inventory chat as well.
+            const inputTranscription = serverContent?.inputTranscription;
+            const userTextOutput = inputTranscription?.text
+              ?? serverContent?.userTurn?.parts?.map((part: any) => part?.text || "").join("");
+            if (userTextOutput) {
+              const finished = inputTranscription?.finished === true || serverContent?.turnComplete === true;
+              clientWs.send(JSON.stringify({ type: "transcription", role: "user", text: userTextOutput, finished }));
+              if (finished) dialogueHistory.push({ role: "user", text: userTextOutput });
+            }
+
+            // Turn Complete. Do this after forwarding the final transcript so
+            // memory history contains the complete assistant response.
+            if (serverContent?.turnComplete) {
               clientWs.send(JSON.stringify({ type: "turnComplete" }));
-              
+
               if (currentModelResponseText.trim()) {
                 dialogueHistory.push({ role: "model", text: currentModelResponseText });
                 currentModelResponseText = "";
               }
 
-              // Fire asynchronous memory extraction
               if (dialogueHistory.length >= 2) {
                 (async () => {
                   try {
@@ -1515,20 +1545,6 @@ async function startServer() {
                   }
                 })();
               }
-            }
-            
-            // Transcription of model output (text chunk)
-            const modelText = (message.serverContent as any)?.modelTurn?.parts?.[0]?.text;
-            if (modelText) {
-              clientWs.send(JSON.stringify({ type: "transcription", role: "model", text: modelText }));
-              currentModelResponseText += modelText;
-            }
-            
-            // User input transcription (user speech text translated by Gemini)
-            const userTextOutput = (message.serverContent as any)?.userTurn?.parts?.[0]?.text;
-            if (userTextOutput) {
-              clientWs.send(JSON.stringify({ type: "transcription", role: "user", text: userTextOutput }));
-              dialogueHistory.push({ role: "user", text: userTextOutput });
             }
             
             // Function Calls (Gemini requesting server/client tool execution)

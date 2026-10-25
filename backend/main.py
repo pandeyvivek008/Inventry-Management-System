@@ -129,7 +129,9 @@ app.add_middleware(
 async def protect_inventory_mcp(request: Request, call_next):
     """Require a private key for the entire MCP transport; never log credentials."""
     if (request.url.path == "/api/mcp" or request.url.path.startswith("/api/mcp/")) and request.method != "OPTIONS":
-        expected = os.getenv("INVENTORY_MCP_API_KEY", "").strip()
+        # DISHA_MCP_API_KEY is the legacy Railway variable name; keep it as a
+        # fallback so existing deployments can authenticate until renamed.
+        expected = (os.getenv("INVENTORY_MCP_API_KEY") or os.getenv("DISHA_MCP_API_KEY") or "").strip()
         if len(expected) < 32:
             return Response(status_code=404)
         supplied = request.headers.get("x-api-key", "").strip()

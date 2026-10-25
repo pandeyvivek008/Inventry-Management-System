@@ -82,7 +82,8 @@ export class MyraaAudioSession {
   
   // State Callbacks
   private onStateChange: (state: LiveState) => void;
-  private onTranscription: (role: "user" | "model", text: string) => void;
+  private onTranscription: (role: "user" | "model", text: string, finished?: boolean) => void;
+  private onTurnComplete?: () => void;
   private onToolCall: (name: string, args: any, callback: (result: any) => void) => void;
   private onError: (error: string) => void;
   private onMemorySync?: (memories: any[]) => void;
@@ -95,7 +96,8 @@ export class MyraaAudioSession {
 
   constructor(handlers: {
     onStateChange: (state: LiveState) => void;
-    onTranscription: (role: "user" | "model", text: string) => void;
+    onTranscription: (role: "user" | "model", text: string, finished?: boolean) => void;
+    onTurnComplete?: () => void;
     onToolCall: (name: string, args: any, callback: (result: any) => void) => void;
     onError: (error: string) => void;
     onMemorySync?: (memories: any[]) => void;
@@ -103,6 +105,7 @@ export class MyraaAudioSession {
   }) {
     this.onStateChange = handlers.onStateChange;
     this.onTranscription = handlers.onTranscription;
+    this.onTurnComplete = handlers.onTurnComplete;
     this.onToolCall = handlers.onToolCall;
     this.onError = handlers.onError;
     this.onMemorySync = handlers.onMemorySync;
@@ -278,6 +281,7 @@ export class MyraaAudioSession {
 
           // Turn complete
           if (data.type === "turnComplete") {
+            this.onTurnComplete?.();
             // Once Myraa completes speaking, change visual state back to listening
             setTimeout(() => {
               if (this.activeSources.length === 0 && this.currentState === "speaking") {
@@ -288,7 +292,7 @@ export class MyraaAudioSession {
 
           // Handle live captions transcription
           if (data.type === "transcription") {
-            this.onTranscription(data.role, data.text);
+            this.onTranscription(data.role, data.text, data.finished === true);
           }
 
           // Handle memory synchronization
