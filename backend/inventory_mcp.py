@@ -164,7 +164,7 @@ def _mcp_api_secret() -> bytes:
 
 
 def _confirmation_token(action: str, payload: dict[str, Any]) -> str:
-    secret = _mcp_api_secret()
+    secret = _confirmation_signing_secret()
     if len(secret) < 32:
         raise ValueError("The MCP API key is not configured or is too short.")
     body = json.dumps({"v": 1, "action": action, "payload": payload,
@@ -178,7 +178,7 @@ def _confirmation_token(action: str, payload: dict[str, Any]) -> str:
 def _decode_confirmation_token(token: str) -> tuple[str, dict[str, Any]]:
     try:
         encoded, supplied_signature = str(token or "").split(".", 1)
-        secret = _mcp_api_secret()
+        secret = _confirmation_signing_secret()
         expected = hmac.new(secret, encoded.encode("ascii"), hashlib.sha256).hexdigest()
         if len(secret) < 32 or not hmac.compare_digest(supplied_signature, expected):
             raise ValueError("Invalid confirmation token.")
@@ -191,6 +191,25 @@ def _decode_confirmation_token(token: str) -> tuple[str, dict[str, Any]]:
         return str(claims["action"]), claims["payload"]
     except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
         raise ValueError(str(exc) or "Invalid or expired confirmation token.") from exc
+
+
+def _confirmation_signing_secret() -> bytes:
+    """Use a separate purpose-derived key for signed user confirmation tokens.
+
+    Cloud chat can prepare and confirm actions on the same inventory service
+    using its server-side Gemini key, without exposing either secret to the
+    browser or making the MCP endpoint public.
+    """
+    root = (
+        os.getenv("MYRAA_CONFIRMATION_SECRET")
+        or os.getenv("INVENTORY_MCP_API_KEY")
+        or os.getenv("DISHA_MCP_API_KEY")
+        or os.getenv("GEMINI_API_KEY")
+        or ""
+    ).strip().encode("utf-8")
+    if len(root) < 32:
+        return b""
+    return hmac.new(root, b"MYRAA-inventory-confirmation-v1", hashlib.sha256).digest()
 
 
 @mcp.tool()

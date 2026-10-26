@@ -732,6 +732,10 @@ img { max-width: 100%; display: block; }
 .assistant-action-card { width:100%; margin-top:7px; padding:11px; border:1px solid #cde8da; border-radius:12px; background:#f0fbf5; }
 .assistant-action-card strong { display:block; margin-bottom:5px; }
 .assistant-action-card button { width:100%; margin-top:8px; }
+.assistant-cloud-confirmation { display:grid; gap:5px; }
+.assistant-cloud-confirmation small { color:var(--ink-soft); font-size:10px; }
+.assistant-cloud-confirmation button + button { margin-top:0; }
+.assistant-cloud-confirmation-error { color:#a33232 !important; }
 .assistant-whatsapp-preview { margin-top:7px; padding:9px; border:1px solid #dcebe4; border-radius:9px; background:#fff; color:#243a32; font-size:12px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; }
 .assistant-whatsapp-note { display:block; margin-top:6px; color:#61756d; font-size:10px; }
 .assistant-action-card .assistant-whatsapp-open { display:block; width:100%; margin-top:9px; text-align:center; text-decoration:none; }
@@ -989,6 +993,7 @@ img { max-width: 100%; display: block; }
 :root[data-theme="dark"] .assistant-chat-form input { background:var(--input-surface); color:var(--ink); border-color:var(--line); }
 :root[data-theme="dark"] .assistant-mic-status { background:var(--surface-muted); color:var(--ink); }
 :root[data-theme="dark"] .assistant-message.user { background:#203B3A; border-color:#37605A; }
+:root[data-theme="dark"] .assistant-cloud-confirmation { border-color:#37605A; background:#1b3930; }
 :root[data-theme="dark"] .modal-card,
 :root[data-theme="dark"] .modal-card .modal-head { background:var(--panel); color:var(--ink); border-color:var(--line); }
 :root[data-theme="dark"] .stock-step { background:var(--surface-muted); color:var(--ink); border-color:var(--line); }

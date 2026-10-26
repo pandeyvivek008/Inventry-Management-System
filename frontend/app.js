@@ -2273,6 +2273,9 @@ const MYRAA_LOCAL_ORIGIN = "http://127.0.0.1:3000";
 let myraaFrame = null;
 let myraaLoadPromise = null;
 let myraaReady = false;
+let myraaMode = "unknown";
+let myraaCloudStatus = null;
+let myraaCloudStatusPromise = null;
 let myraaReadyResolver = null;
 let myraaRecentTypedTurns = [];
 let myraaLiveAssistantBubble = null;
@@ -2284,6 +2287,19 @@ let myraaLiveUserText = "";
 let myraaLiveUserHistoryEntry = null;
 let myraaTurnTimeout = null;
 
+async function checkMyraaCloudStatus() {
+  if (myraaCloudStatus) return myraaCloudStatus;
+  if (myraaCloudStatusPromise) return myraaCloudStatusPromise;
+  myraaCloudStatusPromise = getJSON(`${API}/assistant/status`)
+    .then((status) => {
+      myraaCloudStatus = status;
+      return status;
+    })
+    .catch(() => null)
+    .finally(() => { myraaCloudStatusPromise = null; });
+  return myraaCloudStatusPromise;
+}
+
 function postToMyraa(message) {
   if (!myraaFrame?.contentWindow || !myraaReady) return false;
   myraaFrame.contentWindow.postMessage({ source: "inventory-myraa-parent", ...message }, MYRAA_LOCAL_ORIGIN);
@@ -2293,6 +2309,9 @@ function postToMyraa(message) {
 async function initializeMyraaWidget() {
   const container = $("assistant-voice-container");
   if (!container) return false;
+  if (myraaMode === "cloud") return true;
+  const cloud = await checkMyraaCloudStatus();
+  myraaMode = "local";
   container.hidden = false;
   if (myraaReady) return true;
   if (myraaLoadPromise) return myraaLoadPromise;
@@ -2316,10 +2335,25 @@ async function initializeMyraaWidget() {
     };
     setTimeout(() => {
       if (settled) return;
+      if (cloud?.cloud_enabled) {
+        myraaMode = "cloud";
+        myraaReady = false;
+        myraaFrame = null;
+        container.hidden = true;
+        container.replaceChildren();
+        const powered = document.querySelector(".assistant-powered");
+        if (powered) powered.textContent = "Secure Railway cloud assistant";
+        const status = $("assistant-state");
+        if (status) status.textContent = "Cloud AI online · inventory tools ready";
+        myraaReadyResolver?.(true);
+        myraaReadyResolver = null;
+        myraaLoadPromise = null;
+        return;
+      }
       myraaReady = false;
       const note = document.createElement("p");
       note.className = "assistant-voice-note";
-      note.textContent = "MYRAA could not connect. Start its desktop app on this PC. If Chrome or Edge asks whether the inventory site may find and connect to devices on your local network, choose Allow. If that permission was blocked earlier, enable Local network access in this site’s settings, then retry.";
+      note.textContent = "MYRAA's local voice/browser companion is offline on this computer. Text chat can use the Railway cloud assistant when GEMINI_API_KEY is configured there.";
       const retry = document.createElement("button");
       retry.type = "button";
       retry.className = "assistant-mcp-retry";
@@ -2334,10 +2368,10 @@ async function initializeMyraaWidget() {
       myraaReadyResolver = null;
       myraaLoadPromise = null;
       const powered = document.querySelector(".assistant-powered");
-      if (powered) powered.textContent = "MYRAA desktop companion offline";
+      if (powered) powered.textContent = cloud?.cloud_enabled ? "Secure Railway cloud assistant" : "Local companion offline · cloud key not configured";
       const status = $("assistant-state");
       if (status) status.textContent = "MYRAA not connected";
-    }, 7000);
+    }, cloud?.cloud_enabled ? 3500 : 7000);
   });
   return myraaLoadPromise;
 }
@@ -2425,6 +2459,111 @@ function finishMyraaTurn() {
   myraaLiveUserHistoryEntry = null;
 }
 
+function cloudActionSummary(action) {
+  const details = action?.details || {};
+  switch (action?.action) {
+    case "stock_change":
+      return `${details.product || details.sku || "Product"} · size ${details.size || "?"}: ${details.operation || "set"} stock to ${Number(details.result_stock ?? details.quantity)} pieces.`;
+    case "product_create":
+      return `Create ${details.name || "product"} (${details.sku || "SKU missing"}) with sizes ${(details.sizes || []).join(", ")}.`;
+    case "product_update":
+      return `Update ${details.sku || "product"}: ${Object.entries(details.changes || {}).map(([key, value]) => `${key} → ${value}`).join(", " )}.`;
+    case "product_archive": return `Move ${details.sku || "product"} and its sizes to Trash.`;
+    case "product_restore": return `Restore ${details.sku || "product"} from Trash.`;
+    case "size_add": return `Add size ${details.size || "?"} to ${details.sku || "product"} with ${Number(details.initial_stock || 0)} starting pieces.`;
+    case "size_archive": return `Move size ${details.variant_code || "?"} to Trash.`;
+    case "size_restore": return `Restore size ${details.variant_code || "?"}.`;
+    case "order_import": return `Import ${details.filename || "order list"}: ${Number(details.row_count || 0)} lines, ${Number(details.total_quantity || 0)} ordered pieces.`;
+    case "order_dispatch": return `Dispatch ${Number(details.dispatchable_units || 0)} available pieces from batch ${Number(details.batch_id || 0)} (${details.filename || "orders"}).`;
+    default: return `Prepare ${String(action?.action || "inventory change").replace(/_/g, " ")}.`;
+  }
+}
+
+function attachCloudConfirmation(bubble, pendingAction) {
+  if (!bubble || !pendingAction?.confirmation_token) return;
+  const card = document.createElement("div");
+  card.className = "assistant-action-card assistant-cloud-confirmation";
+  const description = document.createElement("strong");
+  description.textContent = cloudActionSummary(pendingAction);
+  const hint = document.createElement("small");
+  hint.textContent = "Review the exact change. Nothing is saved until you confirm.";
+  const confirm = document.createElement("button");
+  confirm.type = "button";
+  confirm.className = "btn-primary";
+  confirm.textContent = "Confirm change";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "btn-ghost";
+  cancel.textContent = "Cancel";
+  card.append(description, hint, confirm, cancel);
+  bubble.appendChild(card);
+
+  cancel.addEventListener("click", () => {
+    card.replaceChildren();
+    const cancelled = document.createElement("small");
+    cancelled.textContent = "Cancelled. Inventory was not changed.";
+    card.appendChild(cancelled);
+  }, { once: true });
+  confirm.addEventListener("click", async () => {
+    if (confirm.disabled) return;
+    confirm.disabled = true;
+    confirm.textContent = "Confirming…";
+    cancel.disabled = true;
+    assistantConfirmationButton = confirm;
+    try {
+      const response = await fetch(`${API}/assistant/confirm`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmation_token: pendingAction.confirmation_token }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.detail || `HTTP ${response.status}`);
+      const success = pendingAction.action === "order_dispatch"
+        ? `Dispatch complete: ${Number(result.dispatched_units || 0)} pieces sent; ${Number(result.pending_units || 0)} remain pending.`
+        : `Done. ${cloudActionSummary(pendingAction)}`;
+      const done = document.createElement("strong");
+      done.textContent = success;
+      card.replaceChildren(done);
+      assistantConfirmationButton = null;
+      assistantHistory.push({ role: "assistant", content: success });
+      saveAssistantHistory();
+      addAssistantMessage("assistant", success);
+      await refreshInventoryViews();
+      playSuccessSound();
+    } catch (error) {
+      confirm.disabled = false;
+      confirm.textContent = "Retry after checking";
+      cancel.disabled = false;
+      const message = document.createElement("small");
+      message.className = "assistant-cloud-confirmation-error";
+      message.textContent = error.message || "Could not confirm the change. Refresh inventory before retrying.";
+      card.appendChild(message);
+      assistantConfirmationButton = null;
+    }
+  });
+}
+
+async function sendCloudAssistantMessage(typing, requestSequence, requestSessionId) {
+  const response = await fetch(`${API}/assistant/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages: assistantHistory.slice(-12) }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.detail || `Cloud assistant failed (HTTP ${response.status})`);
+  if (requestSequence !== assistantRequestSequence || requestSessionId !== assistantSessionId) return;
+  typing.remove();
+  const bubble = addAssistantMessage("assistant", data.reply || "Mujhe abhi jawab nahi mila.");
+  assistantHistory.push({ role: "assistant", content: data.reply || "" });
+  saveAssistantHistory();
+  attachCloudConfirmation(bubble, data.pending_action);
+  const status = $("assistant-state");
+  if (status) status.textContent = "Cloud AI online · inventory tools ready";
+  const messages = $("assistant-messages");
+  if (messages) messages.scrollTop = messages.scrollHeight;
+  finishMyraaTurn();
+}
+
 window.addEventListener("message", (event) => {
   if (event.source === window && event.origin === window.location.origin
       && event.data?.source === "inventory-browser-extension"
@@ -2441,6 +2580,7 @@ window.addEventListener("message", (event) => {
   const data = event.data;
   if (data.type === "ready") {
     myraaReady = true;
+    myraaMode = "local";
     myraaReadyResolver?.(true);
     const status = $("assistant-state");
     if (status) status.textContent = "MYRAA ready · start voice in the panel";
@@ -2527,6 +2667,11 @@ async function sendAssistantMessage(message, selectedSku = null) {
   $("assistant-messages")?.appendChild(typing);
   try {
     const ready = await initializeMyraaWidget();
+    if (myraaMode === "cloud") {
+      await sendCloudAssistantMessage(typing, requestSequence, requestSessionId);
+      dispatched = true;
+      return;
+    }
     if (!ready || !postToMyraa({ type: "chat", requestId: requestSequence, text: clean })) {
       throw new Error("MYRAA desktop companion is not running. Start it on this PC and retry.");
     }
@@ -2542,7 +2687,9 @@ async function sendAssistantMessage(message, selectedSku = null) {
     if (requestSequence !== assistantRequestSequence || requestSessionId !== assistantSessionId) return;
   } catch (error) {
     if (requestSequence !== assistantRequestSequence || requestSessionId !== assistantSessionId) return;
-    const reply = `MYRAA se connect nahi ho paayi: ${error.message || error}. Desktop app start karke dobara try karein.`;
+    const reply = myraaMode === "cloud"
+      ? `MYRAA cloud se connect nahi ho paayi: ${error.message || error}. Dobara try karein.`
+      : `MYRAA se connect nahi ho paayi: ${error.message || error}. Desktop app start karke dobara try karein.`;
     assistantHistory.push({ role: "assistant", content: reply });
     saveAssistantHistory();
     addAssistantMessage("assistant", reply);

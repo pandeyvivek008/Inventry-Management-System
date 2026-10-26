@@ -26,7 +26,7 @@ import schemas
 from services import (
     inventory_service, alert_service, excel_service, reorder_service,
     barcode_service, bulk_stock_service, bulk_product_service,
-    visual_match_service, visual_search_service,
+    visual_match_service, visual_search_service, cloud_assistant_service,
 )
 import inventory_mcp
 from mcp.server.transport_security import TransportSecuritySettings
@@ -157,6 +157,47 @@ if FRONTEND_DIR.exists():
     app.mount("/app", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
 
 app.mount("/api/mcp", _inventory_mcp_http_app, name="inventory-mcp")
+
+
+@app.get("/api/assistant/status")
+def assistant_cloud_status():
+    """Expose cloud readiness only; never return any server-side credential."""
+    configured = cloud_assistant_service.is_configured()
+    return {
+        "cloud_enabled": configured,
+        "provider": "Gemini" if configured else None,
+        "model": cloud_assistant_service.MODEL if configured else None,
+        "inventory_tools": configured,
+        "writes_require_confirmation": True,
+    }
+
+
+@app.post("/api/assistant/chat")
+async def assistant_cloud_chat(request: Request):
+    """Run MYRAA on Railway so browser clients do not need a local companion."""
+    client_key = request.client.host if request.client else "unknown"
+    if not cloud_assistant_service.check_rate_limit(client_key):
+        raise HTTPException(status_code=429, detail="Too many assistant requests. Wait a minute and retry.")
+    try:
+        payload = await request.json()
+        result = await cloud_assistant_service.chat(payload.get("messages") if isinstance(payload, dict) else None)
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        status = 503 if "not configured" in str(exc).lower() else 502
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+
+@app.post("/api/assistant/confirm")
+async def assistant_cloud_confirm(request: Request):
+    """Commit one server-prepared change only after the UI's explicit confirm."""
+    try:
+        payload = await request.json()
+        result = await cloud_assistant_service.confirm_action(payload.get("confirmation_token") if isinstance(payload, dict) else "")
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.get("/", include_in_schema=False)

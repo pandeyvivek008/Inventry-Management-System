@@ -214,17 +214,22 @@ to process that subset. Deleting a partially dispatched batch restores every alr
 
 ### Conversational stock assistant
 
-The inventory page embeds **MYRAA** from the local Windows companion at
-`http://127.0.0.1:3000`. Start MYRAA on the same PC to use voice, chat, and the
-desktop-agent features. Voice starts only after the user presses **Start voice**
-and grants microphone permission. Gemini Live supplies multilingual speech and
-text; the assistant is prompted to respond in the user's language and script.
-The companion also connects to the inventory app's protected Streamable HTTP MCP
-endpoint for live data. Product, stock, order, and dispatch changes are prepared
-first and require approval in the MYRAA confirmation dialog before commit.
+The website's **MYRAA typed chat** can run on Railway, so it is available from
+other computers without starting a local desktop companion. Set `GEMINI_API_KEY`
+in the Railway inventory service Variables and redeploy; the key stays on the
+server. Cloud MYRAA can chat normally and use live inventory, order, dispatch,
+reorder, and analytics tools. Every write is prepared first and requires a
+separate **Confirm change** click before it is committed.
 
-The Gemini API key and MCP API key are entered in MYRAA's local settings and
-stored in the per-user data directory, not in browser code or Git. The MCP key
+Voice, screen capture, and control of the computer's browser or desktop still
+run through the local MYRAA companion on that computer. Railway cannot access a
+visitor's microphone, desktop, browser tabs, or personal WhatsApp. Voice starts
+only after the user presses **Start voice** and grants microphone permission.
+For local voice and PC control, see
+[MYRAA_INTEGRATION_HI.md](MYRAA_INTEGRATION_HI.md).
+
+The Gemini API key is never returned to browser code or Git. The local
+companion's Gemini and MCP keys stay in its per-user data directory; its MCP key
 must match `INVENTORY_MCP_API_KEY` on the inventory server. See
 [MYRAA_INTEGRATION_HI.md](MYRAA_INTEGRATION_HI.md) for setup, supported access,
 and troubleshooting. Inventory MCP exposes read tools plus the
@@ -360,4 +365,4 @@ in the system.
 
 ## MYRAA and inventory MCP
 
-See [MYRAA_INTEGRATION_HI.md](MYRAA_INTEGRATION_HI.md) for local companion setup, the inventory MCP URL/header, available tools, and confirmation rules. The assistant and desktop-control agent run on the user's PC; the inventory API and MCP endpoint remain on the configured inventory server.
+See [MYRAA_INTEGRATION_HI.md](MYRAA_INTEGRATION_HI.md) for Railway cloud chat setup, local companion setup, the inventory MCP URL/header, available tools, and confirmation rules. The cloud chat runs on the inventory server; desktop and browser control remain local to the user's PC.
